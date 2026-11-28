@@ -741,6 +741,131 @@ body.compact #list { --row-h: 52px; }
   letter-spacing: .03em;
 }
 
+/* ---------- N02: one-click image actions ---------- */
+
+/*
+ * Three actions sit between the preview picture and its metadata. They are plain
+ * buttons because the action runs in the main process: the click only submits the
+ * record id, and the notice line below reports the outcome without resizing the
+ * preview (the body keeps flex: 1). The same three entries appear in the image
+ * tile's context menu, which is a separate fixed-position layer.
+ */
+.preview-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-actions .button {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.preview-notice {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: .02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-notice[data-tone="ok"] { color: var(--ok); }
+.preview-notice[data-tone="warn"] { color: var(--warn); }
+.preview-notice[data-tone="danger"] { color: var(--danger); }
+
+/* The OCR result is a second in-panel dialog above the preview: the extracted
+   text stays selectable and the copy button is the only write, which the main
+   process performs on behalf of the sandboxed page. */
+.ocr-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: var(--bg);
+}
+
+.ocr-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.ocr-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.ocr-body pre {
+  margin: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.ocr-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+/* Right-click menu for an image tile. Fixed position (the renderer clamps it to
+   the viewport) because the virtual grid scrolls under it. */
+.context-menu {
+  position: fixed;
+  z-index: 6;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.context-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-item:hover,
+.context-item:focus-visible {
+  background: var(--surface-3);
+  outline: none;
+}
+
+.context-item:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
 /* ---------- record actions ---------- */
 
 .button {
@@ -830,6 +955,8 @@ body.compact #list { --row-h: 52px; }
 .feedback-only #more,
 .feedback-only #detail,
 .feedback-only #preview,
+.feedback-only #ocr,
+.feedback-only #contextMenu,
 .feedback-only .footer { display: none !important; }
 
 #feedback {
@@ -922,7 +1049,8 @@ input:focus-visible {
   outline-offset: -2px;
 }
 
-.detail-body {
+.detail-body,
+.ocr-body {
   scrollbar-width: thin;
   scrollbar-color: var(--muted) transparent;
 }

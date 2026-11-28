@@ -12,6 +12,14 @@
   <div class="window-shell">
     <aside class="sidebar">
       <div class="brand"><span>High</span>lighter</div>
+      <!-- N06: global settings search (Ctrl+K). The index and the matcher live in
+           routes/settings-search.js; this markup only owns the box and the panel. -->
+      <div class="sidebar-search" role="search">
+        <span class="svg-icon sidebar-search-icon" style="--icon:url('icons/search.svg')" aria-hidden="true"></span>
+        <input id="settingsSearchInput" type="search" autocomplete="off" spellcheck="false" aria-controls="settingsSearchResults" aria-expanded="false" data-i18n-placeholder="config.search.placeholder" data-i18n-aria-label="config.search.label">
+        <kbd class="sidebar-search-kbd" data-i18n="config.search.shortcut"></kbd>
+        <div id="settingsSearchResults" class="search-results" role="listbox" hidden data-i18n-aria-label="config.search.results-label"></div>
+      </div>
       <nav>
         <button class="nav-item active" data-route="home"><i class="svg-icon nav-icon" style="--icon:url('icons/lightning.svg')" aria-hidden="true"></i><span data-i18n="config.route.home"></span></button>
         <div class="nav-group"><b data-i18n="config.nav.toolbox"></b></div>
@@ -91,6 +99,8 @@
        registration line at their top level always has a container to write to. -->
   <script src="routes/shared.js"></script>
   <script src="routes/model-helpers.js"></script>
+  <!-- N06: settings search index + matcher; the shell calls its init function. -->
+  <script src="routes/settings-search.js"></script>
   <script src="routes/home.js"></script>
   <script src="routes/translation.js"></script>
   <script src="routes/chat.js"></script>

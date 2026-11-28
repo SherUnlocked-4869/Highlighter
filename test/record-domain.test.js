@@ -23,7 +23,9 @@ test('main.js routes record ownership through the domain', () => {
   assert.match(main, /recordDomain\?\.ownsFrameWindow\(win\)/)
   assert.match(main, /recordDomain\?\.isTaskActive\(\)/)
   assert.match(main, /recordDomain\.createRecordWindow\(/)
-  assert.match(main, /recordDomain\.createRecordingController\(\)/)
+  // H05: the controller is created by the aggregated IPC module.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /const recordController = recordDomain\.createRecordingController\(\)/)
   // R1 (plan §5.2 exit safety): main.js awaits a BOUNDED recording shutdown before quitting.
   assert.match(main, /recordDomain\.shutdown\(\{ timeoutMs: 3000 \}\)/)
 })
@@ -742,6 +744,28 @@ function createProjectHarness(overrides = {}) {
   }
   const updateSettingsCalls = []
   const regionSelections = []
+  // P1-01 review: the workbench passes the capture request id to the overlay and waits for that
+  // request's receipt. The fake overlay behaves like the real BrowserWindow: it is returned from
+  // createRegionSelection and reports 'closed' only when the test emits it.
+  const regionOverlays = []
+  const createRegionOverlay = (options) => {
+    const closedListeners = []
+    const overlay = {
+      options,
+      destroyed: false,
+      isDestroyed: () => overlay.destroyed,
+      once: (event, listener) => {
+        if (event === 'closed') closedListeners.push(listener)
+      },
+      emitClosed: () => {
+        if (overlay.destroyed) return
+        overlay.destroyed = true
+        for (const listener of closedListeners.slice()) listener()
+      }
+    }
+    regionOverlays.push(overlay)
+    return overlay
+  }
   const routes = []
   const shellCalls = []
   const trayRefreshes = []
@@ -795,6 +819,9 @@ function createProjectHarness(overrides = {}) {
             thumbnail: { isEmpty: () => false, getSize: () => ({ width: entry.width || 0, height: entry.height || 0 }) }
           }))
         }
+        // P1-01 re-review: a test can hold the desktop-source enumeration open to cancel or
+        // replace the region overlay while createRecordWindow() is awaiting it.
+        if (typeof overrides.deferScreenSources === 'function') await overrides.deferScreenSources()
         return [{ id: 'screen:1', display_id: '1', thumbnail: { isEmpty: () => false } }]
       }
     },
@@ -848,7 +875,9 @@ function createProjectHarness(overrides = {}) {
         showInactive: () => {},
         hide: () => {},
         focus: () => { win.focused += 1 },
-        loadFile: () => Promise.resolve(),
+        // P1-01 re-review: a test can hold a window load open to cancel the overlay between the
+        // window creation and the workbench receipt.
+        loadFile: () => (typeof overrides.loadFile === 'function' ? overrides.loadFile(pagePath) : Promise.resolve()),
         on: (event, listener) => { if (event === 'closed') closedListeners.push(listener) },
         once: (event, listener) => { if (event === 'ready-to-show') readyListeners.push(listener) },
         close: () => {
@@ -895,7 +924,10 @@ function createProjectHarness(overrides = {}) {
       },
       createMainWindow: (route) => routes.push(route),
       backdropColor: () => '#101010',
-      createRegionSelection: (options) => { regionSelections.push(options); return Promise.resolve({}) },
+      createRegionSelection: (options) => {
+        regionSelections.push(options)
+        return Promise.resolve(createRegionOverlay(options))
+      },
       positionAutomationWindow: () => false,
       refreshTray: () => trayRefreshes.push(Date.now())
     }),
@@ -917,6 +949,7 @@ function createProjectHarness(overrides = {}) {
     settings,
     updateSettingsCalls,
     regionSelections,
+    regionOverlays,
     routes,
     shellCalls,
     trayRefreshes,
@@ -1297,13 +1330,359 @@ test('the workbench reads config/displays/recent and starts a capture with the w
   // Region start reuses the capture overlay and carries the workbench's parameters through the
   // one-shot slot the overlay's createRecordWindow() consumes.
   const regionHarness = createProjectHarness()
-  await regionHarness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  const regionStart = regionHarness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  await regionHarness.tick()
   assert.equal(regionHarness.regionSelections.length, 1)
   assert.equal(regionHarness.regionSelections[0].mode, 'region')
-  const regionControl = await regionHarness.domain.createRecordWindow({ display: regionHarness.display, selectionBounds: { x: 0, y: 0, width: 100, height: 100 } })
+  const regionControl = await regionHarness.domain.createRecordWindow({ display: regionHarness.display, selectionBounds: { x: 0, y: 0, width: 100, height: 100 }, regionRequestId: regionHarness.regionSelections[0].regionRequestId })
+  assert.deepEqual(await regionStart, { ok: true, created: true })
   assert.equal(regionControl._recordMode, 'region')
   assert.equal(regionControl._recordInit.quality, 'ultra')
 })
+
+// P1-01 review: cancelling the workbench's region overlay must revoke the one-shot capture
+// config, so the next quick-entry region selection cannot silently inherit "this recording only"
+// global shortcut capture (the review reproduced the second control window with
+// _recordCaptureConfig.demoKeystrokes === true).
+test('P1-01 review: a cancelled workbench region selection never authorizes the quick entry', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true }
+  })
+  await harness.tick()
+  assert.equal(harness.regionSelections.length, 1)
+  const requestId = harness.regionSelections[0].regionRequestId
+  assert.equal(typeof requestId, 'string')
+  assert.ok(requestId.length > 0, 'the workbench overlay is addressed by a capture request id')
+  // The user cancels the selection overlay: no control window was created.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+
+  // Quick-entry region recording is a different entry: it carries no workbench config and no
+  // workbench request id, so the pending slot must not be consumed by it.
+  assert.deepEqual(await harness.domain.startRegionRecording(), { ok: true })
+  assert.equal(harness.regionSelections.length, 2)
+  assert.equal(harness.regionSelections[1].regionRequestId, undefined)
+  const quickControl = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 100, height: 100 },
+    regionRequestId: ''
+  })
+  assert.equal(quickControl._recordCaptureConfig.demoKeystrokes, false, 'a cancelled opt-in must not authorize the quick entry')
+  assert.equal(quickControl._recordInit.quality, 'standard', 'the cancelled workbench quality must not leak either (persisted default used)')
+})
+
+// P1-01 review: the workbench only receives a created receipt once the control window exists;
+// a matching request consumes exactly its own config and the closed overlay cannot report it as
+// cancelled afterwards.
+test('P1-01 review: a created region take resolves the matching workbench request exactly once', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const control = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 10, y: 20, width: 200, height: 150 },
+    regionRequestId: requestId
+  })
+  assert.deepEqual(await startPromise, { ok: true, created: true })
+  assert.equal(control._recordCaptureConfig.demoKeystrokes, true)
+  assert.equal(control._recordInit.quality, 'ultra')
+  // The overlay closing after the take started is not a second (cancel) receipt.
+  harness.regionOverlays[0].emitClosed()
+  // Repeat entry only focuses the running bar and never reports a created take.
+  assert.deepEqual(await harness.controller.workbenchStart(null, { mode: 'region', config: { demoKeystrokes: true } }), { ok: true, focused: true })
+  assert.equal(harness.regionOverlays.length, 1, 'focusing the active take does not open another selection overlay')
+})
+
+// P1-01 review: a REPLACED overlay (a new capture supersedes the old one, which is what the
+// capture domain does when another region selection starts) must revoke the old request and keep
+// the replacement's own config intact.
+test('P1-01 review: replacing the region overlay revokes the old request, not the new one', async () => {
+  const harness = createProjectHarness()
+  const firstStart = harness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  await harness.tick()
+  const firstRequestId = harness.regionSelections[0].regionRequestId
+  const secondStart = harness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'high' } })
+  await harness.tick()
+  assert.equal(harness.regionSelections.length, 2)
+  const secondRequestId = harness.regionSelections[1].regionRequestId
+  assert.notEqual(firstRequestId, secondRequestId)
+  // The capture domain closes the previous overlay when a new capture window replaces it.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await firstStart, { ok: true, created: false }, 'the replaced request reports no take')
+  // The replacement keeps its own one-shot config and consumes exactly that.
+  const control = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 80, height: 80 },
+    regionRequestId: secondRequestId
+  })
+  assert.deepEqual(await secondStart, { ok: true, created: true })
+  assert.equal(control._recordCaptureConfig.demoKeystrokes, false)
+  assert.equal(control._recordInit.quality, 'high', 'the replacement keeps its own quality')
+})
+
+// P1-01 review: a pending workbench config can only be consumed by the overlay request that
+// created it; an unrelated/quick overlay selecting a rectangle gets the persisted defaults.
+// P1-01 re-review: a non-empty request id that is not live is FAIL-CLOSED. The old code fell back
+// to the persisted preferences and still created a control window for the unrelated/stale id; the
+// re-review requires no frame/control window and a cancelled receipt for the revoked request.
+test('P1-01 review: a pending workbench config is only consumed by its own request id', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const windowsBefore = harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length
+  const unrelated = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 50, height: 50 },
+    regionRequestId: 'unrelated-request'
+  })
+  assert.equal(unrelated, null, 'a different request id never consumes the slot and creates no window')
+  assert.equal(
+    harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length,
+    windowsBefore,
+    'an unrelated/forged request id creates zero recording windows'
+  )
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  // The slot is gone: the bound request id can no longer authorize a later capture and must not
+  // silently fall back to persisted preferences either.
+  const stale = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 50, height: 50 },
+    regionRequestId: requestId
+  })
+  assert.equal(stale, null, 'a cancelled request id stays invalid and creates no window')
+  assert.equal(
+    harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length,
+    windowsBefore,
+    'a stale request id creates zero recording windows'
+  )
+})
+
+// P1-01 re-review: the record domain enters getDesktopSource() after the workbench confirmed the
+// rectangle. If the overlay is closed while that enumeration awaits, the old code still created the
+// control window with the revoked request's one-shot config (global shortcut capture on, quality
+// ultra). The request identity must be re-checked at the last await boundary: zero frame/control
+// windows and a cancelled receipt.
+test('P1-01 re-review: cancelling the overlay during desktop-source enumeration creates no window', async () => {
+  let releaseSources = null
+  let enumerationStarted = false
+  const harness = createProjectHarness({
+    deferScreenSources: () => {
+      enumerationStarted = true
+      return new Promise((resolve) => { releaseSources = resolve })
+    }
+  })
+  const recordingWindowCount = () => harness.windows
+    .filter((win) => win.role === 'record-control' || win.role === 'record-frame').length
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true, audioSystem: false, audioMicrophone: false }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const createPromise = harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 100, height: 100 },
+    regionRequestId: requestId
+  })
+  await waitForCondition(() => enumerationStarted, 'the region creation must reach the desktop-source enumeration')
+  assert.equal(recordingWindowCount(), 0, 'no recording window exists while the enumeration is pending')
+  // The overlay closes (Esc / replaced capture) while getDesktopSource() is still awaiting.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false }, 'the workbench receipt is a cancellation')
+  releaseSources()
+  assert.equal(await createPromise, null, 'the revoked request creates no control window')
+  assert.equal(recordingWindowCount(), 0, 'zero frame/control windows are created for the revoked request')
+  assert.equal(harness.domain.isTaskActive(), false, 'no take is active afterwards')
+})
+
+// P1-01 re-review: the same asynchronous boundary when the overlay is REPLACED by another capture.
+// A must create nothing and report a cancellation; the replacement B must consume exactly its own
+// one-shot config (the opposite audio/quality/shortcut values prove no cross-request leak either way).
+test('P1-01 re-review: replacing the overlay during enumeration aborts A and keeps B on its own config', async () => {
+  let releaseA = null
+  let aEnumerationStarted = false
+  let screenCalls = 0
+  const harness = createProjectHarness({
+    deferScreenSources: () => {
+      screenCalls += 1
+      if (screenCalls > 1) return Promise.resolve()
+      aEnumerationStarted = true
+      return new Promise((resolve) => { releaseA = resolve })
+    }
+  })
+  const recordingWindows = () => harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame')
+  const firstStart = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true, audioSystem: false, audioMicrophone: false }
+  })
+  await harness.tick()
+  const firstId = harness.regionSelections[0].regionRequestId
+  const firstCreate = harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 100, height: 100 },
+    regionRequestId: firstId
+  })
+  await waitForCondition(() => aEnumerationStarted, 'A must reach the desktop-source enumeration')
+  // A second workbench region start opens a new overlay; the capture domain closes the old one.
+  const secondStart = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'high', demoKeystrokes: false, audioSystem: true, audioMicrophone: true }
+  })
+  await harness.tick()
+  const secondId = harness.regionSelections[1].regionRequestId
+  assert.notEqual(secondId, firstId)
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await firstStart, { ok: true, created: false }, 'the replaced request reports cancellation')
+  releaseA()
+  assert.equal(await firstCreate, null, 'the replaced request creates no window')
+  assert.equal(recordingWindows().length, 0, 'A created zero frame/control windows')
+  // B confirms its own rectangle and keeps its own config; nothing of A (ultra / demoKeystrokes /
+  // audio off) may leak into it, and nothing of B may leak back into A's refused take.
+  const secondControl = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 80, height: 80 },
+    regionRequestId: secondId
+  })
+  assert.ok(secondControl, 'the replacement creates its control window')
+  assert.deepEqual(await secondStart, { ok: true, created: true })
+  assert.equal(recordingWindows().length, 2, 'exactly the replacement frame + control windows exist')
+  assert.equal(secondControl._recordMode, 'region')
+  assert.equal(secondControl._recordInit.quality, 'high')
+  assert.equal(secondControl._recordCaptureConfig.demoKeystrokes, false)
+  assert.deepEqual(secondControl._recordInit.audio, {
+    system: true,
+    microphone: true,
+    microphoneDeviceId: '',
+    systemGain: 1,
+    microphoneGain: 1
+  })
+})
+
+// P1-01 re-review: the overlay is still interactive while the control window loads (it is closed
+// only after createRecordWindow returns). An Esc in that window must tear the half-created windows
+// down before they are shown, not leave an orphaned control bar and a "created" receipt.
+test('P1-01 re-review: cancelling while the control window loads tears it down and reports no take', async () => {
+  let releaseLoad = null
+  let loadStarted = false
+  const harness = createProjectHarness({
+    loadFile: (pagePath) => {
+      if (!String(pagePath).endsWith('record.html')) return Promise.resolve()
+      loadStarted = true
+      return new Promise((resolve) => { releaseLoad = resolve })
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const createPromise = harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 100, height: 100 },
+    regionRequestId: requestId
+  })
+  await waitForCondition(() => loadStarted, 'the control window load must start')
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false }, 'the workbench receipt stays a cancellation')
+  releaseLoad()
+  assert.equal(await createPromise, null, 'the cancelled load reports no created window')
+  const controls = harness.windows.filter((win) => win.role === 'record-control')
+  const frames = harness.windows.filter((win) => win.role === 'record-frame')
+  assert.equal(controls.length, 1, 'the control window existed only long enough to be torn down')
+  assert.equal(frames.length, 1)
+  assert.equal(controls[0].destroyed, true)
+  assert.equal(frames[0].destroyed, true)
+  assert.equal(controls[0].shown, 0, 'the cancelled control window is never shown')
+  assert.equal(frames[0].shown, 0, 'the cancelled frame window is never shown')
+  assert.equal(harness.domain.isTaskActive(), false)
+})
+
+// P1-02 re-review: the overlay's request used to expire after five minutes: confirming a slow
+// selection then started the take from the PERSISTED preferences, re-enabling the system audio and
+// microphone the user had explicitly switched off and resetting quality/mode/shortcut. The request
+// now stays bound to its full config until it is confirmed or revoked, so the values that start the
+// take are the ones chosen in the workbench both before and after the old deadline.
+test('P1-02 re-review: a selection confirmed after five minutes keeps this take audio/quality/mode/shortcut', async () => {
+  for (const offsetMs of [0, 301000]) {
+    const label = offsetMs === 0 ? 'immediately' : 'after 301 s (past the old TTL)'
+    const harness = createProjectHarness()
+    // The persisted "last take" values are the OPPOSITE of this take, so any fallback is visible.
+    Object.assign(harness.settings.record, {
+      audioSystem: true,
+      audioMicrophone: true,
+      quality: 'standard',
+      lastMode: 'display'
+    })
+    const startPromise = harness.controller.workbenchStart(null, {
+      mode: 'region',
+      config: { quality: 'ultra', demoKeystrokes: true, audioSystem: false, audioMicrophone: false }
+    })
+    await harness.tick()
+    const requestId = harness.regionSelections[0].regionRequestId
+    const realNow = Date.now
+    if (offsetMs) {
+      const fixed = realNow() + offsetMs
+      Date.now = () => fixed
+    }
+    let control
+    try {
+      control = await harness.domain.createRecordWindow({
+        display: harness.display,
+        selectionBounds: { x: 0, y: 0, width: 120, height: 80 },
+        regionRequestId: requestId
+      })
+    } finally {
+      Date.now = realNow
+    }
+    assert.ok(control, label)
+    assert.deepEqual(await startPromise, { ok: true, created: true }, label)
+    assert.equal(control._recordMode, 'region', `${label}: this take is still region mode`)
+    assert.equal(control._recordInit.quality, 'ultra', `${label}: this take keeps ultra quality`)
+    assert.equal(control._recordCaptureConfig.demoKeystrokes, true, `${label}: this take keeps the shortcut opt-in`)
+    // The recorder receives the explicit "both audio lanes off" choice, never the persisted on/on.
+    assert.deepEqual(control._recordInit.audio, {
+      system: false,
+      microphone: false,
+      microphoneDeviceId: '',
+      systemGain: 1,
+      microphoneGain: 1
+    }, `${label}: audio must stay off`)
+    assert.equal(control._recordInit.audioSystem, false, label)
+    assert.equal(control._recordInit.audioMicrophone, false, label)
+  }
+})
+
+test('P1-01/P1-02 re-review: the source binds region configs to their request and has no TTL', () => {
+  assert.doesNotMatch(recordDomainSource, /REGION_PENDING_TTL_MS/, 'there is no wall-clock expiry on the live request config')
+  assert.doesNotMatch(recordDomainSource, /pendingRegionCapture\.at/, 'the slot no longer stores an expiry timestamp')
+  assert.match(recordDomainSource, /function liveRegionCapture\(requestId\)/)
+  assert.match(recordDomainSource, /function revokeRegionCapture\(requestId\)/)
+  assert.match(recordDomainSource, /function createRecordWindowInternal\(options, requestedRegionId\)/)
+  // The creation path re-checks the request in both async windows: before the first window and
+  // before showing a window that finished loading.
+  const checks = recordDomainSource.match(/liveRegionCapture\(requestedRegionId\)/g) || []
+  assert.ok(checks.length >= 3, `expected the entry + two async-boundary checks (${checks.length})`)
+})
+
+// Waits for an asynchronous production step to reach a specific observable state. The record domain
+// awaits several cleanup promises before the async boundary under test, so a single setTimeout(0)
+// is not enough and a long fixed delay would slow the whole suite.
+async function waitForCondition(check, message, attempts = 400) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (check()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(message)
+}
 
 test('the workbench records page: list/open/rename/delete/reveal stay path-free and role-safe', async () => {
   const harness = createProjectHarness()
@@ -2002,12 +2381,14 @@ test('R4: a window-mode take seals as a window project and hands the editor the 
   assert.equal(editor._recordEditorInit.project.mode, 'window')
 })
 
-test('R4: after a restart the editor metadata keeps frameRate 0 (manifest has no frame rate)', async () => {
+test('R4 (U03): after a restart the editor metadata falls back to the persisted capture frame rate', async () => {
   const harness = createProjectHarness()
   harness.projectService.projects.set('project-restart', makeProject({ id: 'project-restart', state: 'ready' }))
   assert.deepEqual(await harness.domain.openEditor('project-restart'), { ok: true })
   const editor = harness.editorWindow()
-  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 0, 'unknown frame rate only offers `source`')
+  // U03 (review section 4.3.2): editorInitPayload used to read only the in-memory probe map, so
+  // a project opened after an app restart reported 0 fps and the editor could not offer 30/60.
+  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 30, 'captureConfig.frameRate is the durable fallback')
   assert.equal(editor._recordEditorInit.metadata.video.width, 800)
   assert.equal(editor._recordEditorInit.metadata.audio.codec, 'opus', 'the codec survives in the manifest')
 })
@@ -2442,4 +2823,414 @@ test('R5: the draft CAS keeps the webm format and forwards style/zoomSegments (s
   assert.equal(reloaded.project.edit.format, 'webm')
   assert.deepEqual(reloaded.project.edit.style, style)
   assert.equal(reloaded.project.edit.zoomSegments.length, 8)
+})
+
+// ---------------------------------------------------------------------------------------------
+// d4993a2 delivery re-review (P1-01/P1-02): the creation transaction.
+//
+// Baseline d4993a2 published the frame/control windows as recordWindow BEFORE their pages loaded.
+// A frame-page rejection then escaped the load cleanup: the withdrawn workbench request kept a
+// live control bar, the next quick entry only FOCUSED it, and startSession() on it created a
+// project carrying the cancelled request's microphone/shortcut authorization. A concurrent
+// fullscreen entry could also publish first, record a chunk, and then lose recordWindow to a
+// slower region request ("无效的录制窗口" on the next append).
+// ---------------------------------------------------------------------------------------------
+
+test('P1-01 delivery re-review: a frame-page load failure publishes no region take and the next entry gets its own config', async () => {
+  const frameLoading = Promise.withResolvers()
+  let frameLoadStarted = false
+  let frameLoads = 0
+  const harness = createProjectHarness({
+    loadFile(pagePath) {
+      if (!String(pagePath).endsWith('frame.html')) return Promise.resolve()
+      frameLoads += 1
+      if (frameLoads > 1) return Promise.resolve()
+      frameLoadStarted = true
+      return frameLoading.promise
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true, quality: 'ultra' }
+  })
+  await harness.tick()
+  const creation = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 10, y: 10, width: 100, height: 100 }
+  })
+  await waitForCondition(() => frameLoadStarted, 'the region frame page load must start')
+  const stagedControl = harness.controlWindow()
+  const stagedFrame = harness.windows.find((win) => win.role === 'record-frame')
+  assert.ok(stagedControl && stagedFrame, 'the region frame/control pair exists while loading')
+  assert.equal(harness.domain.isTaskActive(), false, 'a loading creation is not an active take')
+  assert.equal(stagedControl.shown, 0, 'the loading control bar is never shown')
+  assert.equal(stagedControl.displayMediaHandler, undefined, 'no shared-session media handler is installed before publish')
+
+  // The frame page rejects while the request is still live: a creation failure, not a cancel. The
+  // workbench gets the cancelled receipt and no window survives.
+  frameLoading.reject(new Error('frame load failed'))
+  await assert.rejects(creation, /frame load failed/)
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  assert.equal(harness.domain.isTaskActive(), false, 'the failed creation published no take')
+  assert.equal(stagedControl.destroyed, true, 'the failed control window is torn down')
+  assert.equal(stagedFrame.destroyed, true, 'the failed frame window is torn down')
+  assert.equal(stagedControl.displayMediaHandler, undefined, 'the loser never owns the shared media handler')
+  // The abandoned control bar can never start a project: it is not recordWindow.
+  await assert.rejects(harness.controller.startSession(harness.eventFor(stagedControl)), /无效的录制窗口/)
+
+  // The very next entry is a fresh display take with exactly its own configuration.
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'display', config: { demoKeystrokes: false, audioMicrophone: false } }),
+    { ok: true }
+  )
+  const control = harness.controlWindow()
+  assert.notEqual(control, stagedControl)
+  assert.equal(harness.domain.isTaskActive(), true)
+  assert.equal(control._recordCaptureConfig.demoKeystrokes, false, 'the revoked region opt-in never authorizes the next take')
+  assert.equal(control._recordInit.audio.microphone, false, 'the next take keeps its explicit microphone-off choice')
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  const ack = await harness.controller.appendChunk(harness.eventFor(control), {
+    sessionId: session.id,
+    sequence: 1,
+    arrayBuffer: Buffer.from([1, 2, 3])
+  })
+  assert.equal(ack.committedBytes, 3, 'the fresh take records normally')
+})
+
+test('P1-01 delivery re-review: a control-page load failure cleans both windows and reports no take', async () => {
+  const controlLoading = Promise.withResolvers()
+  let controlLoadStarted = false
+  let controlLoads = 0
+  const harness = createProjectHarness({
+    loadFile(pagePath) {
+      if (!String(pagePath).endsWith('record.html')) return Promise.resolve()
+      controlLoads += 1
+      if (controlLoads > 1) return Promise.resolve()
+      controlLoadStarted = true
+      return controlLoading.promise
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true }
+  })
+  await harness.tick()
+  const creation = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 20, y: 20, width: 120, height: 90 }
+  })
+  await waitForCondition(() => controlLoadStarted, 'the region control page load must start')
+  const stagedControl = harness.controlWindow()
+  const stagedFrame = harness.windows.find((win) => win.role === 'record-frame')
+  assert.equal(harness.domain.isTaskActive(), false)
+  controlLoading.reject(new Error('control load failed'))
+  await assert.rejects(creation, /control load failed/)
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  assert.equal(stagedControl.destroyed, true)
+  assert.equal(stagedFrame.destroyed, true)
+  assert.equal(harness.domain.isTaskActive(), false)
+  await assert.rejects(harness.controller.startSession(harness.eventFor(stagedControl)), /无效的录制窗口/)
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'display', config: { demoKeystrokes: false, audioMicrophone: false } }),
+    { ok: true }
+  )
+  assert.equal(harness.domain.isTaskActive(), true)
+})
+
+test('P1-01 delivery re-review: cancelling a loading region request tears it down immediately and an immediate retry starts its own take', async () => {
+  const frameLoading = Promise.withResolvers()
+  let frameLoadStarted = false
+  let frameLoads = 0
+  const harness = createProjectHarness({
+    loadFile(pagePath) {
+      if (!String(pagePath).endsWith('frame.html')) return Promise.resolve()
+      frameLoads += 1
+      if (frameLoads > 1) return Promise.resolve()
+      frameLoadStarted = true
+      return frameLoading.promise
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true }
+  })
+  await harness.tick()
+  const creation = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 30, y: 30, width: 100, height: 80 }
+  })
+  await waitForCondition(() => frameLoadStarted, 'the region frame page load must start')
+  const stagedControl = harness.controlWindow()
+  const stagedFrame = harness.windows.find((win) => win.role === 'record-frame')
+  // Esc on the still-interactive overlay: the receipt settles AND the staged windows are released
+  // even though the frame's load promise has not settled yet.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  assert.equal(stagedControl.destroyed, true, 'the cancelled control window is released without waiting for the load')
+  assert.equal(stagedFrame.destroyed, true, 'the cancelled frame window is released without waiting for the load')
+  assert.equal(harness.domain.isTaskActive(), false)
+  // Retry immediately, before the old load settles: it must create and show its OWN take.
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'display', config: { demoKeystrokes: false, audioMicrophone: false } }),
+    { ok: true }
+  )
+  const retried = harness.controlWindow()
+  assert.notEqual(retried, stagedControl)
+  assert.equal(harness.domain.isTaskActive(), true)
+  assert.equal(retried.shown > 0, true, 'the retried take is shown')
+  // Releasing the abandoned load afterwards must not disturb the running take.
+  frameLoading.resolve()
+  assert.equal(await creation, null)
+  assert.equal(harness.domain.isTaskActive(), true, 'the stale creation cannot clear the newer take')
+  assert.equal(harness.controlWindow(), retried)
+  assert.equal(retried.destroyed, false)
+})
+
+test('P1-02 delivery re-review: a fullscreen take that publishes first keeps ownership and keeps writing', async () => {
+  const sources = Promise.withResolvers()
+  let enumerationStarted = false
+  let screenCalls = 0
+  const harness = createProjectHarness({
+    deferScreenSources() {
+      screenCalls += 1
+      if (screenCalls > 1) return Promise.resolve()
+      enumerationStarted = true
+      return sources.promise
+    }
+  })
+  // Region A reaches the desktop-source enumeration first and is held there.
+  const regionStart = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true, quality: 'ultra' }
+  })
+  await harness.tick()
+  const createA = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 30, y: 20, width: 120, height: 80 }
+  })
+  await waitForCondition(() => enumerationStarted, 'region A must reach the desktop-source enumeration')
+  // The quick fullscreen entry B starts while A is still waiting and finishes first.
+  const controlB = await harness.domain.createRecordWindow({
+    display: harness.display,
+    mode: 'display',
+    capture: { demoKeystrokes: false, audioMicrophone: false }
+  })
+  assert.ok(controlB)
+  assert.equal(harness.domain.ownsControlWindow(controlB), true)
+  const session = await harness.controller.startSession(harness.eventFor(controlB))
+  const first = await harness.controller.appendChunk(harness.eventFor(controlB), {
+    sessionId: session.id,
+    sequence: 1,
+    arrayBuffer: Buffer.from([1, 2, 3])
+  })
+  assert.deepEqual(first, { committedBytes: 3, sequence: 1, lastChunkSequence: 1 })
+  // A resumes: it must back off with a cancelled receipt, create no windows, and never take the
+  // write route away from B.
+  sources.resolve()
+  assert.equal(await createA, null, 'the slower region request creates no take')
+  assert.deepEqual(await regionStart, { ok: true, created: false })
+  assert.equal(harness.domain.ownsControlWindow(controlB), true, 'the recording window keeps ownership')
+  assert.equal(
+    harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length,
+    2,
+    'no second frame/control pair survives the raced region creation'
+  )
+  const second = await harness.controller.appendChunk(harness.eventFor(controlB), {
+    sessionId: session.id,
+    sequence: 2,
+    arrayBuffer: Buffer.from([4, 5, 6])
+  })
+  assert.deepEqual(second, { committedBytes: 6, sequence: 2, lastChunkSequence: 2 }, 'the recording window keeps writing')
+  const finished = await harness.controller.finishSession(harness.eventFor(controlB), { sessionId: session.id })
+  assert.equal(finished.ok, true, 'the granted take also finishes cleanly')
+})
+
+test('P1-02 delivery re-review: a second confirm of the same region request joins the in-flight creation', async () => {
+  const frameLoading = Promise.withResolvers()
+  let frameLoadStarted = false
+  let frameLoads = 0
+  const harness = createProjectHarness({
+    loadFile(pagePath) {
+      if (!String(pagePath).endsWith('frame.html')) return Promise.resolve()
+      frameLoads += 1
+      if (frameLoads > 1) return Promise.resolve()
+      frameLoadStarted = true
+      return frameLoading.promise
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true, quality: 'ultra' }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const args = { regionRequestId: requestId, display: harness.display, selectionBounds: { x: 5, y: 5, width: 100, height: 100 } }
+  const first = harness.domain.createRecordWindow(args)
+  await waitForCondition(() => frameLoadStarted, 'the first creation must start loading the frame page')
+  const second = harness.domain.createRecordWindow(args)
+  assert.equal(
+    harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length,
+    2,
+    'the second confirm creates no second window pair'
+  )
+  // Neither call may revoke the shared request: the workbench receipt is a created take.
+  frameLoading.resolve()
+  const [firstControl, secondControl] = await Promise.all([first, second])
+  assert.ok(firstControl, 'the first confirm creates the take')
+  assert.equal(secondControl, firstControl, 'both confirms share the same control window')
+  assert.deepEqual(await startPromise, { ok: true, created: true })
+  assert.equal(harness.domain.ownsControlWindow(firstControl), true)
+  assert.equal(firstControl._recordCaptureConfig.demoKeystrokes, true, 'the take keeps the request config')
+  const session = await harness.controller.startSession(harness.eventFor(firstControl))
+  const ack = await harness.controller.appendChunk(harness.eventFor(firstControl), {
+    sessionId: session.id,
+    sequence: 1,
+    arrayBuffer: Buffer.from([1, 2, 3])
+  })
+  assert.equal(ack.committedBytes, 3, 'the single take records normally')
+})
+
+test('P1-02 delivery re-review: the earlier region request that publishes first is focused, not replaced, by a slower fullscreen entry', async () => {
+  const resolvers = []
+  let screenCalls = 0
+  const harness = createProjectHarness({
+    deferScreenSources() {
+      screenCalls += 1
+      const pending = Promise.withResolvers()
+      resolvers.push(pending)
+      return pending.promise
+    }
+  })
+  const regionStart = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true, quality: 'ultra' }
+  })
+  await harness.tick()
+  const createA = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 10, y: 10, width: 100, height: 80 }
+  })
+  await waitForCondition(() => resolvers.length === 1, 'region A must reach the enumeration')
+  // B is a later fullscreen entry; its own enumeration is held too, so A can finish first.
+  const createB = harness.domain.createRecordWindow({
+    display: harness.display,
+    mode: 'display',
+    capture: { demoKeystrokes: false, audioMicrophone: false }
+  })
+  await waitForCondition(() => resolvers.length === 2, 'the fullscreen entry must reach its enumeration')
+  resolvers[0].resolve()
+  const controlA = await createA
+  assert.ok(controlA, 'the earlier region request publishes its take')
+  assert.deepEqual(await regionStart, { ok: true, created: true })
+  assert.equal(harness.domain.ownsControlWindow(controlA), true)
+  // The slower entry now resumes: it must NOT replace the live take; it focuses it and reports no
+  // separate take of its own.
+  resolvers[1].resolve()
+  const focused = await createB
+  assert.equal(focused, controlA, 'the slower entry returns the running control bar')
+  assert.equal(harness.domain.ownsControlWindow(controlA), true)
+  assert.equal(controlA.focused > 0, true, 'the running bar is brought forward')
+  assert.equal(
+    harness.windows.filter((win) => win.role === 'record-control' || win.role === 'record-frame').length,
+    2,
+    'the slower entry creates no second frame/control pair'
+  )
+  assert.equal(harness.domain.isTaskActive(), true)
+})
+
+test('P1-01 delivery re-review: a staged window closed during load aborts the creation and reports no take', async () => {
+  const frameLoading = Promise.withResolvers()
+  let frameLoadStarted = false
+  const harness = createProjectHarness({
+    loadFile(pagePath) {
+      if (!String(pagePath).endsWith('frame.html')) return Promise.resolve()
+      frameLoadStarted = true
+      return frameLoading.promise
+    }
+  })
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true }
+  })
+  await harness.tick()
+  const creation = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 40, y: 40, width: 90, height: 70 }
+  })
+  await waitForCondition(() => frameLoadStarted, 'the frame load must start')
+  const stagedControl = harness.controlWindow()
+  const stagedFrame = harness.windows.find((win) => win.role === 'record-frame')
+  assert.equal(harness.domain.isTaskActive(), false)
+  // The OS/user closes the (still hidden) staged control window before the pages finish.
+  stagedControl.close()
+  assert.equal(stagedFrame.destroyed, true, 'closing the staged control releases its frame too')
+  frameLoading.resolve()
+  assert.equal(await creation, null, 'the aborted creation reports no take')
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  assert.equal(harness.domain.isTaskActive(), false)
+  assert.equal(stagedControl.shown, 0, 'an aborted staged bar is never shown')
+  await assert.rejects(harness.controller.startSession(harness.eventFor(stagedControl)), /无效的录制窗口/)
+})
+
+// Independent-verifier follow-up (S6): the earlier "take epoch" gate refused to publish when a
+// racing take had been published AND closed while this request was still enumerating. That race
+// left a user-confirmed region request with zero windows (silent no-take). Only a LIVE take may
+// block publishing; a take that already closed no longer owns the write route.
+test('P1-02 delivery re-review: a racing take that already closed does not strand the slower region creation', async () => {
+  const sources = Promise.withResolvers()
+  let enumerationStarted = false
+  let screenCalls = 0
+  const harness = createProjectHarness({
+    deferScreenSources() {
+      screenCalls += 1
+      if (screenCalls > 1) return Promise.resolve()
+      enumerationStarted = true
+      return sources.promise
+    }
+  })
+  const regionStart = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true, audioMicrophone: true }
+  })
+  await harness.tick()
+  const createA = harness.domain.createRecordWindow({
+    regionRequestId: harness.regionSelections[0].regionRequestId,
+    display: harness.display,
+    selectionBounds: { x: 30, y: 20, width: 120, height: 80 }
+  })
+  await waitForCondition(() => enumerationStarted, 'the region creation must reach the enumeration')
+  // The racing fullscreen take publishes, records a chunk, and is closed by the user - all while
+  // the region creation is still waiting for the desktop source.
+  const controlB = await harness.domain.createRecordWindow({ display: harness.display, mode: 'display' })
+  const sessionB = await harness.controller.startSession(harness.eventFor(controlB))
+  await harness.controller.appendChunk(harness.eventFor(controlB), {
+    sessionId: sessionB.id,
+    sequence: 1,
+    arrayBuffer: Buffer.from([1, 2, 3])
+  })
+  controlB.close()
+  await harness.tick()
+  assert.equal(harness.domain.isTaskActive(), false, 'the racing take is gone')
+  // The region request resumes with no live take: it must publish its own take instead of being
+  // silently dropped.
+  sources.resolve()
+  const controlA = await createA
+  assert.ok(controlA, 'the slower region creation still publishes after the racing take closed')
+  assert.equal(harness.domain.ownsControlWindow(controlA), true)
+  assert.deepEqual(await regionStart, { ok: true, created: true })
+  assert.equal(controlA._recordCaptureConfig.demoKeystrokes, true, 'the region request keeps its own config')
+  assert.equal(harness.domain.isTaskActive(), true)
+  const sessionA = await harness.controller.startSession(harness.eventFor(controlA))
+  const ack = await harness.controller.appendChunk(harness.eventFor(controlA), {
+    sessionId: sessionA.id,
+    sequence: 1,
+    arrayBuffer: Buffer.from([7, 8, 9])
+  })
+  assert.equal(ack.committedBytes, 3, 'the recovered take records normally')
 })

@@ -269,6 +269,392 @@
     return (number === null ? 0 : Math.max(0, Math.min(1, number))).toFixed(4)
   }
 
+  // ---------------------------------------------------------------------------
+  // F03 (review 2026-11-26 §3.3): ripple packing for the demo graph.
+  // ---------------------------------------------------------------------------
+  // The per-click chain gives every click its own `-loop 1 -i ripple.png` input, a scale node
+  // and an overlay node: 30 clicks = 30 inputs + 60 filter nodes. A click's ring is visible
+  // for exactly RIPPLE_WINDOW_MS, so clicks whose windows do not touch can share ONE looped
+  // input whose per-frame expressions switch size/position/visibility to whichever click is
+  // active. Every ring uses the same white asset, and compositing identical-colour layers
+  // commutes, so packing lanes does not change the rendered pixels.
+  //
+  // MAX_RIPPLE_LAYERS is 2 (=> at most 2 inputs + 4 filter nodes). A denser burst (3+ rings on
+  // screen at once) cannot be packed into two lanes without reordering the composite, so it
+  // keeps the exact per-click chain instead; correctness wins over node count for that burst.
+  const RIPPLE_WINDOW_MS = 600
+  const MAX_RIPPLE_LAYERS = 2
+
+  function rippleEntries(clicks) {
+    return (Array.isArray(clicks) ? clicks : []).map((click) => {
+      const startMs = Math.max(0, Math.round(finiteNumber(click?.tMs) || 0))
+      return {
+        startMs,
+        endMs: startMs + RIPPLE_WINDOW_MS,
+        focusX: clampUnit(click?.x),
+        focusY: clampUnit(click?.y)
+      }
+    })
+  }
+
+  // Exactly the per-click expression, so a one-click film keeps the historical graph.
+  function rippleSizeExpression(entry) {
+    const startSeconds = (entry.startMs / 1000).toFixed(6)
+    return `96*(0.35+0.65*min(1,max(0,(t-${startSeconds})/0.6)))`
+  }
+
+  function rippleWindow(entry) {
+    return {
+      startSeconds: (entry.startMs / 1000).toFixed(6),
+      endSeconds: (entry.endMs / 1000).toFixed(6)
+    }
+  }
+
+  // Lane-major compositing (lane 0 first, then lane 1) preserves the historical per-click
+  // order only when, for every pair of OVERLAPPING windows, the earlier click's lane comes
+  // first. Greedy packing can violate that (a later click can land in an earlier lane), and a
+  // swapped pair of translucent overlays can differ by a rounding step at the intersection.
+  // Such a burst keeps the per-click chain so the rendered frames stay byte-identical.
+  function rippleOrderPreserved(sorted, lanes) {
+    const laneOf = new Map()
+    lanes.forEach((lane, laneIndex) => {
+      for (const entry of lane.entries) laneOf.set(entry, laneIndex)
+    })
+    for (let index = 0; index < sorted.length; index += 1) {
+      const earlier = sorted[index]
+      for (let laterIndex = index + 1; laterIndex < sorted.length; laterIndex += 1) {
+        const later = sorted[laterIndex]
+        // Disjoint windows never composite together, so their order is irrelevant.
+        if (later.startMs > earlier.endMs) continue
+        if ((laneOf.get(earlier) ?? 0) > (laneOf.get(later) ?? 0)) return false
+      }
+    }
+    return true
+  }
+
+  // Greedy interval packing (first fit by start time; optimal for interval graphs). Returns
+  // one layer per non-overlapping lane, or null when the burst needs more than
+  // MAX_RIPPLE_LAYERS lanes OR lane-major order would not match the per-click order (the
+  // caller then keeps the per-click chain, which is pixel-identical by construction).
+  function planRippleLayers(clicks) {
+    const entries = rippleEntries(clicks)
+    if (!entries.length) return []
+    const sorted = entries.slice().sort((left, right) => left.startMs - right.startMs)
+    const lanes = []
+    for (const entry of sorted) {
+      // `between()` is inclusive on both ends: windows [a, a+600] and [b, b+600] share the
+      // instant b === a+600, so a lane may only take a click that starts STRICTLY later.
+      const lane = lanes.find((candidate) => entry.startMs > candidate.endMs)
+      if (lane) {
+        lane.endMs = entry.endMs
+        lane.entries.push(entry)
+        continue
+      }
+      if (lanes.length >= MAX_RIPPLE_LAYERS) return null
+      lanes.push({ endMs: entry.endMs, entries: [entry] })
+    }
+    if (!rippleOrderPreserved(sorted, lanes)) return null
+    return lanes.map((lane) => {
+      const windows = lane.entries.map((entry) => {
+        const window = rippleWindow(entry)
+        return {
+          ...window,
+          size: rippleSizeExpression(entry),
+          x: `${entry.focusX}*W-w/2`,
+          y: `${entry.focusY}*H-h/2`
+        }
+      })
+      if (windows.length === 1) {
+        const only = windows[0]
+        return {
+          sizeExpression: only.size,
+          xExpression: only.x,
+          yExpression: only.y,
+          enableExpression: `between(t,${only.startSeconds},${only.endSeconds})`
+        }
+      }
+      // Inactive frames fall back to a 2x2 ring (overlay is disabled there, but a zero-sized
+      // scale argument is rejected by ffmpeg) and a 0,0 overlay position.
+      const sizeExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.size},${fallback})`,
+        '2'
+      )
+      const xExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.x},${fallback})`,
+        '0'
+      )
+      const yExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.y},${fallback})`,
+        '0'
+      )
+      return {
+        sizeExpression,
+        xExpression,
+        yExpression,
+        enableExpression: windows.map((window) => `between(t,${window.startSeconds},${window.endSeconds})`).join('+')
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // N03/DEV-05: keystroke capsule overlay (docs/plans/2026-11-28-review-optimization-follow-up-tasks.md
+  // DEV-05). The editor already previews the shortcuts a take captured (N03 HUD); this section
+  // carries the same capsules into the exported film.
+  //
+  // The renderer sends SOURCE-time capsules; this module projects them onto the kept segments
+  // exactly like shared/recording-demo.js maps zooms/clicks, so trimmed-out time can never show a
+  // capsule. Windows are half-open [tMs, endMs) so a capsule that starts on a cut boundary is
+  // shown by the segment that owns the frame, and a capsule whose 1100 ms preview window crosses a
+  // cut is truncated at that boundary instead of leaking into the next segment.
+  //
+  // Privacy: only the frozen capture allowlist (modifier chords + navigation/function keys) can
+  // reach the filter graph. Anything else is dropped here, so an events.json written by another
+  // build still cannot inject arbitrary text into the encoder's asset pipeline.
+  const KEYSTROKE_OVERLAY_LIMITS = Object.freeze({
+    // P2-08: the SOURCE read boundary, NOT a render budget. A project track persists at most
+    // 2000 capsules (main/services/recording-project-service.js KEYSTROKE_LIMIT, mirrored by
+    // main/domains/record KEYSTROKE_LIMIT), so the editor and this normaliser must accept every
+    // one of them: the trim selection is projected onto the WHOLE source sequence before any
+    // budget below is applied. Reading fewer deleted the tail at read time, and a legal
+    // 600-capsule project trimmed to its last 100 s then planned 0 windows with `truncated:false`.
+    // Exceeding this cap is a malformed/foreign track, not a disclosed render truncation.
+    MAX_SOURCE_ITEMS: 2000,
+    // Render-window budget (one composited window => one `gte()/lt()` term in its label's enable
+    // expression). Historical name kept because the preview HUD and the exporter must agree on the
+    // visible sequence; `MAX_RENDER_WINDOWS` below is the canonical spelling and both stay equal.
+    // Applied AFTER the trim projection; every dropped window is disclosed through
+    // `truncated`/`dropped` with its exact source-time range.
+    MAX_ITEMS: 500,
+    // Preview display window (record/editor.js KEYSTROKE_CAPSULE_MS).
+    DISPLAY_MS: 1100,
+    COMBO_MAX_LENGTH: 48,
+    // P2-05 filter/material budget. appendKeystrokeOverlay composes ONE looped PNG input and ONE
+    // overlay node per DISTINCT label (never one per window), so the window count only adds
+    // `gte()/lt()` terms to that label's enable expression: 300 presses of the same shortcut cost
+    // one node, not 300 chained overlays. The cap is therefore the render budget for the projected
+    // sequence, and 240 no longer silently hides the tail the preview showed.
+    // It is still enforced for a hand-built/older caller: windows past the cap are dropped and
+    // disclosed through `truncated` / `dropped` instead of disappearing silently.
+    MAX_RENDER_WINDOWS: 500,
+    // One looped PNG input per unique label: bound the number of extra ffmpeg inputs/overlay
+    // nodes. Exceeding it drops whole labels, and `dropped` carries the exact counts and
+    // source-time range so the editor can warn BEFORE the user confirms the export.
+    MAX_LABELS: 64
+  })
+  const KEYSTROKE_NAMED_KEY = 'Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|(?:F(?:[1-9]|1[0-2]))'
+  const KEYSTROKE_CHORD_PATTERN = new RegExp(`^(?:(?:Ctrl|Alt|Shift|Win)\\+){1,4}(?:[A-Z0-9]|${KEYSTROKE_NAMED_KEY})$`)
+  const KEYSTROKE_SINGLE_PATTERN = new RegExp(`^(?:${KEYSTROKE_NAMED_KEY})$`)
+
+  // Untrimmed on purpose: surrounding whitespace means the label did not come from the capture
+  // policy, so it is invalid rather than silently normalised.
+  function isValidKeystrokeCombo(value) {
+    const combo = typeof value === 'string' ? value : ''
+    if (!combo || combo.length > KEYSTROKE_OVERLAY_LIMITS.COMBO_MAX_LENGTH || combo !== combo.trim()) return false
+    return KEYSTROKE_CHORD_PATTERN.test(combo) || KEYSTROKE_SINGLE_PATTERN.test(combo)
+  }
+
+  // Capsule geometry in OUTPUT pixels. Shared by the main-process rasteriser (which needs the PNG
+  // size) and the ffmpeg graph (which needs the bottom margin), so both agree on the surface.
+  function keystrokeOverlayMarginBottom(surfaceHeight) {
+    const height = finiteNumber(surfaceHeight) || 0
+    return Math.max(6, Math.round(height * 0.05))
+  }
+
+  function keystrokeCapsuleMetrics({ surfaceWidth = 0, surfaceHeight = 0, combo = '' } = {}) {
+    const surface = Math.max(1, Math.round(finiteNumber(surfaceHeight) || 0))
+    const widthLimit = Math.max(1, Math.round(finiteNumber(surfaceWidth) || 0))
+    const label = typeof combo === 'string' ? combo : ''
+    const height = Math.max(24, Math.min(96, Math.round(surface * 0.052)))
+    const fontSize = Math.max(11, Math.round(height * 0.46))
+    const paddingX = Math.max(8, Math.round(height * 0.52))
+    // Segoe UI semibold caps are ~0.62 em wide; the fallback stack is close enough for a pill.
+    const textWidth = Math.ceil(label.length * fontSize * 0.62)
+    const width = Math.min(Math.max(height * 2, textWidth + paddingX * 2), Math.max(height * 2, widthLimit))
+    return {
+      width: Math.round(width),
+      height,
+      fontSize,
+      paddingX,
+      radius: Math.round(height / 2),
+      marginBottom: keystrokeOverlayMarginBottom(surface)
+    }
+  }
+
+  // The surface the capsules are composited onto: the demo canvas when the demo pipeline renders,
+  // the GIF output, otherwise the encoded video size. 0x0 means "unknown" and the caller refuses
+  // the overlay instead of guessing a coordinate space.
+  function resolveKeystrokeSurface(value = {}) {
+    const request = isPlainObject(value) ? value : {}
+    if (request.format === 'gif') {
+      return { width: Math.round(finiteNumber(request.gif?.width) || 0), height: Math.round(finiteNumber(request.gif?.height) || 0) }
+    }
+    const demo = isPlainObject(request.demo) && request.demo.rendered === true ? request.demo : null
+    if (demo) {
+      return { width: Math.round(finiteNumber(demo.canvasWidth) || 0), height: Math.round(finiteNumber(demo.canvasHeight) || 0) }
+    }
+    return {
+      width: Math.round(finiteNumber(request.video?.width) || 0),
+      height: Math.round(finiteNumber(request.video?.height) || 0)
+    }
+  }
+
+  // Projects SOURCE-time capsules onto the output timeline and resolves the preview's visibility
+  // rules (1100 ms window, same-time priority: the capsule that started last wins, so an earlier
+  // one is cut short by the next capsule). Returns `{ ok:true, value:null }` for "overlay off".
+  //
+  // P2-05: the editor preview and the exported film must show ONE sequence, so the value carries
+  // the visible plan in both coordinate spaces:
+  //   * `items`       - OUTPUT-time windows, exactly what the ffmpeg graph composites;
+  //   * `sourceItems` - the same windows back in SOURCE time (a kept segment maps linearly, a cut
+  //                     only clips the window end), which the editor HUD plays against the media
+  //                     clock.
+  // When a retained material cap drops windows, `items`/`sourceItems` are the KEPT plan and
+  // `total`/`dropped` describe the truncation precisely (capsule count, distinct label count,
+  // first/last dropped SOURCE time) so the editor can disclose it before the user confirms.
+  // P2-08: the raw input is read up to MAX_SOURCE_ITEMS (the project's own persistence cap) and
+  // projected first; MAX_RENDER_WINDOWS/MAX_LABELS are applied to the PROJECTED list afterwards.
+  function normalizeKeystrokeOverlay(input, segments, durationMs = 0) {
+    if (input === undefined || input === null) return { ok: true, value: null }
+    if (!isPlainObject(input)) return fail('invalid-keystroke-option')
+    if (typeof input.enabled !== 'boolean') return fail('invalid-keystroke-option')
+    if (input.enabled !== true) return { ok: true, value: null }
+    if (!Array.isArray(input.items)) return fail('invalid-keystroke-option')
+    const limit = Math.max(0, Math.round(finiteNumber(durationMs) || 0))
+    const ranges = Array.isArray(segments) ? segments : []
+    const projected = []
+    for (const entry of input.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS)) {
+      if (!isPlainObject(entry)) continue
+      if (!isValidKeystrokeCombo(entry.combo)) continue
+      const rawMs = finiteNumber(entry.tMs)
+      if (rawMs === null) continue
+      const sourceMs = Math.round(rawMs)
+      if (!Number.isFinite(sourceMs) || sourceMs < 0) continue
+      if (limit > 0 && sourceMs > limit) continue
+      // Source time -> output time through the kept segments. A capsule inside a trimmed-out
+      // range has no output position at all and is dropped.
+      let outputStart = 0
+      for (const segment of ranges) {
+        const startMs = Math.max(0, Math.round(finiteNumber(segment?.startMs) || 0))
+        const endMs = Math.max(startMs, Math.round(finiteNumber(segment?.endMs) || 0))
+        const spanMs = endMs - startMs
+        if (sourceMs >= startMs && sourceMs < endMs) {
+          projected.push({
+            tMs: outputStart + (sourceMs - startMs),
+            segmentEndMs: outputStart + spanMs,
+            combo: String(entry.combo),
+            sourceMs
+          })
+          break
+        }
+        outputStart += spanMs
+      }
+    }
+    projected.sort((left, right) => left.tMs - right.tMs)
+    const visible = []
+    for (let index = 0; index < projected.length; index += 1) {
+      const entry = projected[index]
+      let endMs = Math.min(entry.tMs + KEYSTROKE_OVERLAY_LIMITS.DISPLAY_MS, entry.segmentEndMs)
+      const next = projected[index + 1]
+      // Same-time priority: the later entry in time order wins from its first frame, matching
+      // record/editor.js activeKeystrokeCapsule() (the last item in range wins).
+      if (next) endMs = Math.min(endMs, Math.max(entry.tMs, next.tMs))
+      if (!(endMs > entry.tMs)) continue
+      visible.push({ tMs: entry.tMs, endMs, combo: entry.combo, sourceMs: entry.sourceMs })
+    }
+    const labels = []
+    for (const window of visible) {
+      if (!labels.includes(window.combo)) labels.push(window.combo)
+    }
+    // Material caps: keep the first MAX_LABELS distinct labels (first-appearance order), then the
+    // first MAX_RENDER_WINDOWS of the survivors. Every removed window is collected so the exact
+    // truncation can be reported instead of just a boolean.
+    let kept = []
+    const droppedWindows = []
+    if (labels.length > KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS) {
+      const allowed = new Set(labels.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS))
+      for (const window of visible) {
+        if (allowed.has(window.combo)) kept.push(window)
+        else droppedWindows.push(window)
+      }
+    } else {
+      kept = visible.slice()
+    }
+    if (kept.length > KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS) {
+      droppedWindows.push(...kept.slice(KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS))
+      kept = kept.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS)
+    }
+    const droppedLabels = []
+    for (const window of droppedWindows) {
+      if (!droppedLabels.includes(window.combo)) droppedLabels.push(window.combo)
+    }
+    // A null sentinel (not 0) so a capsule whose source time IS 0 cannot be mistaken for
+    // "no dropped capsule yet" by the min/max loop.
+    let firstDroppedMs = null
+    let lastDroppedMs = null
+    for (const window of droppedWindows) {
+      if (!(window.sourceMs >= 0)) continue
+      if (firstDroppedMs === null || window.sourceMs < firstDroppedMs) firstDroppedMs = window.sourceMs
+      if (lastDroppedMs === null || window.sourceMs > lastDroppedMs) lastDroppedMs = window.sourceMs
+    }
+    if (firstDroppedMs === null) firstDroppedMs = 0
+    if (lastDroppedMs === null) lastDroppedMs = 0
+    return {
+      ok: true,
+      value: {
+        enabled: true,
+        displayMs: KEYSTROKE_OVERLAY_LIMITS.DISPLAY_MS,
+        items: kept.map((window) => ({ tMs: window.tMs, endMs: window.endMs, combo: window.combo })),
+        // The window span is identical in both timelines inside one kept segment, so the editor
+        // HUD can stay on the media clock without owning the projection rules.
+        sourceItems: kept.map((window) => ({
+          tMs: window.sourceMs,
+          durationMs: window.endMs - window.tMs,
+          combo: window.combo
+        })),
+        truncated: droppedWindows.length > 0,
+        total: { windows: visible.length, labels: labels.length },
+        dropped: droppedWindows.length > 0
+          ? {
+              items: droppedWindows.length,
+              labels: droppedLabels.length,
+              firstSourceMs: firstDroppedMs,
+              lastSourceMs: lastDroppedMs
+            }
+          : null
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // F03: hardware H.264 encoders for MP4 output (mirrors record/recording-utils.js).
+  // ---------------------------------------------------------------------------
+  // `videoEncoder` is an OPTIONAL build-time hint from the main process's capability probe;
+  // without it (or with an unknown name) the argv is byte-identical to the historical
+  // libx264/veryfast/CRF command. Muxer, extension and audio mapping never depend on it.
+  const SOFTWARE_VIDEO_ENCODER = 'libx264'
+  const HARDWARE_VIDEO_ENCODERS = Object.freeze(['h264_nvenc', 'h264_qsv', 'h264_amf'])
+
+  function normalizeVideoEncoder(value) {
+    const name = typeof value === 'string' ? value.trim() : ''
+    return HARDWARE_VIDEO_ENCODERS.includes(name) ? name : SOFTWARE_VIDEO_ENCODER
+  }
+
+  // Per-encoder quality flags for H.264 MP4 output; `crf` is the software CRF value.
+  function mp4VideoEncoderArgs(value, crf) {
+    const encoder = normalizeVideoEncoder(value)
+    const quality = String(Math.round(finiteNumber(crf) ?? 23))
+    if (encoder === 'h264_nvenc') {
+      return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', quality, '-b:v', '0']
+    }
+    if (encoder === 'h264_qsv') {
+      return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', quality]
+    }
+    if (encoder === 'h264_amf') {
+      return ['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'cqp', '-qp_i', quality, '-qp_p', quality]
+    }
+    return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', quality]
+  }
+
   function evenDimension(value) {
     // Contract formula: even(round(value)), minimum 2. `resolution:'source'` on the usual
     // even-sized canvas is the identity; a preset can only shrink (scale <= 1).
@@ -560,6 +946,21 @@
       }
     }
 
+    // N03/DEV-05: optional keystroke capsule overlay. Absent (or explicitly disabled) keeps the
+    // pre-N03 export path byte-identical: no extra inputs, no extra filters, same argv.
+    let keystrokesValue = null
+    if (request.keystrokes !== undefined && request.keystrokes !== null) {
+      const overlay = normalizeKeystrokeOverlay(request.keystrokes, selection.segments, durationMs)
+      if (!overlay.ok) return overlay
+      keystrokesValue = overlay.value
+      if (keystrokesValue) {
+        const surface = resolveKeystrokeSurface({ format, gif, video, demo: demoValue })
+        if (!(surface.width > 0) || !(surface.height > 0)) return fail('invalid-keystroke-option')
+        // Compositing cannot ride the WebM stream-copy fast path.
+        if (video) video = { ...video, copy: false }
+      }
+    }
+
     return {
       ok: true,
       value: {
@@ -572,6 +973,7 @@
         hasAudio: format !== 'gif' && metadata?.audio?.exists === true,
         video,
         demo: demoValue,
+        keystrokes: keystrokesValue,
         sourceWidth,
         sourceHeight,
         // Additive (not part of the frozen §4.2 list): publish verification needs the source
@@ -621,6 +1023,69 @@
     }
   }
 
+  // N03/DEV-05: appends the capsule overlay chain to a filter graph. `filters`/`extraInputs` are
+  // mutated; returns the new tail stream name and the number of image inputs added.
+  //
+  // P2-05 material budget: ONE looped PNG input AND ONE overlay node per DISTINCT label, however
+  // many windows that label has. The normaliser guarantees the visible windows never overlap (a
+  // later capsule shortens the previous one), so all occurrences of a label can share a single
+  // overlay whose `enable` expression is the union of its half-open windows: at most one capsule
+  // is ever enabled, and the pixels are identical to one overlay node per window. This is what
+  // lets the editor's whole 500-capsule sequence reach the film: 300 presses of one shortcut cost
+  // one input plus a 300-term expression, not 300 chained overlays. MAX_LABELS still bounds the
+  // number of inputs/overlay nodes, and every window past the caps was already removed by the
+  // normaliser (which reports the exact truncation).
+  //
+  // Half-open windows: `gte(t,start)*lt(t,end)` reproduces the normaliser's [tMs,endMs) rule, so a
+  // frame on a cut/capsule boundary belongs to the later window exactly as the preview does.
+  function appendKeystrokeOverlay({
+    base,
+    items,
+    assets,
+    surfaceHeight,
+    inputStart,
+    renderFps,
+    durationSeconds,
+    extraInputs,
+    filters
+  }) {
+    const labelList = Array.isArray(assets?.labels) ? assets.labels : []
+    const byName = new Map()
+    for (const label of labelList) {
+      if (label && typeof label.combo === 'string' && typeof label.path === 'string' && label.path) byName.set(label.combo, label)
+    }
+    const grouped = []
+    for (const item of Array.isArray(items) ? items : []) {
+      const label = byName.get(item?.combo)
+      if (!label) continue
+      const startMs = Math.round(finiteNumber(item.tMs) || 0)
+      const endMs = Math.max(startMs, Math.round(finiteNumber(item.endMs) || 0))
+      let group = grouped.find((candidate) => candidate.combo === label.combo)
+      if (!group) {
+        group = { combo: label.combo, label, windows: [] }
+        grouped.push(group)
+      }
+      group.windows.push({ startMs, endMs })
+    }
+    if (!grouped.length) return { current: base, inputCount: 0 }
+    const marginBottom = keystrokeOverlayMarginBottom(surfaceHeight)
+    let current = base
+    grouped.forEach((group, index) => {
+      const inputIndex = inputStart + index
+      extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', durationSeconds, '-i', group.label.path)
+      const enable = group.windows
+        .map((window) => `gte(t,${seconds(window.startMs)})*lt(t,${seconds(window.endMs)})`)
+        .join('+')
+      const tail = `keystroke${index}`
+      filters.push(
+        `[${current}][${inputIndex}:v]overlay=x=(W-w)/2:y=H-h-${marginBottom}:` +
+        `enable='${enable}':format=auto:shortest=1[${tail}]`
+      )
+      current = tail
+    })
+    return { current, inputCount: grouped.length }
+  }
+
   function normalizeBuildVideo(options, format) {
     const source = isPlainObject(options.video) ? options.video : {}
     const resolution = RESOLUTIONS.includes(source.resolution) ? source.resolution : DEFAULT_VIDEO.resolution
@@ -636,7 +1101,9 @@
       fpsValue,
       width,
       height,
-      copy: format === 'webm' && source.copy === true
+      copy: format === 'webm' && source.copy === true,
+      // F03: hardware H.264 is MP4-only (WebM is VP9 by contract; GIF has no encoder choice).
+      encoder: format === 'mp4' ? normalizeVideoEncoder(options.videoEncoder) : SOFTWARE_VIDEO_ENCODER
     }
   }
 
@@ -662,9 +1129,27 @@
     const hasAudio = format !== 'gif' && options.hasAudio === true
     const video = normalizeBuildVideo(options, format)
     const progress = ['-progress', 'pipe:2', '-nostats']
+    // N03/DEV-05: the normalizer only ever attaches a rendered capsule plan together with the
+    // main-process raster assets. A plan without assets is a main-process wiring bug, not a
+    // renderer input, so it fails loudly instead of silently exporting without capsules.
+    const keystrokes = isPlainObject(options.keystrokes) && options.keystrokes.enabled === true &&
+      Array.isArray(options.keystrokes.items) && options.keystrokes.items.length > 0
+      ? options.keystrokes
+      : null
+    const keystrokeAssets = keystrokes && isPlainObject(options.keystrokeAssets)
+      ? options.keystrokeAssets
+      : null
+    if (keystrokes && !keystrokeAssets) {
+      throw new Error('recording-export-options: keystroke assets are required for a keystroke overlay')
+    }
 
     // WebM fast path (contract §4.3): full-range, source resolution, source fps -> stream copy.
     // `-map 0` keeps every stream (video + the mixed audio track); no re-encode, no filter.
+    // A keystroke overlay cannot be stream-copied; normalizeExportRequest already forces
+    // `copy:false` for such a request, this guard keeps a hand-built legacy call honest.
+    if (video.copy && keystrokes) {
+      throw new Error('recording-export-options: a keystroke overlay cannot use the WebM copy path')
+    }
     if (video.copy) {
       return {
         args: ['-hide_banner', '-nostdin', '-i', inputPath, '-map', '0', '-c', 'copy', '-y', outputPath],
@@ -715,12 +1200,33 @@
       // dither keeps the gradient banding of a screen recording under control.
       const videoInputs = windows.map((_window, index) => `[v${index}]`).join('')
       filters.push(`${videoInputs}concat=n=${windows.length}:v=1:a=0[outv]`)
-      filters.push(`[outv]fps=${fps},scale=${width}:${height}:flags=lanczos,split[gifA][gifB]`)
+      const gifExtraInputs = []
+      let gifTail = 'outv'
+      // DEV-05: GIF gets the capsules too. They are composited AFTER the fps/scale pass so the
+      // coordinates are final GIF pixels, and BEFORE palettegen so the palette budgets the pill.
+      filters.push(`[${gifTail}]fps=${fps},scale=${width}:${height}:flags=lanczos[gifScaled]`)
+      gifTail = 'gifScaled'
+      if (keystrokes) {
+        const overlay = appendKeystrokeOverlay({
+          base: gifTail,
+          items: keystrokes.items,
+          assets: keystrokeAssets,
+          surfaceHeight: height,
+          inputStart: windows.length,
+          renderFps: fps,
+          durationSeconds: seconds(totalDurationMs),
+          extraInputs: gifExtraInputs,
+          filters
+        })
+        gifTail = overlay.current
+      }
+      filters.push(`[${gifTail}]split[gifA][gifB]`)
       filters.push('[gifA]palettegen=stats_mode=diff[gifPalette]')
       filters.push('[gifB][gifPalette]paletteuse=dither=bayer:bayer_scale=5[gifOut]')
       return {
         args: [
           ...head,
+          ...gifExtraInputs,
           '-filter_complex', filters.join(';'),
           '-map', '[gifOut]',
           '-an',
@@ -728,7 +1234,15 @@
           ...progress,
           '-y', outputPath
         ],
-        expected: { format, durationMs: totalDurationMs, width, height, hasAudio: false, fps }
+        expected: {
+          format,
+          durationMs: totalDurationMs,
+          width,
+          height,
+          hasAudio: false,
+          fps,
+          ...(keystrokes ? { keystrokesRendered: true } : {})
+        }
       }
     }
 
@@ -743,7 +1257,6 @@
       filters.push(`${videoInputs}concat=n=${windows.length}:v=1:a=0[outv]`)
     }
 
-    const graph = filters.join(';')
     const audioArgs = hasAudio && format === 'mp4'
       ? ['-map', '[outa]', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2']
       : hasAudio && format === 'webm'
@@ -800,30 +1313,42 @@
       // the background overlay at the end.
       demoFilters.push(`[outv]scale=${contentWidth}:${contentHeight}:flags=lanczos[scaled]`)
       let current = 'scaled'
-      // Ripples: one looped ring image per click, scaled per frame while its time window is on.
+      // Ripples: the packed lane graph renders the same ring pixels with far fewer filter
+      // nodes (see planRippleLayers above). A burst that needs more than MAX_RIPPLE_LAYERS
+      // concurrent lanes keeps the exact historical per-click chain instead.
       const clicks = Array.isArray(demo.clicks) ? demo.clicks : []
       if (clicks.length && (typeof assets.ripplePath !== 'string' || !assets.ripplePath)) {
         throw new Error('recording-export-options: demo ripple asset is required')
       }
-      clicks.forEach((click, index) => {
-        const rippleIndex = nextInputIndex
-        nextInputIndex += 1
-        extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
-        const startMs = Math.max(0, Math.round(finiteNumber(click?.tMs) || 0))
-        const startSeconds = (startMs / 1000).toFixed(6)
-        const endSeconds = ((startMs + 600) / 1000).toFixed(6)
-        // Soft ring growth over 600 ms. The per-click offset makes every ring restart at 0.35x
-        // even though its looped input timestamps are global.
-        const progress = `min(1,max(0,(t-${startSeconds})/0.6))`
-        const size = `96*(0.35+0.65*${progress})`
-        const focusX = clampUnit(click?.x)
-        const focusY = clampUnit(click?.y)
-        demoFilters.push(`[${rippleIndex}:v]scale=w='${size}':h='${size}':eval=frame,format=rgba[ripple${index}]`)
-        demoFilters.push(
-          `[${current}][ripple${index}]overlay=x='${focusX}*W-w/2':y='${focusY}*H-h/2':enable='between(t,${startSeconds},${endSeconds})':format=auto:shortest=1[rippleOverlay${index}]`
-        )
-        current = `rippleOverlay${index}`
-      })
+      const rippleLayers = clicks.length ? planRippleLayers(clicks) : []
+      if (rippleLayers) {
+        rippleLayers.forEach((layer, laneIndex) => {
+          const rippleIndex = nextInputIndex
+          nextInputIndex += 1
+          extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
+          demoFilters.push(
+            `[${rippleIndex}:v]scale=w='${layer.sizeExpression}':h='${layer.sizeExpression}':eval=frame,format=rgba[ripple${laneIndex}]`
+          )
+          demoFilters.push(
+            `[${current}][ripple${laneIndex}]overlay=x='${layer.xExpression}':y='${layer.yExpression}':enable='${layer.enableExpression}':format=auto:shortest=1[rippleOverlay${laneIndex}]`
+          )
+          current = `rippleOverlay${laneIndex}`
+        })
+      } else {
+        clicks.forEach((click, index) => {
+          const rippleIndex = nextInputIndex
+          nextInputIndex += 1
+          extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
+          const entry = rippleEntries([click])[0]
+          const size = rippleSizeExpression(entry)
+          const window = rippleWindow(entry)
+          demoFilters.push(`[${rippleIndex}:v]scale=w='${size}':h='${size}':eval=frame,format=rgba[ripple${index}]`)
+          demoFilters.push(
+            `[${current}][ripple${index}]overlay=x='${entry.focusX}*W-w/2':y='${entry.focusY}*H-h/2':enable='between(t,${window.startSeconds},${window.endSeconds})':format=auto:shortest=1[rippleOverlay${index}]`
+          )
+          current = `rippleOverlay${index}`
+        })
+      }
       // Camera: zoompan only when there is at least one zoom (otherwise the frame pass-through
       // keeps the R4 timing exactly).
       const zooms = Array.isArray(demo.zooms) ? demo.zooms : []
@@ -846,6 +1371,23 @@
         }
         current = 'demoCanvas'
       }
+      // DEV-05: capsule overlay on the FINAL canvas: after the zoom/canvas passes, so the pill is
+      // never magnified by a zoom segment and the coordinates are canvas pixels (same as preview,
+      // where the capsule is a sibling of the transformed video element).
+      if (keystrokes) {
+        const overlay = appendKeystrokeOverlay({
+          base: current,
+          items: keystrokes.items,
+          assets: keystrokeAssets,
+          surfaceHeight: canvasHeight,
+          inputStart: nextInputIndex,
+          renderFps,
+          durationSeconds: inputLimit,
+          extraInputs,
+          filters: demoFilters
+        })
+        current = overlay.current
+      }
       demoFilters.push(`[${current}]format=yuv420p[demoOut]`)
       const demoGraph = demoFilters.join(';')
       const demoHead = [...head, ...extraInputs]
@@ -858,7 +1400,8 @@
         fps: renderFps,
         demoRendered: true,
         contentWidth,
-        contentHeight
+        contentHeight,
+        ...(keystrokes ? { keystrokesRendered: true } : {})
       }
       if (format === 'mp4') {
         return {
@@ -867,9 +1410,7 @@
             '-filter_complex', demoGraph,
             '-map', '[demoOut]',
             ...audioArgs,
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', String(VIDEO_CRF.mp4[video.quality]),
+            ...mp4VideoEncoderArgs(video.encoder, VIDEO_CRF.mp4[video.quality]),
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
             ...progress,
@@ -895,16 +1436,45 @@
       }
     }
 
+    // DEV-05: capsule overlay for the plain MP4/WebM path (the demo branch above composites on its
+    // own final canvas instead). The overlay runs after concat and after any resolution scale, so
+    // `(W-w)/2` centres the pill on the FINAL output frame; the yuv420p conversion stays last.
+    const nonDemoExtraInputs = []
+    let nonDemoTail = 'outv'
+    if (keystrokes) {
+      const surfaceWidth = video.width > 0 ? video.width : sourceWidth
+      const surfaceHeight = video.height > 0 ? video.height : sourceHeight
+      if (!(surfaceWidth > 0) || !(surfaceHeight > 0)) {
+        throw new Error('recording-export-options: keystroke overlay needs output dimensions')
+      }
+      const sourceFps = Number(options.sourceFrameRate) > 0
+        ? Number(options.sourceFrameRate)
+        : (video.fpsValue > 0 ? video.fpsValue : 30)
+      const renderFps = outputFps > 0 ? Math.max(1, Math.round(outputFps)) : Math.max(1, Math.round(sourceFps))
+      const overlay = appendKeystrokeOverlay({
+        base: nonDemoTail,
+        items: keystrokes.items,
+        assets: keystrokeAssets,
+        surfaceHeight,
+        inputStart: windows.length,
+        renderFps,
+        durationSeconds: seconds(totalDurationMs),
+        extraInputs: nonDemoExtraInputs,
+        filters
+      })
+      nonDemoTail = overlay.current
+    }
+    const nonDemoGraph = filters.join(';')
+
     if (format === 'mp4') {
       return {
         args: [
           ...head,
-          '-filter_complex', graph,
-          '-map', '[outv]',
+          ...nonDemoExtraInputs,
+          '-filter_complex', nonDemoGraph,
+          '-map', `[${nonDemoTail}]`,
           ...audioArgs,
-          '-c:v', 'libx264',
-          '-preset', 'veryfast',
-          '-crf', String(VIDEO_CRF.mp4[video.quality]),
+          ...mp4VideoEncoderArgs(video.encoder, VIDEO_CRF.mp4[video.quality]),
           '-pix_fmt', 'yuv420p',
           '-movflags', '+faststart',
           ...progress,
@@ -916,7 +1486,8 @@
           width: video.width,
           height: video.height,
           hasAudio,
-          fps: video.fpsValue
+          fps: video.fpsValue,
+          ...(keystrokes ? { keystrokesRendered: true } : {})
         }
       }
     }
@@ -925,8 +1496,9 @@
     return {
       args: [
         ...head,
-        '-filter_complex', graph,
-        '-map', '[outv]',
+        ...nonDemoExtraInputs,
+        '-filter_complex', nonDemoGraph,
+        '-map', `[${nonDemoTail}]`,
         ...audioArgs,
         '-c:v', 'libvpx-vp9',
         '-b:v', '0',
@@ -941,7 +1513,8 @@
         width: video.width,
         height: video.height,
         hasAudio,
-        fps: video.fpsValue
+        fps: video.fpsValue,
+        ...(keystrokes ? { keystrokesRendered: true } : {})
       }
     }
   }
@@ -988,6 +1561,18 @@
           clicks: Array.isArray(source.demo.clicks) ? source.demo.clicks : null
         }
       : null
+    // N03/DEV-05: the caption overlay choice travels with the frozen request. A pre-N03 renderer
+    // sends no field and the legacy payload shape is unchanged.
+    const keystrokes = isPlainObject(source.keystrokes) && source.keystrokes.enabled === true
+      ? {
+          enabled: true,
+          // P2-08: SOURCE items use the project limit (2000), not the 500-window render budget;
+          // the export service projects the selection first and applies the budget afterwards.
+          items: Array.isArray(source.keystrokes.items)
+            ? source.keystrokes.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS)
+            : null
+        }
+      : null
     return {
       ok: true,
       value: {
@@ -998,7 +1583,8 @@
         range: range ? { startMs: range.startMs, endMs: range.endMs } : null,
         gif,
         video,
-        demo
+        demo,
+        keystrokes
       }
     }
   }
@@ -1045,7 +1631,15 @@
           return `demo:${Math.round(Number(source.demo.canvasWidth) || 0)}x${Math.round(Number(source.demo.canvasHeight) || 0)}:${style.background || ''}:${Number(style.padding).toFixed(3)}:${Math.round(Number(style.radius) || 0)}:${style.shadow === true ? 1 : 0}:${style.ripples === true ? 1 : 0}:${zoomKey}:${clickKey}`
         })()
       : '-'
-    return [source.format || '', selection, gif, video, demo].join('|')
+    // N03/DEV-05: the capsule plan is part of the frozen request. Two fields are enough: the
+    // enabled flag and the projected output-time windows (label + frame window) that will be
+    // composited, so reusing a requestId with different shortcuts is a `request-mismatch`.
+    const keystrokes = isPlainObject(source.keystrokes) && source.keystrokes.enabled === true
+      ? `keystrokes:${(Array.isArray(source.keystrokes.items) ? source.keystrokes.items : [])
+        .map((item) => `${Math.round(Number(item?.tMs) || 0)}-${Math.round(Number(item?.endMs) || 0)}-${item?.combo || ''}`)
+        .join(',')}`
+      : '-'
+    return [source.format || '', selection, gif, video, demo, keystrokes].join('|')
   }
 
   return {
@@ -1053,12 +1647,14 @@
     EXPORT_FORMATS,
     EXPORT_TASK_STATES,
     GIF_FRAME_RATES,
+    HARDWARE_VIDEO_ENCODERS,
     LIMITS,
     MAX_SEGMENTS,
     RESOLUTION_PRESETS,
     RESOLUTIONS,
     SESSION_STATES,
     SESSION_TRANSITIONS,
+    SOFTWARE_VIDEO_ENCODER,
     TASK_TRANSITIONS,
     TERMINAL_TASK_STATES,
     VIDEO_CRF,
@@ -1072,12 +1668,19 @@
     exportWindow,
     isFullRange,
     isTerminalTaskState,
+    isValidKeystrokeCombo,
+    keystrokeCapsuleMetrics,
+    keystrokeOverlayMarginBottom,
     normalizeExportRequest,
     normalizeGifOptions,
+    normalizeKeystrokeOverlay,
     normalizeRange,
     normalizeSegments,
+    normalizeVideoEncoder,
     normalizeVideoOptions,
     requestSignature,
+    resolveKeystrokeSurface,
+    KEYSTROKE_OVERLAY_LIMITS,
     sessionTransition,
     taskTransition,
     toExportRequest

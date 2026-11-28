@@ -375,3 +375,29 @@ test('C04 (16): a full image store fails the pin creation with a retryable code 
   assert.equal(refused._destroyed, true)
   assert.equal(harness.created.filter((win) => win._destroyed !== true).length, 0)
 })
+
+// ---------------------------------------------------------------------------
+// N05 / DEV-08 (adopted 2026-11-28): onion modes + the real-pixel compare surface.
+// ---------------------------------------------------------------------------
+
+test('DEV-08: the onion vocabulary and the real-pixel sampler are exposed', () => {
+  const pin = require('../main/domains/pin')
+  assert.deepEqual(pin.ONION_MODES, ['off', 'difference', 'flash', 'real-diff'])
+  assert.deepEqual(pin.normalizeOnionStateCommand({ type: 'onion-state', mode: 'flash' }), {
+    type: 'onion-state', mode: 'flash'
+  })
+  assert.equal(pin.normalizeOnionStateCommand({ type: 'onion-state', mode: 'rm-rf' }), null)
+  const { domain } = createHarness()
+  for (const name of ['applyOnionModeSelection', 'startRealPixelCompare', 'stopRealPixelCompare']) {
+    assert.equal(typeof domain[name], 'function', name)
+  }
+  const win = domain.createPinWindow(DATA_URL, {})
+  assert.equal(win._onionMode, 'off', 'real-pixel compare is opt-in (off by default)')
+  assert.equal(win._realPixelCompare, null)
+  // The shipped renderer-only modes are still requestable through the same seam.
+  assert.deepEqual(domain.applyOnionModeSelection(win, 'flash'), { ok: true, mode: 'flash' })
+  assert.equal(win._onionMode, 'flash')
+  assert.deepEqual(domain.applyOnionModeSelection(win, 'off'), { ok: true, mode: 'off' })
+  assert.equal(win._onionMode, 'off')
+  win._closed()
+})

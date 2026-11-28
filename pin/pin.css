@@ -47,3 +47,38 @@ body:hover #pinRecognitionTools,body:focus-within #pinRecognitionTools{opacity:1
 #pinRecognitionTools button{border:0;border-radius:4px;padding:3px 6px;background:#353743;color:#fff;font:12px/1.25 system-ui,sans-serif;cursor:pointer}
 #pinRecognitionTools button:hover,#pinRecognitionTools button:focus-visible{background:#496488}
 #pinRecognizedText{position:fixed;z-index:4;inset:32px 4px 6px;width:calc(100% - 8px);height:calc(100% - 38px);padding:6px;border:1px solid #7395b9;border-radius:5px;color:#101a25;background:#fff;resize:none;user-select:text;font:13px/1.4 system-ui,sans-serif}
+/* N05 (review section 5.5): pixel-aligned onion skin. Both modes are renderer-only
+   visual states - the main process never learns about them. `difference` is the
+   report's specified blend; `flash` alternates the picture once per second so a
+   designer can compare the pinned design against the live UI underneath. The
+   reduced-motion fallback is applied in JS (static difference) AND disabled here
+   defensively, so a stale class can never animate for a user who asked for less. */
+body.onion-difference .pin-surface{mix-blend-mode:difference}
+body.onion-flash .pin-surface{animation:pin-onion-flash 1s step-end infinite}
+@keyframes pin-onion-flash{0%,49%{opacity:1}50%,100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){body.onion-flash .pin-surface{animation:none!important}}
+/* N05: one transient operation toast for the onion modes and the workspace actions. */
+#pinToast{position:fixed;z-index:5;left:50%;bottom:34px;max-width:calc(100% - 16px);transform:translateX(-50%);padding:5px 10px;border-radius:6px;color:#fff;background:rgba(20,20,22,.86);font:12px/1.35 system-ui,sans-serif;text-align:center;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#pinToast[hidden]{display:none}
+/* DEV-08: opt-in real-pixel compare. The mask canvas is positioned over the captured
+   screen rect (in-window CSS coordinates) and scaled from the bounded comparison grid;
+   the badge names the changed ratio or says there is no change. Neither element is part
+   of the pinned picture: exports/copy/save read the stored PNG bytes or the offscreen
+   re-composition, and windows snapshots copy that same picture. */
+#pinDiffOverlay{position:fixed;z-index:2;pointer-events:none;border-radius:2px;image-rendering:pixelated}
+#pinDiffOverlay[hidden]{display:none}
+#pinDiffBadge{position:fixed;z-index:4;left:50%;bottom:8px;max-width:calc(100% - 16px);transform:translateX(-50%);padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.88);font:12px/1.35 system-ui,sans-serif;white-space:nowrap;pointer-events:none;overflow:hidden;text-overflow:ellipsis}
+#pinDiffBadge[hidden]{display:none}
+/* N05: inline naming overlay for a workspace snapshot. It is the pin window's only
+   text input; `hidden` keeps it out of the click-through hit test until opened. */
+#pinWorkspaceNaming{position:fixed;z-index:6;left:50%;top:50%;width:min(320px,calc(100% - 16px));transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:8px;color:#fff;background:rgba(28,29,34,.97);box-shadow:0 8px 28px rgba(0,0,0,.42);font:12px/1.35 system-ui,sans-serif;pointer-events:auto;user-select:none}
+#pinWorkspaceNaming[hidden]{display:none}
+#pinWorkspaceNamingTitle{font-weight:600}
+#pinWorkspaceNameInput{width:100%;padding:5px 7px;border:1px solid #5d6b80;border-radius:5px;color:#fff;background:#15161a;font:13px/1.3 system-ui,sans-serif;user-select:text}
+#pinWorkspaceNameInput:focus{outline:none;border-color:#7395b9}
+#pinWorkspaceNamingHint{color:rgba(255,255,255,.66);font-size:11px;line-height:1.35}
+#pinWorkspaceNamingActions{display:flex;justify-content:flex-end;gap:6px}
+#pinWorkspaceNamingActions button{border:0;border-radius:5px;padding:4px 9px;background:#353743;color:#fff;font:12px/1.25 system-ui,sans-serif;cursor:pointer}
+#pinWorkspaceNamingActions button:hover,#pinWorkspaceNamingActions button:focus-visible{background:#496488}
+#pinWorkspaceNameConfirm{background:#3f6ea8!important}
+#pinWorkspaceNameConfirm:hover,#pinWorkspaceNameConfirm:focus-visible{background:#4d82c4!important}

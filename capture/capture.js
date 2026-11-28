@@ -34,6 +34,28 @@ const magnifierStrokeWidthInput = document.getElementById('magnifierStrokeWidth'
 const magnifierStrokeWidthValue = document.getElementById('magnifierStrokeWidthValue')
 const magnifierFactorButtons = Array.from(document.querySelectorAll('[data-magnifier-factor]'))
 const magnifierConnectorButtons = Array.from(document.querySelectorAll('[data-magnifier-connector]'))
+// N01 (review 2026-11-26 §5.1): the mosaic tool's smart-redaction panel. Every visible
+// string of this surface is written by capture.js (syncRedactCopy) from the runtime
+// `capture-redact.*` namespace, so the static markup carries no data-i18n marker and the
+// frozen pre-migration `capture.*` golden table stays untouched. `window.sensitivePatterns`
+// is read lazily on use (not at load time): older cached markup that loads this controller
+// without the module must not fail during boot.
+const redactPanel = document.getElementById('redactPanel')
+const redactTitleEl = document.getElementById('redactTitle')
+const redactScopeRow = document.getElementById('redactScopeRow')
+const redactRunButton = document.getElementById('redactRun')
+const redactStatusEl = document.getElementById('redactStatus')
+const redactScopeButtons = Array.from(document.querySelectorAll('[data-redact-scope]'))
+// The scan scope: the user's current region (default) or the whole captured image.
+let redactScope = 'selection'
+// A plain UI latch: disables the panel buttons and guards a double click while the local
+// OCR round-trip is in flight. It never touches the canvas or the annotation layer.
+let redactBusy = false
+// The last status written to the panel, so a language hot-switch can re-render it.
+let redactStatusState = null
+// The ids the CURRENT run created. The panel stays visible while one of them is selected,
+// which is what makes "click one box, press Delete" reachable right after the batch lands.
+let autoRedactIds = new Set()
 const regionStatus = document.getElementById('regionStatus')
 // B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
 // "do not keep this capture" switch. Its label/hint are written by this controller (like the
@@ -167,6 +189,10 @@ const {
 // the block above is pinned verbatim (and its item order, MAX_PEN_POINTS last) by the
 // geometry contract tests, so new names must not be inserted into it.
 const { STROKE_TYPES, hasStrokePoints, strokeWidth, strokeBox } = window.annotationGeometry
+// U01 (review 2026-11-26 §4.1): text layout (CJK-aware, multi-line) and the whole-selection drag
+// primitives. A second destructure on purpose - the block above is pinned verbatim by the
+// geometry contract tests, so new names must not be inserted into it.
+const { textLines, textLineHeight, textBoxSize, unionAnnotationBounds, translateAnnotationSetToStage } = window.annotationGeometry
 
 let initData = null
 let image = null
@@ -176,6 +202,10 @@ let image = null
 //   { sessionId, documentId, revisionId, version, legacy, storageFormat, degraded,
 //     document, crop, infoHeight, cleanFingerprint, dirty, saving, requestSeq }
 let documentEditor = null
+// U02 / DEV-01: a pin being re-annotated from an editable snapshot. Unlike a history
+// document this session does not commit anywhere: the pin button sends the new display
+// PNG plus a replacement snapshot back through the existing capture:pin channel.
+let pinEditable = null
 let selection = null
 let selecting = false
 let dragging = false
@@ -206,6 +236,13 @@ let marquee = null
 // accumulate drift and pointerup can tell "did it actually move". thresholdPassed
 // is A1's addition: a press below MOVE_THRESHOLD stays a plain click.
 let pendingMove = null
+// U01 (review 2026-11-26 §4.1): the floating <textarea> that replaced window.prompt() for text
+// annotations. `inlineTextEditor` is the lazily created controller from
+// capture/annotation-inline-editor.js; while an edit is running `inlineTextEdit` names the
+// annotation being re-edited and `inlineTextCreate` the pending new one (never both).
+let inlineTextEditor = null
+let inlineTextEdit = null
+let inlineTextCreate = null
 // P0-5 PR3：8 手柄缩放交互态，与 pendingMove 同构（origin/originBounds 也是**未被改动的**
 // 原对象与其屏幕 CSS 坐标 bbox，每帧从它重算，绝不就地改）。
 let resizingAnnotation = null
@@ -313,18 +350,22 @@ let historyWritable = true
 // the timer is per press and the flag suppresses the click the browser fires afterwards.
 let pinMenuPressTimer = 0
 let pinMenuPressOpened = false
-// Mosaic patch cache (§5.2). One offscreen canvas per committed stroke, keyed by a
-// fingerprint of every input the patch depends on - NOT by object identity: translate,
-// resize and style edits all return brand-new objects, so an identity cache would happily
-// keep a patch of the old position. WeakMap so a dropped annotation takes its patch with
-// it. Active strokes are never cached (they change every frame).
-// Reassignable rather than const because WeakMap has no clear(): invalidating means
-// dropping the whole map, which is exactly what a new capture / undo / stage resize wants.
-let mosaicPatchCache = new WeakMap()
-// Total bytes the cache may hold (§5.2): past this the strokes render uncached, which is
-// slower but always correct.
-const MOSAIC_PATCH_BUDGET = 16 * 1024 * 1024
-let mosaicPatchBytes = 0
+// Mosaic patch ledger (§5.2, H02). The cache used to be a WeakMap keyed by the annotation
+// OBJECT plus a `let mosaicPatchBytes` counter; translate/resize/style edits replace the
+// object every frame, so the WeakMap dropped the old key while the counter kept its bytes -
+// a dozen drag frames exhausted the 16 MiB budget for good. It is now an id-keyed bounded
+// LRU (capture/mosaic-patch-cache.js) with exact deduct-on-overwrite accounting. The
+// fingerprint stays what it always was and is still NOT by object identity: it covers every
+// input the patch depends on, because a new object under the SAME id may describe a moved or
+// restyled stroke and must rebuild its patch.
+const { createMosaicPatchCache, MOSAIC_PATCH_BUDGET } = window.mosaicPatchCache
+const mosaicPatchCache = createMosaicPatchCache({ budget: MOSAIC_PATCH_BUDGET })
+// The stroke being painted has no committed `id` yet (commitAnnotation assigns it). It gets a
+// session-unique NEGATIVE draft id instead: the cache can reuse its offscreen canvases while
+// the point set grows, the id can never collide with a committed `++annotationSeq` id, and
+// commitAnnotation() renames the ledger entry to the real id instead of allocating again.
+let activeMosaicPatchId = 0
+let mosaicDraftSeq = 0
 
 // P0-7-T5：主进程确认窗口已显示后播一次快门音，受 screenshot.shutterSound 控制。
 // play() 在 CSP 拦截 / 自动播放被拒时会 reject，这里必须吞掉，否则渲染层报未处理拒绝。
@@ -514,25 +555,34 @@ function drawBackground() {
   if (image) {
     if(nativeBackground){backgroundCtx.imageSmoothingEnabled=false;backgroundCtx.drawImage(image,0,0)}
     else if (documentEditor) {
-      // Batch 1: a document editor loads the WHOLE base image but the window only reserves an
-      // area for the CROP - so the shipped `drawImage(image, bounds)` would squash the entire
-      // screenshot into the crop box while annotations are mapped crop->box, i.e. a visibly
-      // wrong backdrop that also disagrees with the exported result. Draw the crop region of
-      // the base image into the image area instead, which is exactly the export mapping
-      // (contracts §2.1: outX = sourceX - crop.x, then scaled by the viewport).
-      const bounds=imageDisplayBounds()
-      const crop=documentCrop()
-      const view=documentViewport()
-      const zoom=view?view.zoom:1
-      backgroundCtx.imageSmoothingEnabled=zoom!==1
-      backgroundCtx.drawImage(
-        image,
-        crop.x, crop.y, crop.w, crop.h,
-        bounds.x, bounds.y, crop.w*zoom, crop.h*zoom
-      )
+      drawCropBackground()
+    }
+    else if (pinEditable) {
+      // U02 / DEV-01: a pin re-annotation session uses the exact same crop mapping as a
+      // document editor - its base image is already the crop, so the two paths agree.
+      drawCropBackground()
     }
     else{const bounds=imageDisplayBounds();backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)}
   }
+}
+
+// Batch 1: a document editor loads the WHOLE base image but the window only reserves an
+// area for the CROP - so the shipped `drawImage(image, bounds)` would squash the entire
+// screenshot into the crop box while annotations are mapped crop->box, i.e. a visibly
+// wrong backdrop that also disagrees with the exported result. Draw the crop region of
+// the base image into the image area instead, which is exactly the export mapping
+// (contracts §2.1: outX = sourceX - crop.x, then scaled by the viewport).
+function drawCropBackground() {
+  const bounds=imageDisplayBounds()
+  const crop=documentCrop()
+  const view=documentViewport()
+  const zoom=view?view.zoom:1
+  backgroundCtx.imageSmoothingEnabled=zoom!==1
+  backgroundCtx.drawImage(
+    image,
+    crop.x, crop.y, crop.w, crop.h,
+    bounds.x, bounds.y, crop.w*zoom, crop.h*zoom
+  )
 }
 
 function captureImageReady() {
@@ -681,12 +731,43 @@ function mosaicPatchKey(item, deviceScale) {
   return [item.width, deviceScale, box.x, box.y, box.w, box.h, points.length, first.x, first.y, last.x, last.y].join('|')
 }
 
+// H02: stable patch identity for the gesture being painted. Committed annotations are keyed
+// by their persisted id; the live gesture gets a NEGATIVE session-unique draft id so it is
+// cacheable from the first frame while its point set grows, and cannot collide with any
+// committed `++annotationSeq` id (those are always positive).
+function beginMosaicPatchIdentity() {
+  // A draft that was never settled (e.g. a press replaced the previous one without a
+  // pointerup) must not keep its stale entry accounted; drop its exact bytes first.
+  if (activeMosaicPatchId) mosaicPatchCache.delete(activeMosaicPatchId)
+  activeMosaicPatchId = -(++mosaicDraftSeq)
+  return activeMosaicPatchId
+}
+
+// Submission / cancellation of that draft identity. On commit the entry is RENAMED to the
+// committed id (one canvas pair per gesture, no second allocation); on cancel it is dropped
+// so an abandoned gesture releases its bytes immediately.
+function settleMosaicPatchIdentity(committedId) {
+  const draftId = activeMosaicPatchId
+  activeMosaicPatchId = 0
+  if (!draftId) return
+  if (committedId) mosaicPatchCache.rename(draftId, committedId)
+  else mosaicPatchCache.delete(draftId)
+}
+
+// The identity a mosaic patch is accounted under. This is the whole fix in one place: an
+// edit may replace the object (drag / nudge / resize / style all return fresh copies), but
+// the id is stable, so the cache entry is an overwrite that deducts the old bytes exactly.
+function mosaicPatchIdentity(item) {
+  if (!item) return null
+  if (item === activeAnnotation && activeMosaicPatchId) return activeMosaicPatchId
+  return typeof item.id === 'number' && item.id !== 0 ? item.id : null
+}
+
 // Drops every cached patch. Called from the invalidation points §5.2 lists (new capture,
 // undo/redo replacing the array, style/geometry writes, stage resize). The fingerprint
 // already covers content changes; this covers the canvases whose owner is gone.
 function invalidateMosaicPatches() {
-  mosaicPatchCache = new WeakMap()
-  mosaicPatchBytes = 0
+  mosaicPatchCache.clear()
 }
 // §3.2.2: the mosaic stroke = a pixelated layer of the *source image* masked by the
 // stroke's alpha. Three coordinate spaces meet here and must not be mixed (§5.6):
@@ -696,7 +777,7 @@ function invalidateMosaicPatches() {
 // `deviceScale` = device px per CSS px (devicePixelRatio on screen, the export factor on
 // export; see contextPixelScale). The final drawImage back onto the target stays in CSS
 // px, because the caller's context already carries the rest of the transform.
-function buildMosaicPatch(item, deviceScale, sourceImage) {
+function buildMosaicPatch(item, deviceScale, sourceImage, reusable) {
   const cell = MOSAIC_CELL * deviceScale
   const brush = blurBrushWidth(item.width) * deviceScale
   const pad = brush / 2 + 2
@@ -718,9 +799,15 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
   const sourceScaleX = (sourceImage.naturalWidth || 1) / Math.max(1, bounds.w)
   const sourceScaleY = (sourceImage.naturalHeight || 1) / Math.max(1, bounds.h)
 
-  const tiny = document.createElement('canvas')
-  tiny.width = tinyW; tiny.height = tinyH
+  // H02: a live stroke keeps its identity while its box grows, so the ledger hands the
+  // previous patch back via `reusable` and these canvases are resized and repainted in place
+  // instead of allocating a fresh pair per pointermove (what the pre-H02 code did).
+  const tiny = reusable && reusable.tiny ? reusable.tiny : document.createElement('canvas')
+  if (tiny.width !== tinyW || tiny.height !== tinyH) { tiny.width = tinyW; tiny.height = tinyH }
   const tinyCtx = tiny.getContext('2d')
+  // A reused canvas still holds the previous frame; clear it so a transparent source pixel
+  // cannot composite over last frame's ink (a fresh canvas is already empty).
+  tinyCtx.clearRect(0, 0, tinyW, tinyH)
   tinyCtx.imageSmoothingEnabled = true
   tinyCtx.drawImage(
     sourceImage,
@@ -728,9 +815,10 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
     0, 0, tinyW, tinyH
   )
 
-  const patch = document.createElement('canvas')
-  patch.width = devW; patch.height = devH
+  const patch = reusable && reusable.canvas ? reusable.canvas : document.createElement('canvas')
+  if (patch.width !== devW || patch.height !== devH) { patch.width = devW; patch.height = devH }
   const patchCtx = patch.getContext('2d')
+  patchCtx.clearRect(0, 0, devW, devH)
   patchCtx.imageSmoothingEnabled = false
   patchCtx.drawImage(tiny, 0, 0, tinyW, tinyH, 0, 0, devW, devH)
   patchCtx.imageSmoothingEnabled = true
@@ -744,28 +832,28 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
   )
   patchCtx.stroke()
   patchCtx.globalCompositeOperation = 'source-over'
-  return { canvas: patch, left, top, w: cssW, h: cssH }
+  return { canvas: patch, tiny, left, top, w: cssW, h: cssH }
 }
 
 function drawMosaicStroke(context, item, scaleX, scaleY, offsetX, offsetY, sourceImage) {
   const deviceScale = Math.max(scaleX, scaleY) * contextPixelScale(context)
-  const key = mosaicPatchKey(item, deviceScale)
-  const cached = mosaicPatchCache.get(item)
-  let patch = cached && cached.key === key ? cached.patch : null
+  const fingerprint = mosaicPatchKey(item, deviceScale)
+  // H02: identity instead of object reference. The fingerprint still decides whether the
+  // cached patch is up to date; the identity is what makes an edit an overwrite (with exact
+  // byte deduction) rather than an orphaned old WeakMap key.
+  const identity = mosaicPatchIdentity(item)
+  const cached = identity === null ? null : mosaicPatchCache.get(identity)
+  let patch = cached && cached.fingerprint === fingerprint ? cached.patch : null
   if (!patch) {
-    patch = buildMosaicPatch(item, deviceScale, sourceImage)
-    if (!patch) return
-    // Committed annotations (they carry an id) are cached; the stroke being drawn right now
-    // is deliberately rebuilt every frame (§5.2), so a live gesture never pays the
-    // fingerprint bookkeeping and never pins a stale canvas.
-    const bytes = patch.canvas.width * patch.canvas.height * 4
-    if (item.id && bytes <= MOSAIC_PATCH_BUDGET) {
-      if (cached) mosaicPatchBytes -= cached.patch.canvas.width * cached.patch.canvas.height * 4
-      if (mosaicPatchBytes + bytes <= MOSAIC_PATCH_BUDGET) {
-        mosaicPatchCache.set(item, { key, patch })
-        mosaicPatchBytes += bytes
-      }
+    patch = buildMosaicPatch(item, deviceScale, sourceImage, cached && cached.patch)
+    if (!patch) {
+      // A stroke that collapsed to nothing has no patch to keep; release the stale bytes.
+      if (identity !== null) mosaicPatchCache.delete(identity)
+      return
     }
+    // Committed strokes cache under their id; the gesture being painted caches under its
+    // draft id, so it pays the canvas allocation once and reuses it while the points grow.
+    if (identity !== null) mosaicPatchCache.put(identity, fingerprint, patch)
   }
   // Destination stays in the caller's units: transform by the same scale/offset the item's
   // own x/y got, so the patch lands exactly where the stroke is.
@@ -826,7 +914,14 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
     }
     context.stroke()
   }
-  if (item.type === 'text') { context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
+  if (item.type === 'text') {
+    const textSize = textFontSize(baseWidth,widthScale)
+    context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'
+    // U01: the inline editor can produce line breaks, so paint one fillText per line at the
+    // shared line height. A legacy single-line text is the same call the renderer always made.
+    const step = textLineHeight(textSize)
+    textLines(item.text).forEach((line, lineIndex) => { if (line) context.fillText(line, x, y + lineIndex * step) })
+  }
   if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   // Feature D3 (plan §7.1): the magnifier. It has NO flat x/y - its geometry is a nested source rect
@@ -1346,15 +1441,15 @@ function updateFloatingUi() {
   applyToolbarWidthLimit()
   updateElementBar()
   syncOutputStyleUi()
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   // B03: a pending per-output receipt owns the strip's space the same way an OCR result
   // does, so a selection drag cannot park the toolbar under the retry buttons.
-  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   toolbar.classList.remove('hidden')
   // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
   // fits, otherwise docked inside hugging the region's bottom - never clipped, and never
@@ -1364,6 +1459,7 @@ function updateFloatingUi() {
   syncWatermarkPanel()
   syncMagnifierPanel()
   syncRegionUi()
+  syncRedactPanel()
   syncSkipHistoryUi()
 }
 
@@ -1495,6 +1591,7 @@ function setTool(tool) {
   syncToolOptionsRow()
   syncWatermarkPanel()
   syncMagnifierPanel()
+  syncRedactPanel()
 }
 
 // A1/A4: one place paints the toolbar's width and colour controls, so the
@@ -1702,7 +1799,7 @@ function toggleColorSampling() {
 // maps through that viewport and then adds the crop origin: the bytes are still the frozen
 // image's bytes, never a re-capture and never a screen read.
 function colorSampleMapping() {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     const viewport = documentViewport()
     if (crop && viewport && viewport.zoom > 0) {
@@ -2039,6 +2136,8 @@ function setSelectedAnnotation(item) {
   // (style echo -> render) is byte-identical, and it is a pure UI visibility toggle: it never edits
   // an object, so it cannot reach the undo or commit paths.
   syncMagnifierPanel()
+  // N01: the redaction panel has the same "active tool OR current batch selected" gate.
+  syncRedactPanel()
 }
 
 // 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
@@ -2160,6 +2259,9 @@ function clearAnnotationsForNewSelection() {
   selectedIds = new Set()
   syncToolbarStyleFromSelection()
   snapshotAnnotations()
+  // H02: the cleared objects are gone, so their ledger entries must go with them (otherwise
+  // their bytes would sit in the budget until the LRU evicts them).
+  invalidateMosaicPatches()
 }
 
 // ---------- P0-5 PR2：元素拖动 + 方向键微调 ----------
@@ -2188,9 +2290,24 @@ function pointInAnnotationBounds(item, point) {
 // its own source rect switch halves mid-drag.
 function beginPendingMove(item, point, event, part = '') {
   if (!item) return
+  // U01: a multi-selection drag snapshots every selected origin + their union box (below).
   pendingMove = { id: item.id, origin: item, start: { x: point.x, y: point.y }, thresholdPassed: false, part }
+  pendingMove.group = part ? null : groupMoveSnapshot(item)
   try { canvas.setPointerCapture(event.pointerId) } catch {}
   render()
+}
+
+// U01 (review 2026-11-26 §4.1): the whole-selection move snapshot. Only a press on an item of a
+// MULTI selection starts a group drag, and only when no magnifier half was grabbed (a lens drag is
+// a single-object gesture by design). Returns null for every single-item move, so the shipped
+// single-element path is byte-for-byte unchanged.
+function groupMoveSnapshot(item) {
+  if (!item || !(selectedIds.size > 1) || !selectedIds.has(item.id)) return null
+  const origins = annotations.filter((entry) => selectedIds.has(entry.id))
+  if (origins.length < 2) return null
+  const bounds = unionAnnotationBounds(origins)
+  if (!bounds) return null
+  return { ids: origins.map((entry) => entry.id), origins, bounds }
 }
 
 // 拖动中：从 origin 重新平移 + clamp，把新副本放回数组；绝不就地改 state.origin。
@@ -2201,10 +2318,13 @@ function moveAnnotationTo(point) {
     if (!movedBeyondThreshold(state.start, point, MOVE_THRESHOLD)) return
     state.thresholdPassed = true
   }
-  const index = annotations.findIndex((item) => item.id === state.id)
-  if (index < 0) return
   const dx = point.x - state.start.x
   const dy = point.y - state.start.y
+  // U01: a whole-selection drag moves every selected item by one delta clamped against their
+  // union box, so the spacing between the items never changes (single-item clamp is unchanged).
+  if (state.group) { moveAnnotationGroupTo(state, dx, dy); return }
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index < 0) return
   const moved = clampAnnotationToStage(
     state.part ? moveMagnifierPart(state.origin, state.part, dx, dy) : translateAnnotation(state.origin, dx, dy),
     stageRect()
@@ -2213,6 +2333,36 @@ function moveAnnotationTo(point) {
   annotations[index] = moved
   selectedAnnotation = moved
   render()
+}
+
+// U01: translate every item of the dragging group. The effective delta comes from the union box
+// (annotation-geometry's clampSetTranslation) and each item is re-derived from its untouched
+// origin, so a drag never accumulates drift. Objects are replaced in place by id because the
+// array order IS the z-order, and pointerup pushes exactly one undo frame for the whole gesture.
+function moveAnnotationGroupTo(state, dx, dy) {
+  const group = state.group
+  if (!group) return
+  const moved = translateAnnotationSetToStage(group.origins, dx, dy, stageRect())
+  if (!moved) return
+  const byId = new Map(moved.items.map((entry) => [entry.id, entry]))
+  for (let index = 0; index < annotations.length; index += 1) {
+    const next = byId.get(annotations[index].id)
+    if (next) annotations[index] = next
+  }
+  if (selectedAnnotation) selectedAnnotation = byId.get(selectedAnnotation.id) || selectedAnnotation
+  render()
+}
+
+// U01: put every origin of an interrupted group drag back, by id. Cancel edits nothing, so this
+// must not push a frame and must not reorder the array.
+function restoreGroupOrigins(group) {
+  if (!group || !Array.isArray(group.origins)) return
+  const byId = new Map(group.origins.map((entry) => [entry.id, entry]))
+  for (let index = 0; index < annotations.length; index += 1) {
+    const origin = byId.get(annotations[index].id)
+    if (origin) annotations[index] = origin
+  }
+  if (selectedAnnotation) selectedAnnotation = byId.get(selectedAnnotation.id) || selectedAnnotation
 }
 
 // Feature D3: move ONE half of a magnifier. The shared module owns each translation, so a lens drag
@@ -2263,6 +2413,9 @@ function beginPenContinuation(item, point, event) {
     x: point.x, y: point.y, x2: point.x, y2: point.y,
     points: points.concat([{ x: point.x, y: point.y }])
   })
+  // H02: the continuation is the live gesture now, so it gets its own draft identity (the
+  // original object left annotations, so its id no longer names anything on screen).
+  beginMosaicPatchIdentity()
   try { canvas.setPointerCapture(event.pointerId) } catch {}
   render()
   return true
@@ -2301,6 +2454,8 @@ function cancelMoveAnnotation() {
     annotations[index] = state.origin
     if (selectedAnnotation && selectedAnnotation.id === state.id) selectedAnnotation = state.origin
   }
+  // U01: the other items of an interrupted group drag go back to their own origins too.
+  if (state.group) restoreGroupOrigins(state.group)
   render()
 }
 
@@ -2565,6 +2720,8 @@ function resetAnnotationState() {
   invalidateElementBarSize()
   // Brush plan (§5.2): patches belong to the previous capture's annotation objects.
   invalidateMosaicPatches()
+  // H02: a gesture that never settled belongs to the previous capture too.
+  activeMosaicPatchId = 0
   // Feature C: a new capture gets a new style session (fresh timeline + the persisted preset), so
   // the previous screenshot's card can never leak into this one's undo history.
   resetOutputStyleState()
@@ -2576,11 +2733,24 @@ function resetAnnotationState() {
   releaseLensSampler()
   if (magnifierPanel) magnifierPanel.classList.add('hidden')
   setMagnifierStatus('', null, false)
+  // N01: a new capture starts with the redaction panel closed and its transient state gone
+  // (the scope returns to the default). The panel's copy itself stays language-correct.
+  redactBusy = false
+  redactScope = 'selection'
+  autoRedactIds = new Set()
+  setRedactStatus('', null, false)
+  if (redactPanel) redactPanel.classList.add('hidden')
+  // U01: a text edit that was open when the window re-initialised belongs to the previous
+  // capture - clear the state first, then close the floating editor without running a callback.
+  inlineTextEdit = null
+  inlineTextCreate = null
+  inlineTextEditor?.cancel()
 }
 
 function commitAnnotation(item) {
   if (!item) return
   item.id = ++annotationSeq
+  settleMosaicPatchIdentity(item.id)
   annotations.push(item)
   activeAnnotation = null
   // B7: the gesture ended in a commit, so the continued original is superseded for good.
@@ -2588,6 +2758,160 @@ function commitAnnotation(item) {
   flushCoalescedEdits()
   snapshotAnnotations()
   render()
+}
+
+// ---------- U01 (review 2026-11-26 §4.1): the canvas-inline text editor ----------
+//
+// Text used to be collected with a blocking window.prompt(): no preview, one line only, and an
+// IME candidate list had nowhere to appear. capture/annotation-inline-editor.js owns the floating
+// <textarea> (styling, positioning, the Enter/Ctrl+Enter/Escape + IME key contract); this block
+// owns everything that touches annotations - the draft, the live echo, the single undo frame and
+// the cancel path. The editor is also the preview: it opens at the annotation's canvas
+// coordinates with the annotation's own font size/weight/colour and the shared line height, so
+// the text the user types is laid out exactly like the exported one.
+
+function inlineTextEditorController() {
+  if (inlineTextEditor) return inlineTextEditor
+  const api = window.annotationInlineEditor
+  if (!api) return null
+  inlineTextEditor = api.createInlineTextEditor({
+    document,
+    translate: (key, params) => t(key, params),
+    getViewport: () => ({ width: innerWidth, height: innerHeight }),
+    log: (...args) => console.warn(...args)
+  })
+  return inlineTextEditor
+}
+
+function inlineTextEditing() {
+  return inlineTextEdit !== null || inlineTextCreate !== null
+}
+
+// Settings shared by the create and the re-edit paths: font metrics, colour and the live input
+// echo. Both paths edit a normal text annotation, so every value comes from that object.
+function inlineTextEditorSettings(item, rect, handlers = {}) {
+  const size = textFontSize(item.width, 1)
+  return {
+    rect,
+    text: String(item.text ?? ''),
+    fontSize: size,
+    lineHeight: textLineHeight(size),
+    color: item.color,
+    bold: item.bold === true,
+    placeholder: t('capture.input.text'),
+    measureWidth: (value) => textBoxSize(value, size).w,
+    selectAll: handlers.selectAll === true,
+    onInput: handlers.onInput,
+    onCommit: handlers.onCommit,
+    onCancel: handlers.onCancel
+  }
+}
+
+// A press with the text tool opens the editor for a NEW annotation. Nothing is committed and no
+// undo frame is pushed until the text is confirmed; an empty editor (Enter on nothing, or Escape)
+// leaves the annotation stack untouched, exactly like the old prompt's null result.
+function beginInlineTextCreate(point, style) {
+  const editor = inlineTextEditorController()
+  if (!editor) return false
+  const draft = { type: 'text', x: point.x, y: point.y, text: '', ...style }
+  inlineTextCreate = { draft }
+  const opened = editor.open(inlineTextEditorSettings(draft, { x: point.x, y: point.y }, {
+    onInput: (value) => { if (inlineTextCreate) inlineTextCreate.draft.text = value },
+    onCommit: (value) => finishInlineTextCreate(value),
+    onCancel: () => cancelInlineTextCreate()
+  }))
+  if (!opened) { inlineTextCreate = null; return false }
+  return true
+}
+
+function finishInlineTextCreate(value) {
+  const state = inlineTextCreate
+  inlineTextCreate = null
+  if (!state) return
+  const text = String(value ?? '')
+  // Empty text commits nothing: dismissing a new text annotation must not push an invisible,
+  // empty undo frame (the old prompt behaved the same way).
+  if (!text.trim()) { render(); return }
+  commitAnnotation({ ...state.draft, text })
+}
+
+function cancelInlineTextCreate() {
+  inlineTextCreate = null
+  render()
+}
+
+// Double-click on an existing text annotation re-opens the same editor with its text. The item
+// leaves the annotation list for the duration of the edit (the editor is the preview, so no stale
+// copy is painted underneath it) and goes back - edited or untouched - afterwards.
+function beginInlineTextEdit(item) {
+  if (!item || item.type !== 'text' || !selection) return false
+  const editor = inlineTextEditorController()
+  if (!editor) return false
+  const index = annotations.indexOf(item)
+  if (index < 0) return false
+  inlineTextEdit = { index, item, selection: new Set(selectedIds) }
+  annotations.splice(index, 1)
+  syncSelectedAnnotation()
+  render()
+  const opened = editor.open(inlineTextEditorSettings(item, { x: item.x, y: item.y }, {
+    selectAll: true,
+    onCommit: (value) => finishInlineTextEdit(value),
+    onCancel: () => cancelInlineTextEdit()
+  }))
+  if (!opened) {
+    reattachInlineTextItem(inlineTextEdit)
+    inlineTextEdit = null
+    render()
+    return false
+  }
+  return true
+}
+
+// Put the re-edited item back into its original z-order slot and restore the multi-selection it
+// was part of. `nextItem` is the edited copy; omitting it restores the untouched original (cancel).
+function reattachInlineTextItem(state, nextItem = null) {
+  if (!state) return null
+  const restored = nextItem || state.item
+  const index = Math.max(0, Math.min(state.index, annotations.length))
+  annotations.splice(index, 0, restored)
+  selectedIds = revalidateSelection(annotations, state.selection)
+  selectedAnnotation = selectedIds.size
+    ? annotations.filter((entry) => selectedIds.has(entry.id)).pop() || null
+    : null
+  syncToolbarStyleFromSelection()
+  return restored
+}
+
+function finishInlineTextEdit(value) {
+  const state = inlineTextEdit
+  inlineTextEdit = null
+  if (!state) return
+  const text = String(value ?? '')
+  // Empty text cancels the edit instead of deleting the annotation: a stray Enter must never
+  // destroy the user's label.
+  if (!text.trim()) { reattachInlineTextItem(state); render(); return }
+  flushCoalescedEdits()
+  reattachInlineTextItem(state, { ...state.item, text })
+  snapshotAnnotations()
+  render()
+}
+
+function cancelInlineTextEdit() {
+  const state = inlineTextEdit
+  inlineTextEdit = null
+  if (!state) return
+  reattachInlineTextItem(state)
+  render()
+}
+
+// The canvas press (or any other exit path) asks the editor to confirm. The editor's own close
+// callback performs the actual finish, so this stays a one-line coordinator.
+function commitInlineTextEdit() {
+  const editor = inlineTextEditorController()
+  if (editor && editor.isOpen()) { editor.commit(); return true }
+  inlineTextEdit = null
+  inlineTextCreate = null
+  return false
 }
 
 function clampSettingNumber(value, fallback, min, max) {
@@ -2717,6 +3041,226 @@ function chooseMagnifierConnector(connector) {
   else { syncMagnifierPanel(); setMagnifierStatus('', null, false) }
 }
 
+// ---------- N01 (review 2026-11-26 §5.1): smart privacy redaction ----------
+//
+// The mosaic tool's secondary panel. A click asks the EXISTING local OCR channel
+// (`window.captureAPI.ocr` -> main/services/ocr-service.js, a local sidecar) for the text
+// blocks of the current selection (or the whole captured image), matches each block's text
+// against shared/sensitive-patterns.js IN MEMORY, and turns every hit into an ordinary
+// `{ type: 'blur' }` annotation. Those are the shipped rectangle-mosaic objects, so:
+//   * the existing occlusion mask keeps protecting them (shared/occlusion-mask.js, R0.4);
+//   * Ctrl+Z removes the whole batch in ONE frame (one snapshotAnnotations call);
+//   * the shipped select tool can click one box and Delete it individually.
+//
+// Privacy contract (non-negotiable):
+//   * the image goes to the local OCR sidecar, never to a network service;
+//   * OCR text stays in this function's local variables: only counts and locale-backed
+//     rule labels are written to the DOM, and nothing is persisted or logged;
+//   * this path never calls recordHistory, a settings save or any history IPC.
+
+function sensitiveApi() {
+  return window.sensitivePatterns || null
+}
+
+// The panel's status line. The state is kept so a language hot-switch can re-render the
+// same message without re-running OCR.
+function setRedactStatus(key, params, isError) {
+  redactStatusState = key ? { key, params: params || null, isError: isError === true } : null
+  if (!redactStatusEl) return
+  redactStatusEl.textContent = key ? t(key, params) : ''
+  redactStatusEl.classList.toggle('hidden', !key)
+  redactStatusEl.classList.toggle('error', isError === true)
+}
+
+// Runtime copy pass (boot + i18n:language broadcast). The `capture-redact.*` namespace is
+// registered in shared/locales/capture.js for all three languages; the same file's
+// `capture.*` table is a frozen golden set, which is why this panel does not use it.
+function syncRedactCopy() {
+  if (redactPanel) {
+    const title = t('capture-redact.title')
+    redactPanel.setAttribute('aria-label', title)
+    if (redactTitleEl) redactTitleEl.textContent = title
+    if (redactScopeRow) redactScopeRow.setAttribute('aria-label', t('capture-redact.scope'))
+    if (redactRunButton) {
+      redactRunButton.textContent = t('capture-redact.run')
+      redactRunButton.title = t('capture-redact.run-tip')
+    }
+  }
+  for (const button of redactScopeButtons) {
+    button.textContent = button.dataset.redactScope === 'image'
+      ? t('capture-redact.scope-image')
+      : t('capture-redact.scope-selection')
+  }
+  if (redactStatusState) setRedactStatus(redactStatusState.key, redactStatusState.params, redactStatusState.isError)
+}
+
+// Visible while the mosaic tool is active, and while a box the current run created stays
+// selected (so the result/error message remains readable after the tool switch below).
+// Hidden by every transient state that already owns the stage (OCR result, processing,
+// region gestures, auto selection) exactly like the watermark/magnifier panels.
+function redactPanelVisible() {
+  if (!redactPanel || !selection) return false
+  if (toolbar.classList.contains('hidden') || activeOcrResult || processingAction) return false
+  if (selectState === 'auto' || selecting || dragging || resizing) return false
+  if (currentTool === 'blur') return true
+  const selected = selectedAnnotations()
+  return selected.length > 0 && selected.every((item) => autoRedactIds.has(item.id))
+}
+
+function syncRedactPanel() {
+  if (!redactPanel) return
+  const visible = redactPanelVisible()
+  redactPanel.classList.toggle('hidden', !visible)
+  if (!visible) return
+  // The controls are the mosaic tool's action. After a run the panel stays up as a result
+  // receipt, but re-running from the select tool would stack a second identical batch on
+  // top of the first one - so the action is only available while the mosaic tool is active.
+  const runnable = currentTool === 'blur'
+  for (const button of redactScopeButtons) {
+    const active = button.dataset.redactScope === redactScope
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+    button.disabled = redactBusy || !runnable
+  }
+  if (redactRunButton) redactRunButton.disabled = redactBusy || !runnable
+  // Same placement family as the watermark/magnifier panels: under the strip, above it
+  // when the strip is docked low, clamped into the viewport instead of being clipped.
+  const barRect = toolbar.getBoundingClientRect()
+  const panelRect = redactPanel.getBoundingClientRect()
+  const left = Math.max(6, Math.min(barRect.left, innerWidth - panelRect.width - 6))
+  let top = barRect.bottom + 6
+  if (top + panelRect.height > innerHeight - 6) top = Math.max(6, barRect.top - panelRect.height - 6)
+  redactPanel.style.left = `${Math.round(left)}px`
+  redactPanel.style.top = `${Math.round(top)}px`
+}
+
+function chooseRedactScope(scope) {
+  if (redactBusy) return
+  redactScope = scope === 'image' ? 'image' : 'selection'
+  // The previous outcome describes a different scan; a scope change clears it.
+  setRedactStatus('', null, false)
+  syncRedactPanel()
+}
+
+// The rectangle handed to the OCR export. "Selection" is the region the user is
+// capturing (projected into the captured image for the all-displays Ctrl+A case);
+// "image" is the whole captured image as displayed.
+function redactScopeRect() {
+  if (!selection) return null
+  const rect = redactScope === 'image' ? imageDisplayBounds() : exportSelectionRect()
+  if (!rect) return null
+  const x = Number(rect.x)
+  const y = Number(rect.y)
+  const w = Number(rect.w)
+  const h = Number(rect.h)
+  if (![x, y, w, h].every((value) => Number.isFinite(value))) return null
+  if (!(w > 1) || !(h > 1)) return null
+  return { x, y, w, h }
+}
+
+// The matched rule labels, in rule order, for the "done" message. `labelKeys` come from
+// the rule library and are resolved through the same locale table as the panel copy.
+function redactionKindSummary(boxes) {
+  const labelKeys = []
+  for (const box of boxes) {
+    for (const key of box.labelKeys || []) {
+      if (!labelKeys.includes(key)) labelKeys.push(key)
+    }
+  }
+  return labelKeys.map((key) => t(key)).filter(Boolean).join(t('capture-redact.kind-separator'))
+}
+
+// Append every box as one rectangle mosaic and push exactly ONE undo frame. The batch is
+// then handed to the select tool and selected, so a user can click a single box and press
+// Delete (the shipped per-item delete path) without a second tool guess.
+function applyRedactionBoxes(boxes) {
+  if (!Array.isArray(boxes) || !boxes.length) return 0
+  const style = annotationStyle()
+  flushCoalescedEdits()
+  const created = boxes.map((box) => ({
+    id: ++annotationSeq,
+    type: 'blur',
+    color: style.color,
+    width: style.width,
+    x: box.x,
+    y: box.y,
+    x2: box.x + box.w,
+    y2: box.y + box.h
+  }))
+  annotations.push(...created)
+  autoRedactIds = new Set(created.map((item) => item.id))
+  snapshotAnnotations()
+  setTool('select')
+  selectedIds = new Set(created.map((item) => item.id))
+  selectedAnnotation = created[created.length - 1] || null
+  syncToolbarStyleFromSelection()
+  render()
+  syncRedactPanel()
+  return created.length
+}
+
+async function runAutoRedact() {
+  if (redactBusy || processingAction || recognitionHandoff) return
+  const api = sensitiveApi()
+  if (!api || typeof api.buildRedactionBoxes !== 'function') {
+    setRedactStatus('capture-redact.ocr-unavailable', null, true)
+    syncRedactPanel()
+    return
+  }
+  if (initData?.settings?.plugins && initData.settings.plugins.ocr === false) {
+    setRedactStatus('capture-redact.ocr-unavailable', null, true)
+    syncRedactPanel()
+    return
+  }
+  const rect = redactScopeRect()
+  if (!rect) {
+    setRedactStatus('capture-redact.no-selection', null, true)
+    syncRedactPanel()
+    return
+  }
+  redactBusy = true
+  setRedactStatus('capture-redact.progress', null, false)
+  syncRedactPanel()
+  try {
+    // Exactly the recognition canvas OCR/translate use: base pixels plus the opaque
+    // occlusion mask over every mosaic already in the document. `null` means the mask
+    // could not be built, and then NOTHING is sent anywhere and the canvas is untouched.
+    const output = exportSelectionCanvasForAction(false, rect, { compose: false, mask: true })
+    if (!output) {
+      setRedactStatus('capture-redact.mask-unavailable', null, true)
+      return
+    }
+    const imageBuffer = await canvasPngBuffer(output)
+    // The existing local OCR channel; `scaleFactor` is the same option the OCR action sends.
+    const result = await window.captureAPI.ocr(imageBuffer, { scaleFactor: Number(initData?.scaleFactor) || 1 })
+    // `result` and every block's text stay in this scope. Only the count and the matched
+    // rule labels reach the DOM; the recognized text is never stored anywhere.
+    const blocks = Array.isArray(result?.textBlocks) ? result.textBlocks : []
+    const boxes = api.buildRedactionBoxes({
+      blocks,
+      imageWidth: Number(result?.imageWidth) || output.width,
+      imageHeight: Number(result?.imageHeight) || output.height,
+      rect,
+      padding: api.DEFAULT_BOX_PADDING
+    })
+    if (!boxes.length) {
+      // Explicit "nothing found": no annotation is added and no undo frame is pushed, so
+      // the canvas is exactly what the user had before the click.
+      setRedactStatus('capture-redact.no-hit', { count: blocks.length }, false)
+      return
+    }
+    const count = applyRedactionBoxes(boxes)
+    setRedactStatus('capture-redact.done', { count, kinds: redactionKindSummary(boxes) }, false)
+  } catch (error) {
+    // A disabled OCR sidecar / sidecar failure lands here. Nothing was added to the canvas.
+    setRedactStatus('capture-redact.error', { reason: String(error?.message || error || '') }, true)
+  } finally {
+    redactBusy = false
+    syncRedactPanel()
+    render()
+  }
+}
+
 function finishSelection() {  // A tool strip that just moved must not leave the image-to-document popover floating
   // over the new region (it is positioned from the old toolbar rect).
   closeConvertDocMenu()
@@ -2836,7 +3380,7 @@ function quickSelectAnnotation(event, point) {
 function magnifierPartAt(item, point) {
   const api = magnifierApi()
   if (!api || item?.type !== 'magnifier') return ''
-  const zoom = documentEditor && documentViewport() ? documentViewport().zoom : 1
+  const zoom = (documentEditor || pinEditable) && documentViewport() ? documentViewport().zoom : 1
   // The tolerance is a viewport-CSS constant, so it has to be divided by the zoom before it means
   // anything in the annotation's own space.
   const part = api.hitTestMagnifier(item, point, FRAME_HIT_TOLERANCE / Math.max(1e-6, zoom))
@@ -2850,6 +3394,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   if(colorSampling){updateColorSample(pointFromEvent(event));return;}
   if (!resultPanel.classList.contains('hidden')) return
   if(activeOcrResult){clearOcrResult();return}
+  // U01: while the floating text editor is open a canvas press commits it and is consumed -
+  // the same click must not also select, move or draw something behind the editor.
+  if(inlineTextEditing()){commitInlineTextEdit();return}
   const point=pointFromEvent(event); startPoint=point
   // PR2 防御：上一次元素拖动若没等到 pointerup（被模态框/系统手势吞掉），新一次按下先把它
   // 收口，避免两个手势叠在同一个 pendingMove 上（选区拖动有同款自愈，见 pointermove）。
@@ -2920,7 +3467,7 @@ canvas.addEventListener('pointerdown',(event)=>{
   if (currentTool==='watermark') return
   if (!insideSelection(point)) return
   const style=annotationStyle()
-  if (currentTool==='text') { const text=prompt(t('capture.input.text')); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
+  if (currentTool==='text') { beginInlineTextCreate(point, style); return }
   if (currentTool==='serial') { commitAnnotation({type:'serial',x:point.x,y:point.y,number:serialNumber++,...style}); return }
   // Feature D3 (§7.1): the magnifier gesture is "drag the source area first". The lens is positioned
   // by createFromSourceRect() at pointerup - once, from the final rect - so it cannot jitter around
@@ -2933,6 +3480,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   }
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
   if (STROKE_TOOL_SET.has(currentTool)) activeAnnotation.points=[{x:point.x,y:point.y}]
+  // H02: the stroke exists before its first frame is painted, so it can cache its patch under
+  // a stable identity from the first frame (commit renames it to the committed id).
+  beginMosaicPatchIdentity()
 })
 
 // Feature D3 (plan §7.1): the magnifier gesture.
@@ -2966,7 +3516,7 @@ function buildMagnifierDraft(point) {
 // the document crop; in a plain capture window it is the selection's pixel rect expressed in the
 // window's own CSS space (which is what the annotations live in).
 function magnifierCropForLens() {
-  if (documentEditor) return documentCrop()
+  if (documentEditor || pinEditable) return documentCrop()
   if (!selection) return null
   return { x: selection.x, y: selection.y, w: selection.w, h: selection.h }
 }
@@ -3120,6 +3670,8 @@ canvas.addEventListener('pointercancel',()=>{
   // settled - the gesture produced no object and therefore no frame.
   magnifierBuild=null
   magnifierDrag=null
+  // H02: the canceled gesture's draft patch leaves the budget now (it will never be committed).
+  settleMosaicPatchIdentity(0)
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })
@@ -3148,7 +3700,11 @@ canvas.addEventListener('wheel',(event)=>{
   render()
 },{passive:false})
 
-canvas.addEventListener('dblclick',()=>{ if(colorSampling)return; if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
+canvas.addEventListener('dblclick',(event)=>{ if(colorSampling)return;
+  // U01: double-click on a text annotation re-opens the inline editor for it. Every other hit
+  // falls through to the shipped double-click-copy, so that preference keeps its meaning.
+  if(currentTool==='select'&&!inlineTextEditing()&&beginInlineTextEdit(findAnnotationAt(annotations,pointFromEvent(event))))return
+  if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
 // §3.2②: the pixel consumers (copy/save/pdf/ocr) all read ONE captured image, which
 // still covers only the current display. A level-2 Ctrl+A selection reaches past it by
@@ -3238,7 +3794,7 @@ function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelecti
 // (100,80) shifted the whole mask by (-100,-80) and the user's mosaic stayed readable.
 // The correct crop origin for this canvas is (0,0) at the full base size.
 function annotationsForMask(rect) {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     // Whole-base canvas: origin 0,0, sized to the base image (not the crop).
     const base = documentBaseSize()
     return {
@@ -3543,7 +4099,7 @@ function ensureSampleBase() {
 // right because `transformOccluder` scales the already-quantised occluder. So: quantise first, scale
 // after, exactly like the painter.
 function annotationsForSampling() {
-  if (documentEditor) return annotationsToDocument()
+  if (documentEditor || pinEditable) return annotationsToDocument()
   const rect = selection ? exportSelectionRect() : null
   if (!rect || !image) return []
   const bounds = imageDisplayBounds()
@@ -3586,9 +4142,9 @@ function annotationsForSampling() {
 function buildOccludersForSampling() {
   const mask = window.occlusionMask
   if (!mask) return []
-  const rect = documentEditor ? null : (selection ? exportSelectionRect() : null)
+  const rect = documentEditor || pinEditable ? null : (selection ? exportSelectionRect() : null)
   const widthScale = (() => {
-    if (documentEditor || !rect || !image) return 1
+    if (documentEditor || pinEditable || !rect || !image) return 1
     const bounds = imageDisplayBounds()
     const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
     return Math.max(source.width / Math.max(1, rect.w), source.height / Math.max(1, rect.h))
@@ -3614,7 +4170,7 @@ function magnifierLensCanvas(item) {
   if (!sampler) return null
   const projected = magnifierInSourceSpace(item)
   if (!projected) return null
-  const crop = documentEditor ? documentCrop() : { x: 0, y: 0, w: image?.naturalWidth || 1, h: image?.naturalHeight || 1 }
+  const crop = documentEditor || pinEditable ? documentCrop() : { x: 0, y: 0, w: image?.naturalWidth || 1, h: image?.naturalHeight || 1 }
   try {
     return sampler.sample({
       baseImageId: `${image?.naturalWidth || 0}x${image?.naturalHeight || 0}`,
@@ -3651,7 +4207,7 @@ function magnifierInSourceSpace(item) {
   const api = magnifierApi()
   if (!api || !item) return null
   const magnifier = api.normalizeMagnifier(item)
-  if (documentEditor) return magnifierFromViewportSpace(magnifier)
+  if (documentEditor || pinEditable) return magnifierFromViewportSpace(magnifier)
   if (!selection || !image) return null
   const rect = exportSelectionRect()
   const bounds = imageDisplayBounds()
@@ -3774,7 +4330,7 @@ function syncOutputStyleUi() {
 // its crop; a plain capture window works on the selection's pixel rect (the same rect the export
 // uses), so the size hint and the real result agree.
 function outputContentSize() {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     return { width: Math.max(1, Math.round(crop.w)), height: Math.max(1, Math.round(crop.h)) }
   }
@@ -3858,7 +4414,7 @@ function previewContentCanvas(size) {
   if (!ctx) return null
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
   ctx.imageSmoothingEnabled = true
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, size.width, size.height)
     const scaleX = size.width / Math.max(1, crop.w)
@@ -3965,7 +4521,7 @@ function documentBaseSize() {
 }
 
 function documentCrop() {
-  const crop = documentEditor?.crop
+  const crop = pinEditable?.crop || documentEditor?.crop
   if (crop && Number(crop.w) > 0 && Number(crop.h) > 0) return crop
   const size = documentBaseSize()
   return { x: 0, y: 0, w: size.width, h: size.height }
@@ -4138,6 +4694,131 @@ function restoreDocumentEditor(payload) {
   renderDocumentInfo()
   render()
 }
+
+// U02 / DEV-01 (plan 2026-11-28): the pin re-annotation snapshot.
+//
+// A pinned picture may carry an optional, non-destructive editable snapshot: the base
+// pixels of the crop (unannotated, uncomposed), the annotations in SOURCE pixels, the
+// crop/compositing parameters (shared/capture-document.js document shape) and the
+// capture scale factor. The receiver (main/domains/pin) keeps it in memory only, so it
+// is never serialised into workspace snapshots, recovery tickets or history.
+//
+// The transport field is `meta.pinEditable` on the EXISTING capture:pin / capture:pin-
+// reannotate payloads: no new IPC channel. The main process strips it before any
+// history write and validates it again at the domain boundary.
+const PIN_EDITABLE_SNAPSHOT_SCHEMA = 1
+const PIN_EDITABLE_MAX_ANNOTATIONS = 2000
+// Matches the main-process budget: one snapshot may not exceed this many PNG bytes. A
+// larger base simply degrades that pin to today's flat-bitmap re-annotation.
+const PIN_EDITABLE_MAX_BASE_BYTES = 16 * 1024 * 1024
+
+function pinEditableActive() { return !!pinEditable }
+
+// Restore a pin snapshot into this editor session. The vector list is projected from
+// source pixels into viewport CSS with the same shared transform the history editor
+// uses; the base bitmap is the image the window was opened with, so no crop gesture and
+// no second file reference exist here.
+function restorePinEditable(payload) {
+  const api = documentApi()
+  if (!payload || !api) return
+  const crop = api.normalizeCrop(payload.crop || payload.document?.crop, {
+    width: image?.naturalWidth || 1,
+    height: image?.naturalHeight || 1
+  })
+  pinEditable = {
+    schema: Math.max(1, Number(payload.schema) || PIN_EDITABLE_SNAPSHOT_SCHEMA),
+    crop,
+    document: payload.document || null,
+    sourceScaleFactor: Number(payload.sourceScaleFactor) || Number(initData?.scaleFactor) || 1
+  }
+  const sourceAnnotations = pinEditable.document?.annotations || []
+  annotations = annotationsFromDocument(sourceAnnotations)
+  annotationSeq = 0
+  for (const item of annotations) item.id = ++annotationSeq
+  selectedAnnotation = null
+  selectedIds = new Set()
+  // One initial frame: Ctrl+Z right after opening is a no-op, exactly like the document
+  // editor. A pin re-edit replaces the whole session instead of stacking undo history.
+  annotationHistory = [cloneAnnotations(annotations)]
+  historyIndex = 0
+  invalidateMosaicPatches()
+  // A reopened pin shows the frame it was saved with (the output style is the session's
+  // content, not a persisted preset preference).
+  restoreOutputStyleForDocument({ document: pinEditable.document })
+  clipRestoredMagnifiers()
+  adoptMagnifierDefaultsFromDocument()
+  syncMagnifierPanel()
+  render()
+}
+
+// Build the snapshot for a pin output, or null when this session cannot provide one
+// (old flat pins, clipboard images, history documents, private/redacted captures, an
+// over-budget base or an invalid document). The caller then keeps today's behaviour.
+async function buildPinEditableSnapshot() {
+  const api = documentApi()
+  if (!api || !image || documentEditor) return null
+  // "Do not keep this capture" is a privacy promise: no editable base leaves the
+  // renderer for it, not even in memory.
+  if (skipHistoryThisCapture) return null
+  // An old flat pin (no snapshot on the pin) stays flat forever: re-annotating it adds
+  // vector objects on top of the flattened bitmap, exactly as before DEV-01.
+  if (initData?.editPin && !pinEditable) return null
+  const rect = exportSelectionRect()
+  if (!selection || !rect) return null
+  // A NEW capture that already contains a redaction keeps the flat path: holding the
+  // unredacted crop would defeat the pixel-level purpose of the switch. A re-annotation
+  // session that adds a blur may keep its snapshot (it is the user's own base pixels and
+  // is still never serialised).
+  if (!pinEditable && hasOccludableBlur(rect)) return null
+  // Base pixels: the crop WITHOUT annotations, composition or the drawn cursor.
+  const baseCanvas = exportSelectionCanvas(false)
+  if (!baseCanvas || !(baseCanvas.width > 0) || !(baseCanvas.height > 0)) return null
+  let sourceAnnotations
+  if (pinEditable) {
+    sourceAnnotations = annotationsToDocument()
+  } else {
+    const bounds = imageDisplayBounds()
+    const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+    if (!source || !(source.width > 0) || !(source.height > 0)) return null
+    sourceAnnotations = api.annotationsFromExportView(annotations, {
+      offsetX: rect.x,
+      offsetY: rect.y,
+      scaleX: source.width / Math.max(1, rect.w),
+      scaleY: source.height / Math.max(1, rect.h)
+    })
+  }
+  if (!Array.isArray(sourceAnnotations) || sourceAnnotations.length > PIN_EDITABLE_MAX_ANNOTATIONS) return null
+  const document = api.createPinEditableDocument({
+    width: baseCanvas.width,
+    height: baseCanvas.height,
+    annotations: sourceAnnotations,
+    outputStyle: currentOutputStyle(),
+    sourceScaleFactor: Number(initData?.scaleFactor) || 1
+  })
+  const validation = api.validateDocument(document)
+  if (!validation.ok) return null
+  const png = await canvasPngBuffer(baseCanvas)
+  if (!png || !png.byteLength || png.byteLength > PIN_EDITABLE_MAX_BASE_BYTES) return null
+  return {
+    schema: PIN_EDITABLE_SNAPSHOT_SCHEMA,
+    document,
+    baseImagePng: png
+  }
+}
+// U02 / DEV-01: which confirmation REPLACES the original pin's image and therefore must
+// carry the editable snapshot? The two pin buttons do; in a pin RE-ANNOTATION session the
+// `copy` action (Enter, the copy button, double-click-copy when enabled) is routed to
+// captureAPI.pin and commits back to the SAME pin window, so it replaces that pin's image
+// as well. A normal copy is clipboard-only and never touches a pin. Keeping this decision
+// in ONE predicate is what stops a confirm entry from silently flattening the vectors: the
+// main process releases the old snapshot whenever it replaces the display image, so a
+// `copy` commit without a fresh snapshot leaves a flat bitmap whose old rectangle can no
+// longer be selected/moved/deleted (P1-03).
+function pinConfirmReplacesPin(action) {
+  if (action === 'pin' || action === 'pin-copy') return true
+  return action === 'copy' && !!initData?.editPin
+}
+
 
 // Feature D3 (plan §7.1): drop (or shrink) magnifiers whose source rect left the crop. Runs inside
 // the load frame, so the result is what "opened" means - the undo stack starts from it.
@@ -4415,6 +5096,9 @@ function setProcessingState(action) {
     loading.style.top=`${Math.max(8,top)}px`
   }else if(!active&&selection&&initData)updateFloatingUi()
   syncWatermarkPanel()
+  // N01: both entering and leaving a processing state re-evaluates the redaction panel
+  // (it must never sit over an OCR/translate result or a loading surface).
+  syncRedactPanel()
 }
 
 function renderActiveOcrOverlay() {
@@ -4526,6 +5210,15 @@ async function performAction(action) {
     const imageBuffer=await canvasPngBuffer(output)
     // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
     Object.assign(meta,serialMeta())
+    // U02 / DEV-01: the optional non-destructive snapshot rides the EXISTING pin payload
+    // (meta.pinEditable), so no new IPC channel exists. It is built from the same frozen
+    // session state as the exported PNG and never from a second read of the screen.
+    // EVERY confirm entry that replaces the original pin's image uses this one path -
+    // including `copy` inside a pin re-annotation session (see pinConfirmReplacesPin).
+    if(pinConfirmReplacesPin(action)){
+      const pinEditableSnapshot=await buildPinEditableSnapshot()
+      if(pinEditableSnapshot)meta.pinEditable=pinEditableSnapshot
+    }
     if(action==='copy'){
       if(initData.editPin){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
       else{
@@ -4548,7 +5241,14 @@ async function performAction(action) {
       pdfExporting=true
       const exportButton=document.getElementById('exportPdf')
       if(exportButton)exportButton.disabled=true
-      try{await window.captureAPI.exportPdf(imageBuffer,meta,'a4')}
+      // U01 (review 2026-11-26 §4.1): main answers with the export receipt
+      // `{ status:'saved', resultId, fileName, kind }`, or null when the save dialog was
+      // cancelled. The branch used to drop that value, so a finished PDF never showed the
+      // result bar (`exportResultBar` + `showExportResult` already existed). A failure is
+      // reported here instead of falling through to the generic action catch, so the message
+      // names the export that failed and the button is re-enabled first.
+      try{await window.captureAPI.exportPdf(imageBuffer,meta,'a4').then(showExportResult)}
+      catch(error){showExportFailure(error);return}
       finally{pdfExporting=false;if(exportButton)exportButton.disabled=false}
       return
     }
@@ -4599,6 +5299,11 @@ function showResult(type,result) {
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
+// N01: the smart-redaction panel's one-shot button and its scope toggle. Both are
+// floating-surface controls, so two listeners are the whole wiring; the button stays
+// disabled while a scan is in flight (see syncRedactPanel).
+if (redactRunButton) redactRunButton.addEventListener('click', () => { runAutoRedact() })
+for (const button of redactScopeButtons) button.addEventListener('click', () => chooseRedactScope(button.dataset.redactScope))
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
 // B2/B3/B5: one delegated listener for every option group (the key/value pair lives in
 // data attributes, so a new group needs no new wiring).
@@ -4876,11 +5581,20 @@ window.captureAPI.onInit((data)=>{
   // Batch 1: this window may be editing an existing document (history "continue editing").
   // Restore it only after the image is decoded, because the viewport needs naturalWidth.
   if(data.documentEditor){
+    // A new capture session never inherits the previous session's pin snapshot state.
+    pinEditable=null
     const editorPayload=data.documentEditor
     const previousOnload=image.onload
     image.onload=(event)=>{previousOnload?previousOnload(event):null;restoreDocumentEditor(editorPayload)}
+  } else if(data.pinEditable){
+    // U02 / DEV-01: a pin re-annotation session. The vector list is restored only after
+    // the base image decoded (the viewport needs naturalWidth/naturalHeight).
+    const pinPayload=data.pinEditable
+    const previousOnload=image.onload
+    image.onload=(event)=>{previousOnload?previousOnload(event):null;restorePinEditable(pinPayload)}
   } else {
     documentEditor=null
+    pinEditable=null
     renderDocumentInfo()
   }
 })
@@ -4907,6 +5621,14 @@ const exportResultBar = window.exportResultBar
 function showExportResult(result) {
   if (!exportResultBar) return
   if (result && typeof result === 'object' && result.status === 'saved') exportResultBar.show(result)
+}
+
+// U01: a failed export keeps the file situation honest - nothing was written, so no bar is
+// shown; the error is surfaced with the same alert every other capture action uses. The main
+// process error already carries the actionable reason (empty payload, dialog failure, ...).
+function showExportFailure(error) {
+  console.warn('Export failed:', error?.message || error)
+  alert(error?.message || String(error))
 }
 
 addEventListener('resize',resizeCanvas)
@@ -5260,6 +5982,8 @@ applyTranslations()
 syncPinOutputCopy()
 // B01: same rule for the skip switch and its scope hint.
 syncSkipHistoryCopy()
+// N01: the smart-redaction panel's copy is runtime-written (see syncRedactCopy's comment).
+syncRedactCopy()
 // Hot switch (mirror of `theme`): the settings effect broadcasts i18n:language to every
 // open window, so re-resolve the language and re-scan the DOM.
 window.captureAPI.onInterfaceLanguage((language) => {
@@ -5271,6 +5995,9 @@ window.captureAPI.onInterfaceLanguage((language) => {
   if (activeOcrResult) renderActiveOcrOverlay()
   syncPinOutputCopy()
   syncSkipHistoryCopy()
+  // N01: same rule for the runtime-written redaction panel copy (and its status line).
+  syncRedactCopy()
+  syncRedactPanel()
   if (pinOutputState) renderPinOutputBar(pinOutputState.receipt)
   if (!resultPanel.classList.contains('hidden')) resultTitle.textContent = t(activeOcrResult?.mode === 'translate' ? 'capture.result.title-translate' : 'capture.result.title-ocr')
 })

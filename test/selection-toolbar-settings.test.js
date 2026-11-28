@@ -72,7 +72,9 @@ test('main process normalizes toolbar settings and routes configured custom prom
   assert.match(normalizer, /normalized\.selectionToolbar = normalizeSelectionToolbar/)
   assert.match(selectionDomain, /enableClipboard: getSettings\(\)\.selectionToolbar\.clipboardFallback/)
   assert.match(settingsEffects, /updateStartOptions\(\{\s*enableClipboard: settings\.selectionToolbar\.clipboardFallback/)
-  assert.match(main, /settingsEffects\.applyUpdate/)
+  // H05: settings channel registration moved to main/ipc/index.js.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /settingsEffects\.applyUpdate/)
   assert.match(main, /consoleLike: app\.isPackaged \? null : console/)
   assert.match(selectionDomain, /getVisibleToolbarActionDefinitions/)
   assert.match(selectionDomain, /getToolbarActionDefinition\(toolbarConfig, action\)/)

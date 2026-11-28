@@ -371,7 +371,8 @@ test('recording workbench and editor IPC modules own their documented channel su
       'editorReload',
       'editorEvents',
       'editorSalvage',
-      'editorCancelSalvage'
+      'editorCancelSalvage',
+      'editorPinFrame'
     ])
   })
   assert.deepEqual([...editorIpc.handlers.keys()], [
@@ -389,7 +390,9 @@ test('recording workbench and editor IPC modules own their documented channel su
     'record-editor:events',
     // D03: recovery-banner salvage + cancel.
     'record-editor:salvage',
-    'record-editor:cancel-salvage'
+    'record-editor:cancel-salvage',
+    // B08 (H05): the frozen pin frame channel moved out of main.js into this registrar.
+    'record:pin-frame'
   ])
   assert.deepEqual([...editorIpc.listeners.keys()], [
     'record-editor:ready',
@@ -456,6 +459,9 @@ test('coding plan IPC owns one provider-creation channel and gates writes', asyn
 
 test('main process delegates migrated IPC channels without registering them directly', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  // H05: every channel registration lives in the aggregated module; main.js only hands over the
+  // live collaborators. The two window: channels are pinned by the architecture gate (D26).
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
   for (const prefix of [
     'capture:',
     'long-capture:',
@@ -472,6 +478,7 @@ test('main process delegates migrated IPC channels without registering them dire
     'chat:'
   ]) {
     assert.doesNotMatch(main, new RegExp(`ipcMain\\.(?:handle|on)\\('${prefix}`))
+    assert.doesNotMatch(main, new RegExp(`secureIpcMain\\.(?:handle|on)\\('${prefix}`))
   }
   for (const registration of [
     'registerAppIpc',
@@ -484,21 +491,24 @@ test('main process delegates migrated IPC channels without registering them dire
     'registerSearchIpc',
     'registerSelectionIpc'
   ]) {
-    assert.match(main, new RegExp(`${registration}\\(\\{`))
+    assert.match(ipcIndex, new RegExp(`${registration}\\(\\{`))
   }
+  assert.match(main, /registerAllIpc\(\{/)
 })
 
 test('recording export channels are registered through the bootstrap, not inline in main.js', () => {
   const root = path.join(__dirname, '..')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  // The record domain owns window/session ownership, so main.js only asks the bootstrap to
+  // H05: the registration block moved to main/ipc/index.js.
+  const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
+  // The record domain owns window/session ownership, so the aggregation only asks the bootstrap to
   // register the three export channels with the record controller it already created. One
   // controller instance is shared by every recording surface (contract §9/§10).
-  assert.match(main, /const recordController = recordDomain\.createRecordingController\(\)/)
-  assert.match(main, /registerRecordingExportFeatureIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
-  assert.match(main, /registerRecordingIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
-  assert.match(main, /registerRecordingWorkbenchIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
-  assert.match(main, /registerRecordingEditorIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /const recordController = recordDomain\.createRecordingController\(\)/)
+  assert.match(ipcIndex, /registerRecordingExportFeatureIpc\(\{ ipcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /registerRecordingIpc\(\{ ipcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /registerRecordingWorkbenchIpc\(\{ ipcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /registerRecordingEditorIpc\(\{ ipcMain, controller: recordController \}\)/)
   assert.doesNotMatch(main, /secureIpcMain\.handle\('record:export/)
   assert.match(main, /createRecordingExportRef\(\{/)
   // R1 (contracts §6/§7): the persistent project service is a lazy ref, never constructed inline.

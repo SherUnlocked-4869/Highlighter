@@ -4,7 +4,7 @@
 //   ipcMain                       the secure ipcMain wrapper (or a plain fake in tests)
 //   historyService                { list, getThumbnail, listSources, stats, getItem, delete,
 //                                   deleteMany, exportMany, cleanup, clear,
-//                                   selectExportItems? }
+//                                   selectExportItems?, updateTags? }
 //   copyItem(item) / copyPathItem(item) / editItem(item) / openItem(item)
 //   chooseExportDirectory()       opens the "where to export" directory picker
 //
@@ -23,12 +23,49 @@
 // with the native save dialog. Selection resolution prefers
 // historyService.selectExportItems (shared with exportMany); when the injected
 // facade does not expose it, getItem + an existence probe give the same answer.
+//
+// N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): tag editing.
+// The main-role invoke inventory is frozen in main/services/ipc-security.js (every channel
+// needs an explicit sender policy and secureIpcMain.assertComplete() refuses an unlisted
+// registration), and test/history-ipc.test.js pins this module's exact channel list, so a new
+// `history:update-tags` channel cannot be added without changing both of those files. Until
+// it is promoted, the write rides 'history:list' - the one history channel that already
+// accepts a renderer object - as a command envelope: `{ op: 'update-tags', id, tags }`.
+// A payload without `op` keeps the original list contract byte for byte, and the preload
+// exposes a named `updateHistoryTags()` method so the renderer never hand-builds the envelope.
+//
+// N02 follow-up (real-device verification, 2026-11-27): the same envelope now carries the two
+// reads behind the tag dropdown and the OCR status UI, plus the explicit "index these captures"
+// command. They stay on 'history:list' for the same frozen-inventory reason:
+//   { op: 'list-tags' }                -> [{ tag, count }]
+//   { op: 'ocr-state' }                -> { summary, queue, enabled }
+//   { op: 'index-ocr', ids?, all? }    -> { accepted, skipped, disabled }
 
 const fs = require('node:fs')
 
 const pdfExportDefault = require('../services/pdf-export')
 const { makeCaptureName } = require('../services/capture-naming')
 const { t } = require('../services/i18n-bootstrap')
+
+// N02: the command envelope discriminant for the tag write (see the header).
+const HISTORY_UPDATE_TAGS_OP = 'update-tags'
+const HISTORY_LIST_TAGS_OP = 'list-tags'
+const HISTORY_OCR_STATE_OP = 'ocr-state'
+const HISTORY_INDEX_OCR_OP = 'index-ocr'
+
+function isUpdateTagsCommand(payload) {
+  return !!payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    payload.op === HISTORY_UPDATE_TAGS_OP
+}
+
+function isHistoryCommand(payload) {
+  return !!payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    typeof payload.op === 'string'
+}
 
 // Resolution order for a batch: history order first (selectExportItems), otherwise
 // the caller's id order (getItem). Both drop ids whose file is gone, and report
@@ -131,7 +168,39 @@ function registerHistoryIpc({
 }) {
   if (!ipcMain || !historyService) throw new Error('History IPC requires ipcMain and historyService')
 
-  ipcMain.handle('history:list', (_event, filter) => historyService.list(filter))
+  ipcMain.handle('history:list', (_event, filter) => {
+    // N02: the tag write shared with 'history:list' (frozen channel inventory; see header).
+    // updateTags() returns the normalized list, or null when the record is gone / the payload
+    // is not an array, so the renderer can report a failed edit without a second round-trip.
+    if (isUpdateTagsCommand(filter)) {
+      if (typeof historyService.updateTags !== 'function') throw new Error('History tag updates are unavailable')
+      return historyService.updateTags(filter.id, filter.tags)
+    }
+    // N02 follow-up: the tag-dropdown read, the OCR status read and the explicit index command.
+    // Same frozen channel, same rule: an unknown op is an error rather than a silent list call,
+    // so a renderer typo cannot be mistaken for an empty page.
+    if (isHistoryCommand(filter)) {
+      if (filter.op === HISTORY_LIST_TAGS_OP) {
+        if (typeof historyService.listTags !== 'function') throw new Error('History tag listing is unavailable')
+        return historyService.listTags()
+      }
+      if (filter.op === HISTORY_OCR_STATE_OP) {
+        if (typeof historyService.ocrState !== 'function') throw new Error('History OCR state is unavailable')
+        return historyService.ocrState()
+      }
+      if (filter.op === HISTORY_INDEX_OCR_OP) {
+        if (typeof historyService.indexOcr !== 'function') throw new Error('History OCR indexing is unavailable')
+        const ids = Array.isArray(filter.ids) ? filter.ids : null
+        const all = filter.all === true
+        // A command with neither target means the renderer built an invalid payload; defaulting
+        // it to "index the whole history" would turn a typo into a mass OCR run.
+        if (!all && ids === null) throw new Error('History OCR indexing requires ids or all')
+        return historyService.indexOcr({ ids, all })
+      }
+      throw new Error(`Unsupported history command: ${filter.op}`)
+    }
+    return historyService.list(filter)
+  })
   ipcMain.handle('history:thumbnail', (_event, id) => historyService.getThumbnail(id))
   ipcMain.handle('history:sources', () => historyService.listSources())
   ipcMain.handle('history:stats', () => historyService.stats())

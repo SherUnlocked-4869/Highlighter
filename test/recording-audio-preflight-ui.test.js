@@ -694,10 +694,11 @@ test('the silent option records without sound and keeps the frozen payload shape
   const payload = harness.media.startPayloads.at(-1)
   assert.equal(payload.config.audioSystem, false)
   assert.equal(payload.config.audioMicrophone, false)
-  // The contract shape is untouched: the same keys as before this change.
+  // The frozen shape gained exactly one additive field from the DEV-04 shortcut
+  // opt-in; every pre-existing key is still there and nothing else is forwarded.
   assert.deepEqual(Object.keys(payload.config).sort(), [
     'audioMicrophone', 'audioMicrophoneDeviceId', 'audioSystem', 'countdown',
-    'demoEnhance', 'displayId', 'frameRate', 'mode', 'quality', 'saveDirectory'
+    'demoEnhance', 'demoKeystrokes', 'displayId', 'frameRate', 'mode', 'quality', 'saveDirectory'
   ])
 })
 

@@ -1,12 +1,13 @@
 {
   "name": "highlighter-snowshot",
-  "version": "5.0.1",
+  "version": "5.1.1",
   "description": "Highlighter - 截图、标注、OCR、翻译与 AI 桌面效率工具",
   "main": "main.js",
   "author": "Highlighter",
   "scripts": {
     "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
+    "test:perf": "node scripts/run-perf-gate.js",
     "test:e2e": "playwright test --config playwright.config.js",
     "test:update-rehearsal": "node --test test/update-rehearsal.test.js",
     "bench:performance": "node scripts/benchmark-performance.js",

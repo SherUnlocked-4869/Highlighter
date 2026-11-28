@@ -61,16 +61,16 @@ function createFakePinImages() {
   }
 }
 
-// A window shape that records the OS-level calls the pin domain makes. The capture
-// page and the clipboard are injected so the export path is observable without
-// Electron; everything else mirrors test/pin-domain.test.js.
-function createHarness({ captureImage, showMessageBox, pinImages = createFakePinImages(), clipboard } = {}) {
+// A window shape that records the OS-level calls the pin domain makes. The offscreen
+// view export is driven by the fake renderer: when main sends pin:view-export-request,
+// `viewExportAnswer` produces the bounded envelope the real preload would send on
+// pin:context-menu. Everything else mirrors test/pin-domain.test.js.
+function createHarness({ viewExportAnswer, showMessageBox, pinImages = createFakePinImages(), clipboard } = {}) {
   const handlers = new Map()
   const sent = []
   const saved = []
   const written = []
   const errors = []
-  const calls = { capturePage: 0, executeJavaScript: [] }
   const { createPinDomain } = require('../main/domains/pin')
   const domain = createPinDomain({
     BrowserWindow: { fromWebContents: (sender) => sender?.window || null },
@@ -81,8 +81,10 @@ function createHarness({ captureImage, showMessageBox, pinImages = createFakePin
     nativeImage: {
       createFromBuffer: (bytes) => ({
         bytes: Buffer.from(bytes),
-        getSize: () => ({ width: 200, height: 100 }),
-        toDataURL: () => DATA_URL
+        getSize: () => ({ width: 600, height: 800 }),
+        toDataURL: () => DATA_URL,
+        isEmpty: () => false,
+        resize: () => ({ getSize: () => ({ width: 128, height: 128 }) })
       })
     },
     screen: {
@@ -128,10 +130,16 @@ function createHarness({ captureImage, showMessageBox, pinImages = createFakePin
       win.webContents = {
         window: win,
         isDestroyed: () => false,
-        send: (channel, payload) => sent.push({ win, channel, payload }),
-        executeJavaScript: async (source) => {
-          calls.executeJavaScript.push(source)
-          return { ocrOverlay: true }
+        send: (channel, payload) => {
+          sent.push({ win, channel, payload })
+          if (channel !== 'pin:view-export-request' || typeof viewExportAnswer !== 'function') return
+          const command = viewExportAnswer(payload?.requestId, win)
+          if (!command) return
+          // The real path is a round trip through the preload and the IPC facade; deliver
+          // it asynchronously so the domain's timeout timer is armed first.
+          setImmediate(() => {
+            handlers.get('pin:context-menu')?.({ sender: win.webContents }, null, command)
+          })
         }
       }
       return win
@@ -149,16 +157,25 @@ function createHarness({ captureImage, showMessageBox, pinImages = createFakePin
     log: () => {},
     showMessageBox: showMessageBox || (async () => ({ response: 0 })),
     showErrorBox: (message, detail) => errors.push({ message, detail }),
-    capturePage: captureImage || (async () => ({
-      isEmpty: () => false,
-      getSize: () => ({ width: 600, height: 800 }),
-      toPNG: () => Buffer.from([7, 7, 7]),
-      resize: () => ({ getSize: () => ({ width: 128, height: 128 }) })
-    })),
     ipcMain: { on: (channel, handler) => handlers.set(channel, handler) }
   })
-  return { domain, handlers, sent, saved, written, errors, calls, pinImages }
+  return { domain, handlers, sent, saved, written, errors, pinImages }
 }
+
+// A minimal PNG header (signature + IHDR width/height) with an opaque payload tail.
+// The domain validates the real header through readPngSize and treats the whole buffer
+// as the bytes it writes, so the tail is enough to prove "the previewed bytes are the
+// saved bytes".
+function makePng(width, height, tail = Buffer.from([7, 7, 7])) {
+  const header = Buffer.alloc(24)
+  header.writeUInt32BE(0x89504e47, 0)
+  header.writeUInt32BE(0x0d0a1a0a, 4)
+  header.write('IHDR', 12, 'ascii')
+  header.writeUInt32BE(width, 16)
+  header.writeUInt32BE(height, 20)
+  return Buffer.concat([header, tail])
+}
+
 
 // ---------------------------------------------------------------------------
 // The pure plan: what leaves the pin, which way it faces, what is excluded.
@@ -236,18 +253,21 @@ test('four rotations still copy and save the ORIGINAL bytes', async () => {
   }
 })
 
-test('the view export previews the captured render, then writes exactly those pixels', async () => {
-  const captured = Buffer.from([9, 9, 9, 9])
+test('the view export previews the renderer composition, then writes exactly those bytes', async () => {
+  const composed = makePng(600, 800, Buffer.from([9, 9, 9, 9]))
   const order = []
   let dialogOptions = null
-  const { domain, saved, errors, calls } = createHarness({
-    captureImage: async () => {
-      order.push('capture')
+  const { domain, saved, errors } = createHarness({
+    viewExportAnswer: (requestId) => {
+      order.push('compose')
       return {
-        isEmpty: () => false,
-        getSize: () => ({ width: 600, height: 800 }),
-        toPNG: () => captured,
-        resize: () => ({ getSize: () => ({ width: 128, height: 128 }) })
+        type: 'view-export-result',
+        requestId,
+        ok: true,
+        png: composed,
+        width: 600,
+        height: 800,
+        ocrOverlay: true
       }
     },
     showMessageBox: async (_win, options) => {
@@ -262,31 +282,23 @@ test('the view export previews the captured render, then writes exactly those pi
   const receipt = await domain.exportPinView(win)
   assert.equal(receipt.status, 'saved')
   assert.equal(receipt.filePath, 'saved.png')
-  // Preview BEFORE the write: the dialog describes the very image that is exported.
-  assert.deepEqual(order, ['capture', 'preview'])
+  // Preview BEFORE the write, and both refer to the SAME renderer-composed PNG.
+  assert.deepEqual(order, ['compose', 'preview'])
   assert.equal(saved.length, 1)
-  assert.deepEqual(saved[0], captured)
+  assert.deepEqual(saved[0], composed)
   assert.deepEqual(errors, [])
 
   // The preview says which way it faces, what it includes and what it never includes.
   assert.match(dialogOptions.detail, /600 × 800/)
   assert.match(dialogOptions.detail, /旋转 90°/)
-  assert.match(dialogOptions.detail, /缩放 100%/)
+  assert.match(dialogOptions.detail, /缩放 72%/)
   assert.match(dialogOptions.detail, /包含：贴图画面/)
   assert.match(dialogOptions.detail, /OCR 叠层/)
   assert.match(dialogOptions.detail, /不含：桌面背景、其他窗口/)
   assert.equal(dialogOptions.buttons[0], '导出')
   assert.equal(dialogOptions.cancelId, 1)
-  // The preview dialog gets the captured image itself, downscaled, as its icon.
+  // The preview dialog gets the composed image itself, downscaled, as its icon.
   assert.ok(dialogOptions.icon)
-
-  // The capture is this window's own page: the transient zoom/opacity/recognition chrome
-  // is hidden for the shot, and the OCR overlay is deliberately left visible.
-  const prepare = calls.executeJavaScript[0]
-  assert.match(prepare, /#zoomBadge/)
-  assert.match(prepare, /pinOcrOverlay/)
-  assert.match(prepare, /pin-view-export-chrome/)
-  assert.match(calls.executeJavaScript[1], /removeChild/)
   assert.equal(receipt.plan.rotation, 90)
   assert.equal(receipt.plan.size.width, 600)
   win._closed()
@@ -294,7 +306,11 @@ test('the view export previews the captured render, then writes exactly those pi
 
 test('a cancelled preview writes nothing, and a hidden pin reports instead of exporting', async () => {
   let dialogShown = 0
+  const composed = makePng(600, 800)
   const cancelled = createHarness({
+    viewExportAnswer: (requestId) => ({
+      type: 'view-export-result', requestId, ok: true, png: composed, width: 600, height: 800
+    }),
     showMessageBox: async () => { dialogShown += 1; return { response: 1 } }
   })
   const win = cancelled.domain.createPinWindow(ORIGINAL, {})
@@ -315,22 +331,36 @@ test('a cancelled preview writes nothing, and a hidden pin reports instead of ex
   hiddenWin._closed()
 })
 
-test('the pin menu renames the original-bytes exits and adds the view export', () => {
+test('the pin menu renames the original-bytes exits and adds the offscreen view export', () => {
   assert.match(pinDomainSource, /label: t\('pin\.menu\.copy-original'\)/)
   assert.match(pinDomainSource, /label: t\('pin\.menu\.save-original'\)/)
   assert.match(pinDomainSource, /label: t\('pin\.menu\.export-view'\)/)
   // The original exits still read the stored asset (rotation/zoom never touch it).
   assert.match(pinDomainSource, /async function copyPin\(win\) \{[\s\S]{0,400}?pinImages\.read\(imageId\)/)
   assert.match(pinDomainSource, /async function savePin\(win\) \{[\s\S]{0,240}?pinImages\.read\(win\._pinData\.imageId\)/)
-  // The view export captures THIS window, never the screen.
-  assert.match(pinDomainSource, /contents\.capturePage\(\)/)
-  assert.doesNotMatch(pinDomainSource, /desktopCapturer/)
-  // A second click while the preview is open must not stack a second capture.
+  // DEV-02: no more capturePage / hide-style injection; the renderer composes the view
+  // and answers on the existing pin:context-menu envelope.
+  assert.doesNotMatch(pinDomainSource, /capturePage/)
+  assert.doesNotMatch(pinDomainSource, /pin-view-export-chrome/)
+  assert.match(pinDomainSource, /pin:view-export-request/)
+  assert.match(pinDomainSource, /normalizeViewExportCommand\(command\)/)
+  // Desktop capture belongs to the OPT-IN real-pixel compare only; the view export itself
+  // never samples the screen.
+  assert.match(pinDomainSource, /async function captureScreenUnderPin/)
+  assert.match(pinDomainSource, /function startRealPixelCompare/)
+  const exportBlockStart = pinDomainSource.indexOf('async function exportPinView')
+  const exportBlockEnd = pinDomainSource.indexOf('N05 / DEV-08: opt-in')
+  assert.ok(exportBlockStart >= 0 && exportBlockEnd > exportBlockStart)
+  const viewExportBlock = pinDomainSource.slice(exportBlockStart, exportBlockEnd)
+  assert.doesNotMatch(viewExportBlock, /desktopCapturer|captureScreenUnderPin/)
+  // A second click while the preview is open must not stack a second export.
   assert.match(pinDomainSource, /if \(win\._pinViewExporting\) return null/)
   // Existing pin channels keep their semantics: no new channel was introduced.
   assert.match(pinDomainSource, /ipcMain\.on\('pin:copy'/)
   assert.match(pinDomainSource, /ipcMain\.on\('pin:save'/)
+  assert.match(pinDomainSource, /ipcMain\.on\('pin:context-menu'/)
 })
+
 
 test('preload exposes the combined pin through the existing capture:pin channel only', () => {
   assert.match(preloadCapture, /pin: \(imageBuffer, meta, options\) => ipcRenderer\.invoke\('capture:pin'/)

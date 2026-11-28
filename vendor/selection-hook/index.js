@@ -16,6 +16,21 @@ const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
 
+// DEV-04: the native shortcut-combo channel only emits labels from this grammar (it is
+// the same grammar main/services/recording-project-service.js persists). Validate again on
+// the JavaScript side so a malformed native payload can never reach an EventEmitter
+// consumer. Chords use Ctrl/Alt/Shift/Win plus one [A-Z0-9] or named key; a bare key is
+// limited to F1..F12 because bare typing/navigation must stay private.
+const KEY_COMBO_PATTERN =
+  /^(?:(?:Ctrl|Alt|Shift|Win)\+){1,4}(?:[A-Z0-9]|Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$|^F(?:[1-9]|1[0-2])$/;
+
+// DEV-04 trusted focus classification. The native side only emits a combo it classified as a
+// safe non-text application surface ("safe"); the other classes exist in the native contract so
+// a future/misbehaving build cannot smuggle a sensitive context through this wrapper. A payload
+// without `context` (stale addon binary) is forwarded unchanged and is rejected downstream by
+// main/domains/record/keystroke-capture.js, which requires a positive "safe" context.
+const FOCUS_CONTEXTS = Object.freeze(["safe", "password", "text", "ime", "unknown"]);
+
 let nativeModule = null;
 // Make debugFlag a private module variable to avoid global state issues
 let _debugFlag = false;
@@ -40,6 +55,9 @@ class SelectionHook extends EventEmitter {
 
   #instance = null;
   #running = false;
+  // DEV-04 opt-in shortcut channel. Default false and cleared by stop()/cleanup() so a
+  // consumer must explicitly opt in for every session.
+  #keyboardEventsEnabled = false;
 
   static SelectionMethod = {
     NONE: 0,
@@ -174,6 +192,27 @@ class SelectionHook extends EventEmitter {
                 this.emit(data.action, keyData);
               }
               break;
+            case "keyboard-combo":
+              {
+                if (!this.#keyboardEventsEnabled) break;
+                const { tMs, vkCode, scanCode, modifiers, combo, context } = data;
+                const label = typeof combo === "string" ? combo : "";
+                if (!Number.isFinite(tMs) || tMs <= 0) break;
+                if (!Number.isInteger(vkCode) || vkCode < 0 || vkCode > 0xffff) break;
+                if (!Number.isInteger(scanCode) || scanCode < 0 || scanCode > 0xffff) break;
+                if (!Number.isInteger(modifiers) || modifiers < 0 || modifiers > 0xf) break;
+                if (!KEY_COMBO_PATTERN.test(label)) break;
+                // Validate the trusted focus class when the native payload carries one. A
+                // malformed class is dropped here; a missing one stays missing (fail closed in
+                // the JavaScript privacy filter, never implicitly safe).
+                const payload = { tMs, vkCode, scanCode, modifiers, combo: label };
+                if (context !== undefined) {
+                  if (typeof context !== "string" || !FOCUS_CONTEXTS.includes(context)) break;
+                  payload.context = context;
+                }
+                this.emit("key-combo", payload);
+              }
+              break;
             case "status":
               this.emit("status", data.status);
               break;
@@ -201,6 +240,9 @@ class SelectionHook extends EventEmitter {
    * @returns {boolean} Success status
    */
   stop() {
+    // The opt-in shortcut channel belongs to the stopped session; a later start() must
+    // require a new explicit opt-in (fail closed even when the native stop throws).
+    this.#keyboardEventsEnabled = false;
     if (!this.#instance || !this.#running) {
       this.#logDebug("Text selection hook not running");
       return true;
@@ -301,6 +343,77 @@ class SelectionHook extends EventEmitter {
       this.#handleError("Failed to disable clipboard fallback", err);
       return false;
     }
+  }
+
+  /**
+   * Enable or disable the bounded global keyboard shortcut-combo channel (DEV-04).
+   *
+   * While enabled, the native hook emits "key-combo" events carrying only an allowlisted
+   * combo label (`Ctrl+Shift+P`, `F5`, ...), the virtual/scan key codes, the event-time
+   * modifier mask, a Date.now()-compatible epoch timestamp, and the trusted focus
+   * classification (`context: "safe"`; combos pressed in password/text-input/IME/unknown
+   * focus are dropped natively before they reach JavaScript). Plain typing, Shift+single
+   * characters, IME/AltGr input, OS auto-repeat and injected input are filtered natively.
+   *
+   * The channel is disabled by default and is cleared by stop()/cleanup(), so it must be
+   * re-enabled for every recording session. It is independent from the mouse-selection
+   * events and from the legacy "key-down"/"key-up" events.
+   *
+   * @param {boolean} enabled - true to emit "key-combo" events while running.
+   * @returns {boolean} Success status.
+   */
+  setKeyboardEventsEnabled(enabled) {
+    if (typeof enabled !== "boolean") {
+      this.#handleError("Keyboard event flag must be a boolean", new Error("Invalid argument"));
+      return false;
+    }
+    if (!this.#instance) {
+      this.#logDebug("Text selection hook instance not created");
+      this.#keyboardEventsEnabled = false;
+      return false;
+    }
+    try {
+      this.#instance.setKeyboardEventsEnabled(enabled);
+      this.#keyboardEventsEnabled = enabled;
+      return true;
+    } catch (err) {
+      // Privacy first: a failed enable must not leave the channel on, and a failed disable
+      // must still clear the JavaScript-side gate that drops queued native events.
+      this.#keyboardEventsEnabled = false;
+      try {
+        this.#instance.setKeyboardEventsEnabled(false);
+      } catch (disableErr) {
+        // The native instance is unavailable; the JavaScript gate above already fails closed.
+      }
+      this.#handleError("Failed to set keyboard event capture", err);
+      return false;
+    }
+  }
+
+  /**
+   * Read back the effective opt-in state of the keyboard shortcut-combo channel.
+   * @returns {boolean} true only when the channel is enabled on a live native instance.
+   */
+  isKeyboardEventsEnabled() {
+    if (!this.#instance || !this.#keyboardEventsEnabled) return false;
+    try {
+      return this.#instance.isKeyboardEventsEnabled() === true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * DEV-10 clipboard-copy guard counters (main-process diagnostics only).
+   *
+   * Counts every clipboard-fallback injection decision by reason. The object contains no
+   * program names, window titles, control text, or any other user content.
+   *
+   * @returns {object|null} Reason counters, or null when unavailable.
+   */
+  getClipboardCopyGuardDiagnostics() {
+    if (!this.#checkInstance() || process.platform !== "win32") return null;
+    return this.#instance.getClipboardCopyGuardDiagnostics();
   }
 
   // Private main/host API. Credentials must never be persisted or sent to a renderer.
@@ -569,6 +682,7 @@ class SelectionHook extends EventEmitter {
    */
   cleanup() {
     this.stop();
+    this.#keyboardEventsEnabled = false;
     this.removeAllListeners();
     this.#instance = null;
   }

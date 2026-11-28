@@ -102,8 +102,7 @@ export interface MouseWheelEventData {
  *
  * Contains information about keyboard events such as key presses and releases.
  */
-export interface KeyboardEventData {
-  /**
+export interface KeyboardEventData {  /**
    * Unified key value of the vkCode. Same as MDN `KeyboardEvent.key` values.
    * Converted from platform-specific vkCode.
    *
@@ -126,6 +125,56 @@ export interface KeyboardEventData {
    * Linux: Modifier bitmask — 0x01 Shift, 0x02 Ctrl, 0x04 Alt, 0x08 Meta(Super)
    */
   flags: number;
+}
+
+/**
+ * Trusted focus classification carried by a shortcut-combo event (DEV-04).
+ *
+ * `"safe"` is the only class the native side emits: it positively identified a non-text
+ * application surface for the event. The other classes exist in the contract for
+ * defence-in-depth and are dropped before JavaScript in a correct build; the JavaScript
+ * privacy filter in main/domains/record/keystroke-capture.js requires `"safe"` explicitly
+ * for every event, so a missing context also fails closed.
+ */
+export type KeyboardComboFocusContext = "safe" | "password" | "text" | "ime" | "unknown";
+
+/**
+ * Opt-in global shortcut-combo event data (Windows only, DEV-04).
+ *
+ * Emitted as `"key-combo"` only while {@link SelectionHook.setKeyboardEventsEnabled} is
+ * true. The native hook filters the payload before it reaches JavaScript: plain typing,
+ * Shift+single characters, IME/AltGr input, OS auto-repeat, injected input and combos
+ * pressed while a password/text-input/IME/unknown focus has the keyboard never produce this
+ * event. Only the allowlisted combo label, key identity and the trusted focus class are
+ * reported; typed characters and selected content are never included.
+ */
+export interface KeyboardComboEventData {
+  /**
+   * Wall-clock event timestamp in milliseconds since the Unix epoch
+   * (`Date.now()`-compatible), sampled in the low-level keyboard hook when the event is
+   * delivered. Convert to media time with the recording start epoch.
+   */
+  tMs: number;
+  /** Virtual key code of the main key (Windows VK_*). */
+  vkCode: number;
+  /** Hardware scan code of the main key. */
+  scanCode: number;
+  /**
+   * Event-time modifier bitmask computed by the native hook:
+   * bit 0 = Shift (1), bit 1 = Ctrl (2), bit 2 = Alt (4), bit 3 = Win (8).
+   */
+  modifiers: number;
+  /**
+   * Allowlisted shortcut label in the persisted `keystrokes` grammar, for example
+   * `"Ctrl+Shift+P"`, `"Ctrl+C"`, `"Alt+Tab"` or `"F5"`. Never contains typed text.
+   */
+  combo: string;
+  /**
+   * Trusted focus classification for this key event. Only a positively classified
+   * non-text application surface ("safe") is accepted downstream. Absent only when an older
+   * native build is loaded, which the JavaScript privacy filter then rejects.
+   */
+  context?: KeyboardComboFocusContext;
 }
 
 /**
@@ -165,6 +214,27 @@ export interface LinuxEnvInfo {
   hasInputDeviceAccess: boolean;
   /** Whether the process is running as root */
   isRoot: boolean;
+}
+
+/**
+ * DEV-10 clipboard-copy injection guard counters.
+ *
+ * One counter per classification reason. The object contains counters only: no program
+ * names, window titles, control text, or other user content.
+ */
+export interface ClipboardCopyGuardDiagnostics {
+  /** Allowed because no protective evidence was found (historical behavior). */
+  allowDefault: number;
+  /** Allowed because an editor host exposed a concrete UIA Edit control in its process. */
+  allowEditorEditControl: number;
+  /** Skipped because the program is on the compiled terminal/self protection list. */
+  skipTerminalProgram: number;
+  /** Skipped because terminal control/window-class evidence was present. */
+  skipTerminalTarget: number;
+  /** Skipped because an editor host showed no unambiguously editable control. */
+  skipEditorHostAmbiguous: number;
+  /** Skipped because keyboard focus moved away from the retrieval target. */
+  skipFocusChanged: number;
 }
 
 /**
@@ -339,6 +409,38 @@ declare class SelectionHook extends EventEmitter {
    */
   disableClipboard(): boolean;
 
+  /**
+   * Enable or disable the bounded global keyboard shortcut-combo channel (Windows, DEV-04).
+   *
+   * While enabled, the native hook emits `"key-combo"` events carrying only an allowlisted
+   * combo label, the key identity, the event-time modifier mask, an epoch timestamp and the
+   * trusted focus classification. Plain typing, Shift+single characters, IME/AltGr input, OS
+   * auto-repeat, injected input and any combo pressed in a password/text-input/IME/unknown
+   * focus are filtered natively and never reach JavaScript. The channel is disabled by
+   * default, requires an explicit opt-in, and is cleared by stop()/cleanup(); it does not
+   * change mouse-selection events or the legacy key-down/key-up events.
+   *
+   * @param enabled - true to emit "key-combo" events while running.
+   * @returns Success status (true if the flag was applied)
+   */
+  setKeyboardEventsEnabled(enabled: boolean): boolean;
+
+  /**
+   * Read back the effective opt-in state of the keyboard shortcut-combo channel.
+   * @returns true only when the channel is enabled on a live native instance.
+   */
+  isKeyboardEventsEnabled(): boolean;
+
+  /**
+   * DEV-10 clipboard-copy guard counters (main-process diagnostics only).
+   *
+   * Counts clipboard-fallback injection decisions by reason. Contains no program names,
+   * window titles, control text, or other user content.
+   *
+   * @returns Reason counters, or null when unavailable (for example off Windows)
+   */
+  getClipboardCopyGuardDiagnostics(): ClipboardCopyGuardDiagnostics | null;
+
   /** Private host API; never persist credentials or expose them to a renderer. */
   setClipboardCoordinator(endpoint: { pipeName: string; nonce: string; hostEpoch: string; hostPid: number; serverPid: number } | null): boolean;
   /** Async native-worker handshake; never waits on the JavaScript thread. */
@@ -495,6 +597,11 @@ declare class SelectionHook extends EventEmitter {
 
   on(event: "key-down", listener: (data: KeyboardEventData) => void): this;
   on(event: "key-up", listener: (data: KeyboardEventData) => void): this;
+  /**
+   * Opt-in bounded shortcut combo (Windows, DEV-04). Emitted only while
+   * setKeyboardEventsEnabled(true) is active. See {@link KeyboardComboEventData}.
+   */
+  on(event: "key-combo", listener: (data: KeyboardComboEventData) => void): this;
 
   on(event: "status", listener: (status: string) => void): this;
   on(event: "error", listener: (error: Error) => void): this;
@@ -507,6 +614,7 @@ declare class SelectionHook extends EventEmitter {
   once(event: "mouse-wheel", listener: (data: MouseWheelEventData) => void): this;
   once(event: "key-down", listener: (data: KeyboardEventData) => void): this;
   once(event: "key-up", listener: (data: KeyboardEventData) => void): this;
+  once(event: "key-combo", listener: (data: KeyboardComboEventData) => void): this;
   once(event: "status", listener: (status: string) => void): this;
   once(event: "error", listener: (error: Error) => void): this;
 }

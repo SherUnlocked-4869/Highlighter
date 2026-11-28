@@ -137,7 +137,7 @@ test('R0.4 the occlusion crop matches the canvas it is painted on, in BOTH windo
   )
   assert.match(
     forMask,
-    /if \(documentEditor\) \{[\s\S]*?crop: \{ x: 0, y: 0,/,
+    /if \(documentEditor(?:\s*\|\|\s*pinEditable)?\) \{[\s\S]*?crop: \{ x: 0, y: 0,/,
     'the document editor branch must use a zero-origin crop'
   )
 })

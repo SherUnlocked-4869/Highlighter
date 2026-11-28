@@ -476,9 +476,13 @@ test('A07 (14): the tray template is rebuilt from the live pin layout, not a cac
   // Both notifications the pin domain exposes are wired to the same rebuild.
   assert.match(main, /onPinLayoutChange: \(\) => createTrayIcon\(\)/)
   assert.match(main, /onRecoverableChange: \(\) => createTrayIcon\(\)/)
-  // The menu reads the CURRENT layout and the CURRENT retained pins on every build.
-  assert.match(main, /pinnedDisplays: pinDomain\.listPinsByDisplay\(\)/)
-  assert.match(main, /recoverablePins: pinDomain\.trayRecoveryMenu\(\)/)
+  // H05: the menu body moved to main/domains/tray. The assembly still hands over the live pin
+  // domain as a resolver, and the tray reads the CURRENT layout / retained pins on every build.
+  const tray = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'tray', 'index.js'), 'utf8')
+  assert.match(main, /getPinDomain: \(\) => pinDomain/)
+  assert.match(tray, /const pinDomain = getPinDomain\(\)/)
+  assert.match(tray, /pinnedDisplays: pinDomain\.listPinsByDisplay\(\)/)
+  assert.match(tray, /recoverablePins: pinDomain\.trayRecoveryMenu\(\)/)
   // The pin domain offers both notifications to the host.
   const pinDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'pin', 'index.js'), 'utf8')
   assert.match(pinDomain, /function notifyPinLayoutChanged/)

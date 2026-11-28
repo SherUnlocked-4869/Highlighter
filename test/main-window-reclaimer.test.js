@@ -276,8 +276,12 @@ test('the renderer route whitelist stays aligned with the config shell dispatch 
 
 test('main.js arms on hide and consumes the restored route without direct IPC wiring', () => {
   const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
-  assert.match(main, /createMainWindowReclaim\(\{ ipcMain: secureIpcMain/)
+  // H05 expanded the assembly back to multi-line objects.
+  assert.match(main, /createMainWindowReclaim\(\{[\s\S]{0,300}?ipcMain: secureIpcMain/)
   assert.match(main, /route = mainWindowReclaim\.resolveInitialRoute\(route\)/)
-  assert.match(main, /win\?\.hide\(\); if \(win\) mainWindowReclaim\.arm\(\)/)
+  assert.match(main, /win\?\.hide\(\)\s*\n\s*if \(win\) mainWindowReclaim\.arm\(\)/)
   assert.doesNotMatch(main, /secureIpcMain\.on\('window:renderer-state'/)
+  // U05: both show paths must cancel a pending idle reclaim.
+  assert.match(main, /mainWindowReclaim\.disarm\(\)\s*\n\s*mainWindow\.show\(\)/)
+  assert.match(main, /mainWindowReclaim\.disarm\(\)\s*\n\s*win\.show\(\)/)
 })

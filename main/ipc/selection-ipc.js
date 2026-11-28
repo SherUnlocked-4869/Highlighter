@@ -25,7 +25,6 @@ function registerSelectionIpc({ ipcMain, controller }) {
     shell,
     log,
     getSettings,
-    isProcessing,
     hideToolbar,
     openToolbarAiAction,
     getPinDomain,
@@ -33,8 +32,13 @@ function registerSelectionIpc({ ipcMain, controller }) {
     conversations
   } = controller
 
+  // U04: the global "is anything generating" gate is gone. A pinned result window
+  // may think for a long time; local actions (copy/open/search) never depended on a
+  // round and new Q&A opens another result window (the domain picks it), so this
+  // handler only validates the action. Per-window serialization now lives in the
+  // stream controllers keyed by window.
   ipcMain.on('toolbar:action', async (_event, { action, text } = {}) => {
-    if (isProcessing() || !text) return
+    if (!text) return
     const toolbarConfig = getSettings().selectionToolbar
     const visibleActions = getVisibleToolbarActions(toolbarConfig)
     if (!visibleActions.includes(action)) return
@@ -81,13 +85,13 @@ function registerSelectionIpc({ ipcMain, controller }) {
   ipcMain.on('stream:cancel', (event, streamId) => {
     if (!streams.isCurrentSender(event)) return
     if (streams.isStaleSignal(event, streamId)) return
-    streams.cancel(streams.getCurrent(), 'user-cancelled')
+    streams.cancelForSender(event, 'user-cancelled')
   })
 
   ipcMain.on('stream:finish', (event, streamId) => {
     if (!streams.isCurrentSender(event)) return
     if (streams.isStaleSignal(event, streamId)) return
-    streams.cancel(streams.getCurrent(), 'renderer-finished')
+    streams.cancelForSender(event, 'renderer-finished')
   })
 
   ipcMain.on('chat:ask', (event, payload) => {

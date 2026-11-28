@@ -20,6 +20,11 @@ const path = require('node:path')
 
 const POINTER_LIMIT = 20000
 const CLICK_LIMIT = 2000
+// DEV-04: bounded shortcut track. The domain caps the persisted events.json track at 2000 too
+// (main/domains/record KEYSTROKE_LIMIT); the utility-process buffer must not outgrow it.
+const KEYSTROKE_LIMIT = 2000
+const KEYSTROKE_MAX_LENGTH = 48
+const KEYSTROKE_PRINTABLE = /^[\x20-\x7e]+$/
 const STOP_TIMEOUT_MS = 1000
 const SAMPLED_AT_HZ = 20
 const POINTER_KINDS = Object.freeze(['move', 'down', 'up'])
@@ -30,6 +35,7 @@ class PointerTrackService {
     log = () => {},
     pointerLimit = POINTER_LIMIT,
     clickLimit = CLICK_LIMIT,
+    keystrokeLimit = KEYSTROKE_LIMIT,
     stopTimeoutMs = STOP_TIMEOUT_MS
   } = {}) {
     if (typeof createHost !== 'function') throw new TypeError('PointerTrackService requires a createHost factory')
@@ -37,11 +43,14 @@ class PointerTrackService {
     this.log = typeof log === 'function' ? log : () => {}
     this.pointerLimit = Math.max(1, Math.round(Number(pointerLimit) || POINTER_LIMIT))
     this.clickLimit = Math.max(1, Math.round(Number(clickLimit) || CLICK_LIMIT))
+    this.keystrokeLimit = Math.max(1, Math.round(Number(keystrokeLimit) || KEYSTROKE_LIMIT))
     this.stopTimeoutMs = Math.max(0, Math.round(Number(stopTimeoutMs) || STOP_TIMEOUT_MS))
     this.host = null
     this.running = false
     this.pointer = []
     this.clicks = []
+    this.keystrokes = []
+    this.keystrokesRequested = false
     this.truncated = false
     this.unsubscribers = []
     this.stopWaiter = null
@@ -51,12 +60,17 @@ class PointerTrackService {
     return this.running === true && !!this.host
   }
 
-  start() {
+  // `start({ keystrokes:true })` opts this take into DEV-04 global shortcut capture. The message
+  // stays `{ type:'start' }` when the take does not opt in, so a pre-DEV-04 host/argv contract is
+  // byte-identical.
+  start({ keystrokes = false } = {}) {
     if (this.running && this.host) return true
     // A previous session's host is always gone before a new session starts.
     this.finishHost()
     this.pointer = []
     this.clicks = []
+    this.keystrokes = []
+    this.keystrokesRequested = keystrokes === true
     this.truncated = false
     let host
     try {
@@ -73,7 +87,7 @@ class PointerTrackService {
     try {
       if (typeof host.onMessage === 'function') this.unsubscribers.push(host.onMessage((message) => this.handleMessage(message)))
       if (typeof host.onExit === 'function') this.unsubscribers.push(host.onExit(() => this.handleHostExit()))
-      host.postMessage({ type: 'start' })
+      host.postMessage(this.keystrokesRequested ? { type: 'start', keystrokes: true } : { type: 'start' })
     } catch (error) {
       this.log('Pointer track host start failed:', error?.message || error)
       this.finishHost()
@@ -81,6 +95,21 @@ class PointerTrackService {
     }
     this.running = true
     return true
+  }
+
+  // DEV-04 pause/resume: the recording domain enables capture only while the take is actually
+  // recording. A disable is exact on the host side (no further events after it returns); a
+  // disabled take never re-enables by accident because `keystrokesRequested` gates the call.
+  setKeystrokesEnabled(enabled) {
+    if (!this.host || !this.keystrokesRequested) return false
+    const next = enabled === true
+    try {
+      this.host.postMessage({ type: 'keyboard', enabled: next })
+      return true
+    } catch (error) {
+      this.log('Pointer track keyboard toggle failed:', error?.message || error)
+      return false
+    }
   }
 
   handleMessage(message) {
@@ -93,6 +122,21 @@ class PointerTrackService {
       // The host answers `stopped` after it released the native hook; stop() then disposes the
       // process. `stopped` must settle the waiter, otherwise every stop would wait for the timeout.
       if (message.status === 'stopped') this.settleStop()
+      return
+    }
+    // DEV-04: only the keyboard channels are handled here if the take opted in; a stale addon
+    // that never emits them simply leaves the buffer empty.
+    if (message.type === 'keystroke') {
+      if (!this.running || !this.keystrokesRequested) return
+      const combo = typeof message.combo === 'string' ? message.combo : ''
+      const at = Number(message.at)
+      if (!combo || combo.length > KEYSTROKE_MAX_LENGTH || !KEYSTROKE_PRINTABLE.test(combo)) return
+      if (!Number.isFinite(at) || at < 0) return
+      if (this.keystrokes.length >= this.keystrokeLimit) {
+        this.keystrokes.shift()
+        this.truncated = true
+      }
+      this.keystrokes.push({ at, combo })
       return
     }
     if (message.type !== 'pointer') return
@@ -187,6 +231,9 @@ class PointerTrackService {
       sampledAtHz: SAMPLED_AT_HZ,
       pointer: this.pointer.map((entry) => ({ x: entry.x, y: entry.y, at: entry.at })),
       clicks: this.clicks.map((entry) => ({ x: entry.x, y: entry.y, button: entry.button, at: entry.at })),
+      // DEV-04: wall-clock shortcut events; the domain maps them to media time and merges them
+      // with the control bar's keydown batches (dedupe across the two sources).
+      keystrokes: this.keystrokes.map((entry) => ({ at: entry.at, combo: entry.combo })),
       truncated: this.truncated === true
     }
   }
@@ -237,6 +284,7 @@ module.exports = {
   PointerTrackService,
   POINTER_LIMIT,
   CLICK_LIMIT,
+  KEYSTROKE_LIMIT,
   STOP_TIMEOUT_MS,
   SAMPLED_AT_HZ,
   createPointerTrackService,

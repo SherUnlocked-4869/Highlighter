@@ -117,7 +117,7 @@ test('§7.2 the lens samples the base image + an opaque blur mask, never the com
   // is the projection that makes the two agree; the document editor case passes through unchanged.
   assert.match(base, /const occluders = buildOccludersForSampling\(\)/)
   const sampling = sliceBetween(script, 'function annotationsForSampling()', '// The sampled lens canvas')
-  assert.match(sampling, /if \(documentEditor\) return annotationsToDocument\(\)/)
+  assert.match(sampling, /if \(documentEditor(?:\s*\|\|\s*pinEditable)?\) return annotationsToDocument\(\)/)
   assert.match(sampling, /const scaleX = source\.width \/ Math\.max\(1, rect\.w\)/)
   assert.match(sampling, /x: source\.x \+ \(point\.x - rect\.x\) \* scaleX/)
   assert.match(base, /const fingerprint = mask\.maskFingerprint\(occluders\)/)

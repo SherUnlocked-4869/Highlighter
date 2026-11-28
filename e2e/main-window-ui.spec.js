@@ -149,6 +149,16 @@ test('history pagination, selection and anchored actions keep their state', asyn
   await loadMore.press('Enter')
   await expect(page.locator('.history-item')).toHaveCount(41)
   await expect(loadMore).toBeHidden()
+  // N02 follow-up regression (real-device verification, 2026-11-27): a filter/search change
+  // bumps the list generation, and "load more" used to compare against the full render's stale
+  // generation - so the first keystroke left paging permanently disabled. The seeded records all
+  // match "fixture" through their file name, so the second page must still append after a search.
+  await page.locator('#historySearch').fill('fixture')
+  await expect(page.locator('.history-item')).toHaveCount(40)
+  await expect(loadMore).toBeVisible()
+  await loadMore.press('Enter')
+  await expect(page.locator('.history-item')).toHaveCount(41)
+  await expect(loadMore).toBeHidden()
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
 

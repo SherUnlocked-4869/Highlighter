@@ -4,6 +4,7 @@ const {
   PointerTrackService,
   POINTER_LIMIT,
   CLICK_LIMIT,
+  KEYSTROKE_LIMIT,
   SAMPLED_AT_HZ,
   createPointerTrackService,
   createPointerUtilityProcessHostFactory,
@@ -216,8 +217,84 @@ test('dispose kills the host even without a stop handshake', () => {
 test('limits and hz are the frozen R5 values', () => {
   assert.equal(POINTER_LIMIT, 20000)
   assert.equal(CLICK_LIMIT, 2000)
+  assert.equal(KEYSTROKE_LIMIT, 2000)
   assert.equal(SAMPLED_AT_HZ, 20)
   assert.match(defaultPointerHostPath(), /pointer-hook-host\.js$/)
+})
+
+// ---------------------------------------------------------------------------
+// DEV-04: optional global keyboard channel riding the same host
+// ---------------------------------------------------------------------------
+
+function keystroke(combo, at) {
+  return { type: 'keystroke', combo, at }
+}
+
+test('DEV-04: keyboard capture is opt-in on the start message and off by default', () => {
+  const { service, hosts } = createService()
+  service.start()
+  // A pre-DEV-04 take keeps the historical start message byte-identical.
+  assert.deepEqual(hosts[0].sent[0], { type: 'start' })
+  hosts[0].emitMessage(keystroke('Ctrl+S', 1000))
+  assert.deepEqual(service.results().keystrokes, [], 'a non-opted-in take never buffers shortcuts')
+  service.dispose()
+})
+
+test('DEV-04: an opted-in take buffers bounded {at, combo} shortcuts and drops malformed ones', () => {
+  const { service, hosts } = createService({ serviceOptions: { keystrokeLimit: 2 } })
+  service.start({ keystrokes: true })
+  assert.deepEqual(hosts[0].sent[0], { type: 'start', keystrokes: true })
+  const host = hosts[0]
+  host.emitMessage(keystroke('Ctrl+Shift+P', 1000))
+  host.emitMessage(keystroke('Alt+Tab', 1100))
+  // Garbage never reaches the buffer: no combo, wrong type, non-finite time, non-ASCII label.
+  for (const message of [
+    keystroke('', 1200),
+    keystroke(42, 1200),
+    keystroke('Ctrl+S', 'junk'),
+    keystroke('Ctrl+S', NaN),
+    keystroke('Ctrl+\u00e9', 1200),
+    { type: 'keystroke', combo: 'x'.repeat(200), at: 1200 }
+  ]) {
+    host.emitMessage(message)
+  }
+  host.emitMessage(keystroke('F5', 1300))
+  const results = service.results()
+  assert.deepEqual(results.keystrokes, [{ at: 1100, combo: 'Alt+Tab' }, { at: 1300, combo: 'F5' }])
+  assert.equal(results.truncated, true, 'over-budget shortcuts drop the oldest and mark the track')
+})
+
+test('DEV-04: pause/resume toggles the host keyboard flag, never enabling a non-opted-in take', () => {
+  const { service, hosts } = createService()
+  service.start({ keystrokes: true })
+  const host = hosts[0]
+  assert.equal(service.setKeystrokesEnabled(false), true)
+  assert.deepEqual(host.sent.at(-1), { type: 'keyboard', enabled: false })
+  assert.equal(service.setKeystrokesEnabled(true), true)
+  assert.deepEqual(host.sent.at(-1), { type: 'keyboard', enabled: true })
+
+  // A pointer-only take (demoEnhance without demoKeystrokes) must not gain keyboard capture.
+  const pointerOnly = createService()
+  pointerOnly.service.start()
+  assert.equal(pointerOnly.service.setKeystrokesEnabled(true), false)
+  assert.deepEqual(pointerOnly.hosts[0].sent.map((message) => message.type), ['start'])
+  service.dispose()
+  pointerOnly.service.dispose()
+})
+
+test('DEV-04: a stopped host accepts no late shortcut and no keyboard buffer survives restart', async () => {
+  const { service, hosts } = createService()
+  service.start({ keystrokes: true })
+  hosts[0].emitMessage(keystroke('Ctrl+S', 1000))
+  const results = await service.stop()
+  assert.deepEqual(results.keystrokes, [{ at: 1000, combo: 'Ctrl+S' }])
+  hosts[0].emitMessage(keystroke('Ctrl+S', 2000))
+  assert.equal(service.results().keystrokes.length, 1)
+  assert.equal(hosts[0].messageListenerCount, 0, 'no listener leak after stop')
+  // A restarted take starts empty and without a stale opt-in.
+  service.start()
+  assert.deepEqual(hosts[1].sent[0], { type: 'start' })
+  service.dispose()
 })
 
 test('the utility-process host factory forwards messages, exits and kill to the child', () => {

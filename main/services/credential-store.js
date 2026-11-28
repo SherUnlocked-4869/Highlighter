@@ -30,11 +30,14 @@ function normalizeEndpoint(value) {
 // State the UI needs is exposed through getCredentialState(): "no key configured" and
 // "a key exists but cannot be decrypted" are different situations and get different copy.
 class CredentialStore {
-  constructor({ store, safeStorage, onError = () => {} }) {
+  constructor({ store, safeStorage, onError = () => {}, onChange = () => {} }) {
     if (!store) throw new Error('CredentialStore requires a settings store')
     this.store = store
     this.safeStorage = safeStorage
     this.onError = onError
+    // F01: called after any credential/session mutation so the settings service can drop its
+    // normalized snapshot (a key that failed to persist is still the effective one).
+    this.onChange = onChange
     // Session-only fallback. A WeakMap is not usable here because the values are plain
     // strings on a long-lived object - a Map would keep them alive just as long, so plain
     // fields make the lifetime obvious.
@@ -44,6 +47,98 @@ class CredentialStore {
     // an entry with value '' means "the user cleared it in this session, do not fall back".
     this.overrides = new Map()
     this.encryptionFailed = false
+    // F01: monotonically increasing mutation counter. The public credential state and the
+    // per-read decryption cache are keyed by it, so a stale snapshot is never served after a
+    // write. Wrapping at 2^53 is irrelevant: equality only matters within one process run.
+    this.generation = 0
+    this.stateCache = null
+  }
+
+  // F01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 3.1): the
+  // settings read path used to decrypt every provider credential twice - getSettings() for the
+  // effective keys, then getCredentialState() again just to report failures. A read pass shares
+  // the store reads and the DPAPI results between getApiKey(), getProviderApiKeys() and the
+  // public state, so one settings read costs at most one decrypt per stored blob.
+  createSettingsRead(storedSettings) {
+    const stored = storedSettings === undefined ? this.store.get('settings', {}) : storedSettings
+    return {
+      generation: this.generation,
+      storedSettings: stored && typeof stored === 'object' ? stored : {},
+      encryptionAvailable: this.isEncryptionAvailable(),
+      blobs: new Map(),
+      decrypted: new Map(),
+      decryptFailed: false
+    }
+  }
+
+  invalidateCredentialState() {
+    this.generation += 1
+    this.stateCache = null
+    this.onChange()
+  }
+
+  storedValue(read, key, fallback) {
+    if (read.blobs.has(key)) return read.blobs.get(key)
+    const value = this.store.get(key, fallback)
+    read.blobs.set(key, value)
+    return value
+  }
+
+  // null means "the blob could not be decrypted" (the pass then reports decryptFailed); '' is a
+  // real decrypted answer and must not be confused with a failure.
+  decryptBlob(read, encrypted) {
+    if (read.decrypted.has(encrypted)) return read.decrypted.get(encrypted)
+    let value = null
+    try {
+      value = this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+    } catch (error) {
+      read.decryptFailed = true
+      this.onError(error)
+    }
+    read.decrypted.set(encrypted, value)
+    return value
+  }
+
+  tryDecrypt(encrypted) {
+    try {
+      return this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+    } catch (error) {
+      this.onError(error)
+      return null
+    }
+  }
+
+  // Closes a read pass: scans every stored blob (even ones no configured provider refers to) so
+  // a corrupt ciphertext is still reported, then publishes the public state for
+  // getCredentialState() with no further store reads or DPAPI calls.
+  finalizeSettingsRead(read) {
+    if (!read) return null
+    if (read.finalized) return this.stateCache?.state || null
+    read.finalized = true
+    if (read.encryptionAvailable) {
+      const encryptedApiKey = this.storedValue(read, API_KEY_STORAGE_KEY, '')
+      if (encryptedApiKey) this.decryptBlob(read, encryptedApiKey)
+      const encryptedProviders = this.storedValue(read, PROVIDER_API_KEYS_STORAGE_KEY, {})
+      if (encryptedProviders && typeof encryptedProviders === 'object') {
+        for (const blob of Object.values(encryptedProviders)) {
+          if (blob) this.decryptBlob(read, blob)
+        }
+      }
+    }
+    const stored = read.storedSettings || {}
+    const storedProviders = Array.isArray(stored.providers) ? stored.providers : []
+    const legacyApiKey = typeof stored.apiKey === 'string' && stored.apiKey.trim() !== ''
+    const legacyProviderKey = storedProviders.some((provider) => String(provider?.apiKey || '').trim() !== '')
+    const state = {
+      encryptionAvailable: read.encryptionAvailable,
+      decryptFailed: read.decryptFailed === true,
+      legacyPlaintext: legacyApiKey || legacyProviderKey,
+      sessionOnly: this.hasSessionSecrets(),
+      sessionOverrides: this.getEffectiveCredentialState(),
+      encryptionFailed: this.encryptionFailed === true
+    }
+    this.stateCache = { generation: read.generation, state }
+    return state
   }
 
   isEncryptionAvailable() {
@@ -62,6 +157,7 @@ class CredentialStore {
 
   // ---------------------------------------------------------------- session-only keys
   setSessionApiKey(value) {
+    this.invalidateCredentialState()
     this.sessionApiKey = String(value || '').trim()
     return true
   }
@@ -71,6 +167,7 @@ class CredentialStore {
   }
 
   setSessionProviderApiKeys(providers = []) {
+    this.invalidateCredentialState()
     const next = Object.create(null)
     for (const provider of Array.isArray(providers) ? providers : []) {
       const id = provider?.id ? String(provider.id).trim() : ''
@@ -89,6 +186,7 @@ class CredentialStore {
   setSessionOverride(credentialId, value, { endpoint = '' } = {}) {
     const id = typeof credentialId === 'string' ? credentialId.trim() : ''
     if (!id) return false
+    this.invalidateCredentialState()
     const apiKey = String(value === undefined || value === null ? '' : value).trim()
     this.overrides.set(id, { value: apiKey, endpoint: normalizeEndpoint(endpoint) })
     // Keep the legacy convenience fields coherent for callers that still read them.
@@ -104,6 +202,7 @@ class CredentialStore {
   clearSessionOverride(credentialId) {
     const id = typeof credentialId === 'string' ? credentialId.trim() : ''
     if (!id) return false
+    this.invalidateCredentialState()
     const existed = this.overrides.delete(id)
     if (id === MASTER_CREDENTIAL_ID) this.sessionApiKey = ''
     const providerId = id.startsWith('provider:') ? id.slice('provider:'.length) : ''
@@ -126,6 +225,7 @@ class CredentialStore {
   }
 
   clearSessionSecrets() {
+    this.invalidateCredentialState()
     this.sessionApiKey = ''
     this.sessionProviderApiKeys = Object.create(null)
     this.overrides.clear()
@@ -144,19 +244,18 @@ class CredentialStore {
   // Order: the encrypted copy (the only durable one), then the session fallback, then a
   // caller-supplied legacy plaintext value. A failed decrypt is reported and falls through
   // instead of throwing, so one corrupt blob cannot make the app unusable.
-  getApiKey(legacyValue = '') {
+  getApiKey(legacyValue = '', read = null) {
     // D02 (04): an explicit override wins over the stored copy, INCLUDING when it is empty
     // (the user cleared the key and the old ciphertext could not be deleted yet).
     const override = this.getSessionOverride(MASTER_CREDENTIAL_ID)
     if (override !== null) return override
-    const encrypted = this.store.get(API_KEY_STORAGE_KEY, '')
+    const encrypted = read
+      ? this.storedValue(read, API_KEY_STORAGE_KEY, '')
+      : this.store.get(API_KEY_STORAGE_KEY, '')
     if (encrypted) {
-      if (this.isEncryptionAvailable()) {
-        try {
-          return this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
-        } catch (error) {
-          this.onError(error)
-        }
+      if (read ? read.encryptionAvailable : this.isEncryptionAvailable()) {
+        const decrypted = read ? this.decryptBlob(read, encrypted) : this.tryDecrypt(encrypted)
+        if (decrypted !== null) return decrypted
       }
     }
     if (this.sessionApiKey) return this.sessionApiKey
@@ -164,6 +263,7 @@ class CredentialStore {
   }
 
   setApiKey(value) {
+    this.invalidateCredentialState()
     if (!this.isEncryptionAvailable()) return false
     const apiKey = String(value || '').trim()
     if (!apiKey) {
@@ -185,11 +285,16 @@ class CredentialStore {
     return true
   }
 
-  getProviderApiKeys(providers = []) {
-    const stored = this.store.get(PROVIDER_API_KEYS_STORAGE_KEY, {})
+  getProviderApiKeys(providers = [], read = null) {
+    const stored = read
+      ? this.storedValue(read, PROVIDER_API_KEYS_STORAGE_KEY, {})
+      : this.store.get(PROVIDER_API_KEYS_STORAGE_KEY, {})
     const encryptedByProvider = stored && typeof stored === 'object' ? stored : {}
-    const storedEndpointsRaw = this.store.get(PROVIDER_ENDPOINTS_STORAGE_KEY, {})
+    const storedEndpointsRaw = read
+      ? this.storedValue(read, PROVIDER_ENDPOINTS_STORAGE_KEY, {})
+      : this.store.get(PROVIDER_ENDPOINTS_STORAGE_KEY, {})
     const storedEndpoints = storedEndpointsRaw && typeof storedEndpointsRaw === 'object' ? storedEndpointsRaw : {}
+    const encryptionAvailable = read ? read.encryptionAvailable : this.isEncryptionAvailable()
     const keys = {}
     for (const provider of Array.isArray(providers) ? providers : []) {
       const id = provider?.id ? String(provider.id).trim() : ''
@@ -204,15 +309,14 @@ class CredentialStore {
         continue
       }
       const encrypted = encryptedByProvider[id]
-      if (encrypted && this.isEncryptionAvailable()) {
+      if (encrypted && encryptionAvailable) {
         const savedEndpoint = storedEndpoints[id] === undefined ? null : normalizeEndpoint(storedEndpoints[id])
         const askedEndpoint = provider.baseUrl === undefined ? null : normalizeEndpoint(provider.baseUrl)
         if (savedEndpoint === null || askedEndpoint === null || savedEndpoint === askedEndpoint) {
-          try {
-            keys[id] = this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+          const decrypted = read ? this.decryptBlob(read, encrypted) : this.tryDecrypt(encrypted)
+          if (decrypted !== null) {
+            keys[id] = decrypted
             continue
-          } catch (error) {
-            this.onError(error)
           }
         } else {
           // The provider now points somewhere else: the old key does not apply, and using
@@ -229,6 +333,7 @@ class CredentialStore {
   // Writes ONE provider credential and records the endpoint it belongs to. Returns false when
   // encryption refused, so the caller can keep the session override.
   setProviderApiKey(providerId, value, { endpoint } = {}) {
+    this.invalidateCredentialState()
     if (!this.isEncryptionAvailable()) return false
     const id = typeof providerId === 'string' ? providerId.trim() : ''
     if (!id) return false
@@ -257,6 +362,7 @@ class CredentialStore {
   // Deletes the durable copy of one credential and verifies it is really gone. Used by the
   // "clear the key" path: a store delete that silently fails must be reported, not assumed.
   deleteApiKey() {
+    this.invalidateCredentialState()
     this.store.delete(API_KEY_STORAGE_KEY)
     return this.store.get(API_KEY_STORAGE_KEY, '') === ''
   }
@@ -264,6 +370,7 @@ class CredentialStore {
   deleteProviderApiKey(providerId) {
     const id = typeof providerId === 'string' ? providerId.trim() : ''
     if (!id) return false
+    this.invalidateCredentialState()
     const stored = this.store.get(PROVIDER_API_KEYS_STORAGE_KEY, {})
     const encryptedByProvider = stored && typeof stored === 'object' ? { ...stored } : {}
     delete encryptedByProvider[id]
@@ -280,6 +387,7 @@ class CredentialStore {
 
 
   setProviderApiKeys(providers) {
+    this.invalidateCredentialState()
     if (!this.isEncryptionAvailable()) return false
     const encryptedByProvider = {}
     const endpointsByProvider = {}
@@ -329,37 +437,11 @@ class CredentialStore {
   }
 
   getCredentialState() {
-    const encryptionAvailable = this.isEncryptionAvailable()
-    const settings = this.store.get('settings', {}) || {}
-    const legacyApiKey = typeof settings.apiKey === 'string' && settings.apiKey.trim() !== ''
-    const legacyProviderKey = Array.isArray(settings.providers)
-      && settings.providers.some((provider) => String(provider?.apiKey || '').trim() !== '')
-    let decryptFailed = false
-    if (encryptionAvailable) {
-      const encryptedApiKey = this.store.get(API_KEY_STORAGE_KEY, '')
-      const encryptedProviders = this.store.get(PROVIDER_API_KEYS_STORAGE_KEY, {}) || {}
-      const blobs = [encryptedApiKey, ...Object.values(encryptedProviders)].filter(Boolean)
-      for (const blob of blobs) {
-        try {
-          this.safeStorage.decryptString(Buffer.from(blob, 'base64'))
-        } catch {
-          decryptFailed = true
-          break
-        }
-      }
-    }
-    return {
-      encryptionAvailable,
-      decryptFailed,
-      // The pre-D02 state: an old build left a key in the settings file. It stays there
-      // until encryption can take it over, so the UI asks the user to re-enter or clear it.
-      legacyPlaintext: legacyApiKey || legacyProviderKey,
-      sessionOnly: this.hasSessionSecrets(),
-      // D02 (04): the page explains the restart behaviour from this, so a temporary new
-      // value is never presented as if it had been saved.
-      sessionOverrides: this.getEffectiveCredentialState(),
-      encryptionFailed: this.encryptionFailed === true
-    }
+    // F01: getSettings() publishes the state it already decrypted on this pass, so the public
+    // settings read costs no extra DPAPI calls. Falls back to a fresh pass when the state has
+    // never been read or a credential mutated since.
+    if (this.stateCache && this.stateCache.generation === this.generation) return this.stateCache.state
+    return this.finalizeSettingsRead(this.createSettingsRead())
   }
 
   // ------------------------------------------------------------------------ migrations
@@ -375,6 +457,7 @@ class CredentialStore {
       // Verify the ciphertext reads back BEFORE removing the plaintext original.
       if (this.getApiKey() !== apiKey) return false
     }
+    this.invalidateCredentialState()
     const migratedSettings = { ...settings }
     delete migratedSettings.apiKey
     this.store.set('settings', migratedSettings)
@@ -390,6 +473,7 @@ class CredentialStore {
     const withKeys = providers.filter((provider) => String(provider?.apiKey || '').trim() !== '')
     if (!withKeys.length) return false
     if (!this.isEncryptionAvailable()) return false
+    this.invalidateCredentialState()
     const stored = this.store.get(PROVIDER_API_KEYS_STORAGE_KEY, {})
     const encryptedByProvider = stored && typeof stored === 'object' ? { ...stored } : {}
     for (const provider of withKeys) {
@@ -493,6 +577,7 @@ class CredentialStore {
   // session becomes a real encrypted credential (verify readback, then drop the memory copy).
   migrateSessionSecrets() {
     if (!this.hasSessionSecrets() || !this.isEncryptionAvailable()) return false
+    this.invalidateCredentialState()
     let migrated = false
     if (this.sessionApiKey) {
       const apiKey = this.sessionApiKey

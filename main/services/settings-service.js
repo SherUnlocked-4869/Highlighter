@@ -55,10 +55,16 @@ class SettingsService {
     this.defaults = defaults
     this.normalizeSettings = normalizeSettings
     this.migrateSettings = migrateSettings
+    // F01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 3.1): every
+    // getSettings() used to read and parse config.json and decrypt every provider key again.
+    // The snapshot below is the effective settings object; it is rebuilt only when the store or
+    // a credential changes, and callers must treat it as read-only.
+    this.settingsCache = null
     this.credentials = new CredentialStore({
       store,
       safeStorage,
-      onError: onCredentialError
+      onError: onCredentialError,
+      onChange: () => { this.settingsCache = null }
     })
     this.credentials.migrateLegacyApiKey()
     // D02: older builds also wrote provider keys into the settings file. Encrypt + verify
@@ -88,16 +94,22 @@ class SettingsService {
   }
 
   getSettings() {
-    const merged = mergeSettings(this.defaults, this.store.get('settings', {}))
-    const legacyApiKey = this.credentials.getApiKey(merged.apiKey)
-    merged.apiKey = legacyApiKey
+    if (this.settingsCache) return this.settingsCache
+    const stored = this.store.get('settings', {})
+    const merged = mergeSettings(this.defaults, stored)
+    // F01: one shared read pass. The master credential is resolved before normalization (the
+    // legacy migration folds it into the provider catalog) and the provider credentials after
+    // it; the same pass also publishes the public credential state, so getPublicSettings() no
+    // longer decrypts every key a second time.
+    const read = this.credentials.createSettingsRead(stored)
+    merged.apiKey = this.credentials.getApiKey(merged.apiKey, read)
     const settings = this.normalizeSettings(merged)
     if (Array.isArray(settings.providers)) {
       settings.providers = settings.providers.map((provider) => ({
         ...provider,
         models: Array.isArray(provider.models) ? provider.models.map((model) => ({ ...model })) : provider.models
       }))
-      const providerKeys = this.credentials.getProviderApiKeys(settings.providers)
+      const providerKeys = this.credentials.getProviderApiKeys(settings.providers, read)
       for (const provider of settings.providers) {
         if (provider && Object.hasOwn(providerKeys, provider.id)) provider.apiKey = providerKeys[provider.id]
       }
@@ -106,7 +118,16 @@ class SettingsService {
         if (deepseek?.apiKey) settings.apiKey = deepseek.apiKey
       }
     }
+    this.credentials.finalizeSettingsRead(read)
+    this.settingsCache = settings
     return settings
+  }
+
+  // F01: every production write goes through this service, so the snapshot is invalidated on
+  // each successful write (and by CredentialStore.onChange for session-only credentials). An
+  // out-of-band writer of config.json must call this so a stale snapshot is never served.
+  invalidateSettingsCache() {
+    this.settingsCache = null
   }
 
   getPublicSettings(settings = this.getSettings()) {
@@ -204,6 +225,10 @@ class SettingsService {
       }
     }
     this.store.set('settings', storedSettings)
+    this.invalidateSettingsCache()
+    // The stored settings feed legacy-plaintext detection, so the public state is stale even
+    // when this save rewrote no credential ciphertext itself.
+    this.credentials.invalidateCredentialState()
     return this.getSettings()
   }
 

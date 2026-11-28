@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
 const {
+  HISTORY_ENTRY_PATH_KEYS,
   LOCATOR_NAME,
   PENDING_NAME,
   atomicWriteJson,
@@ -110,7 +111,10 @@ function rewriteConfig(config, source, target) {
     rewritten.captureHistory = rewritten.captureHistory.map((item) => {
       if (!item || typeof item !== 'object') return item
       const result = { ...item }
-      for (const name of ['filePath', 'thumbnailPath']) {
+      // H01 (section 2.1.4): an editable capture also references docPath and baseImagePath, which
+      // live under the same history root; rewriting only the two preview files left every
+      // "re-edit" pointing at the old root once it was cleaned up.
+      for (const name of HISTORY_ENTRY_PATH_KEYS) {
         if (Object.hasOwn(result, name)) result[name] = remapInside(result[name], source.history, target.history)
       }
       return result
@@ -451,7 +455,12 @@ async function migrateDataRoot({
     }
     const copiedHistoryFiles = await listFiles(staging.history)
     if (copiedHistoryFiles.length !== historyFiles.length) throw new Error('截图历史迁移文件计数不一致')
-    if (JSON.stringify(await createHistoryManifest(source.history)) !== JSON.stringify(await createHistoryManifest(staging.history))) throw new Error('截图历史迁移校验失败')
+    // Hash each file set once. Both manifests are needed anyway (the comparison
+    // below and the marker payload written later), so recomputing the staging
+    // manifest for the marker was a second full SHA-256 pass over the same files.
+    const sourceHistoryManifest = await createHistoryManifest(source.history)
+    const historyManifest = await createHistoryManifest(staging.history)
+    if (JSON.stringify(sourceHistoryManifest) !== JSON.stringify(historyManifest)) throw new Error('截图历史迁移校验失败')
     const persistentManifests = {}
     for (const name of ADDITIONAL_PERSISTENT) {
       // Legacy layouts predate the managed usage directory: nothing to copy, but
@@ -477,7 +486,6 @@ async function migrateDataRoot({
 
     const configSha256 = copiedConfigCount ? await sha256File(staging.configFile) : null
     const logSha256 = copiedLogCount ? await sha256File(staging.logFile) : null
-    const historyManifest = await createHistoryManifest(staging.history)
 
     const marker = {
       version: MARKER_VERSION,

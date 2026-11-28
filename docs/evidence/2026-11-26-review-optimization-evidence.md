@@ -1,0 +1,78 @@
+# 2026-11-26 全量代码评审 · 交付证据登记表
+
+本表登记 [全量代码评审与优化建议报告](../reviews/2026-11-26-code-review-and-optimization-report.md)
+对应开发计划 [2026-11-26-review-optimization-development-plan.md](../plans/2026-11-26-review-optimization-development-plan.md)
+中每张工单的自动化证据与真机门槛。
+
+`scripts/check-review-evidence.js` 会校验：表中每一行的工单编号都能在所列测试文件中找到且文件存在；
+每个 P0 工单至少有一个回归用例。缺真实设备/GPU/安装包样本的项在“真机门槛”列说明，
+不以模拟通过冒充真机结论。
+
+## 工单证据
+
+| 工单 | 优先级 | 状态 | 回归测试 | 真机/发布门槛 |
+|---|---|---|---|---|
+| H01 | P0 | 已实现 | test/h01-history-document-cleanup.test.js | 真机删除/清空历史后检查 `history/documents/<id>/` 目录消失、设置页磁盘占用下降；真实数据目录迁移后从历史入口重新编辑 |
+| H02 | P0 | 已实现 | test/h02-mosaic-cache.test.js | 真机连续拖拽/微调/缩放马赛克笔触 30 帧后仍命中缓存（离屏 Canvas 分配数不增长），导出像素与旧实现逐像素一致 |
+| H03 | P0 | 已实现 | test/h03-markdown.test.js | 真实 Electron 划词窗口内流式渲染的选区保持与代码块展示（宿主沙箱经 AGENTS.md 环境处理后可跑） |
+| H04 | P0 | 已实现（报告 dwId 偏移有误，按官方 SDK 实现） | test/h04-utf8-decode.test.js, test/h04-everything-dwid.test.js | 真实 Everything 1.4/1.5 上中文路径 600 条大包；人为延迟回执验证迟到包丢弃；本机 1.4.1.1032 正路径冒烟已通过 |
+| H05 | P0 | 已实现 | test/h05-architecture-extraction.test.js | 打包候选上托盘菜单/记录/代理状态与实际点击行为（真机托盘交互） |
+| F02 | P0 | 已实现 | test/f02-selection-ipc-storm.test.js | 真机日常打字/滚轮时主进程不再收到 selection-hook IPC 唤醒；划词显示、点外隐藏、快捷键隐藏与剪贴板护栏不变 |
+| F07 | P2 | 已实现（会话索引、usage 三项、AI/OCR/迁移） | test/f07-conversation-store-index.test.js, test/f07-usage-costs.test.js, test/f07-ai-ocr-migration.test.js | 真实 20 条会话目录的托盘重建延迟；真实 usage.db 在 24 个月数据下的体积对比 |
+| F01 | P0 | 已实现 | test/f01-storage-performance.test.js | 真实 config.json/DPAPI 下的 getSettings 二读为零；真实日志轮转与历史分页（真机） |
+| F03 | P0 | 已实现 | test/f03-recording-performance.test.js | 真实 1080p30 连录 30 分钟的防病毒扫描停顿；真实 ffmpeg framemd5 波纹等价（本机已做 90 帧） |
+| F04 | P1 | 已实现 | test/f04-everything-performance.test.js | 真机 Everything 1.4/1.5 下逐字符搜索无全桌面枚举；120s 空闲后索引进程仍存活 |
+| F05 | P1 | 已实现 | test/f05-clipboard-performance.test.js | 真机 4K PNG 复制/粘贴的屏障持锁时长与租约超时；clipboard 侧车需按源码重建 |
+| F06 | P1 | 已实现 | test/f06-capture-performance.test.js | 真机长截图语料（matcher shift 一致性与耗时）、贴图 LRU 驻留内存曲线 |
+| U01 | P1 | 已实现 | test/u01-capture-ux.test.js | 真机多选拖拽手感、中文输入法内联编辑、微软雅黑下 CJK 包围盒与 PDF 结果条 |
+| U02 | P1 | 已实现（DEV-01 贴图矢量重标注、DEV-02 当前视图离屏导出已提交；真机门槛未验） | test/u02-longpin-ux.test.js, test/u02-pin-reedit.test.js, test/u02-pin-view-export.test.js | 真机 100%/150% 贴图“改旧标注→保存→重开”往返与私密截图工件检查、离屏导出像素/无闪烁录像、双屏松手、5 万 px 长图预览与固定悬浮栏剥离（执行记录见[后续批次执行记录](../plans/2026-11-28-follow-up-execution-status.md)） |
+| U04 | P1 | 已实现（表格/搜索、划词锁/终端保护/粘贴时序） | test/u04-table-search.test.js, test/u04-selection-lock.test.js | 真机终端内 Ctrl+C 注入防护、真实 Everything 目录 isFolder、双窗口并发长考、粘贴时序手感 |
+| N03 | P2 | 已实现（DEV-05 导出成片覆盖层、DEV-04 全局快捷键采集已提交；真机键盘矩阵未验） | test/n03-recording-hud.test.js, test/recording-export.test.js | 真机控制条/演示页/文本框/密码框/拼音组字间切换的快捷键矩阵（DEV-04）、真实音轨静音分析与一键裁剪；预览 vs 导出逐帧对照与硬件编码器（DEV-05）。DEV-04 原生/接线证据另见 test/selection-keyboard-combos.test.js、test/n03-global-keystrokes.test.js、test/recording-workbench-ui.test.js（文件内未标 N03，登记表格式门禁不收录，见[执行记录](../plans/2026-11-28-follow-up-execution-status.md)） |
+| N06 | P2 | 已实现（DEV-09 决定延续现行策略：备份与 `.hlbackup.zip` 均不含 API Key） | test/n06-config-search-backup.test.js, test/data-root-backup.test.js | DEV-09 决策见[决策记录](../plans/2026-11-28-dev09-credential-migration-decision.md)；凭据边界已自动化覆盖（明文/加密归档无 Key、错误密码/篡改在写入目标前失败、三语重配提示）。真机仍待：安装候选上 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
+| N01 | P2 | 已实现 | test/n01-auto-redact.test.js | 真机真实 OCR 模型下的脱敏命中/漏报与手动删除体验 |
+| N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作；真机反馈的三项交互修复见下节） | test/n02-history-ocr.test.js, test/n02-history-ocr-ux.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型；三项交互修复的真机门槛见下节 |
+| N04 | P2 | 已实现（原生拖拽投递需真机） | test/n04-search-quicklook.test.js | 真机拖到微信/钉钉/VS Code/浏览器、可见窗口 blur 清理 |
+| N05 | P2 | 已实现（DEV-08 真实像素比对已按实测采用为显式可选模式，默认仍为闪烁/洋葱皮） | test/n05-pin-onion-snapshot.test.js, test/n05-pin-screen-diff.test.js, test/n05-pin-diff-view.test.js | 真机多显示器贴图快照恢复/挂起、洋葱皮可视比对；DEV-08 屏采排除已在本机实测（自身命中 0/30 帧、正面对照 0.986、叠加/负坐标/移动均通过，见[测量记录](../plans/2026-11-28-dev08-screen-diff-measurement.md)），仍需真机跨 DPI 拖动、锁屏/睡眠/RDP、10 分钟 CPU/GPU 曲线与第三方录屏检查 |
+| U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
+| U03 | P1 | 已实现 | test/u03-record-ux.test.js | 真机 window 模式重录、高分屏 4K 窗口录制、双路混音爆音与 Direct-Track 标注入口 |
+
+## 本轮验证记录（2026-11-26/27，本机）
+
+- 分支 `feat/review-optimization-2026-11-26`，基线 `master@0e8d040`（代码基线 8416120）。共 41 个提交，153 个文件，+29742/−1722。
+- 全量 `node --test test/*.test.js`：**3214 项，3213 通过**。唯一失败为 `test/usage-query.test.js` 的
+  “query p95 stays inside the 100 ms budget on ~100k synthetic buckets”（全量并发下 p95 约 110–180 ms；
+  单独运行 p95 66.8 ms 通过）。该测试与本次改动无关，属 AGENTS.md 已记录的满负载计时抖动。
+- `npm run check`：语法 610 文件、架构（`main.js` 1204/1205 行、最长行 158/160）、i18n（三语对称，未迁移
+  CJK 602/606）、评审证据（2 张登记表 / 50 工单 / 9 个必需 P0）全部通过。
+- 原生：`cargo test --locked --manifest-path native/clipboard/Cargo.toml`（lib 30 + 集成 12）通过；
+  `native/everything-search` cargo test 13 通过；`native/ocr` cargo test 4 通过；
+  `native/everything-search/bin/HighlighterEverything.exe` 已随 Rust 改动重建并提交；
+  `vendor/selection-hook`、`native/clipboard`、`native/ocr` 的构建产物在 gitignore 中，需由 `npm run build:native` 重建。
+- 真实 Electron 探针（本机按 AGENTS.md 处理 `ELECTRON_RUN_AS_NODE`、`TMP/TEMP`、`--no-sandbox` 注入）：
+  `diagnostics-runtime`、`electron-runtime`、`window-security-runtime` 通过。集成期间由探针发现并修复了两处回归：
+  H05 遗留的 `tray` 悬空引用导致 before-quit 抛错、应用无法退出（diagnostics 探针 40 s 超时暴露）；
+  N05 把 `applyPinData` 包进 `startPinRenderer()` 后窗口启动标记不可达（locked-sandbox 探针暴露）。
+- 未执行：`verify:package`（需完整 electron-builder 产物与静默安装）与上表“真机/发布门槛”列的全部项。
+  这些项不能由本机模拟替代，未冒充通过。
+
+## 2026-11-27 真机反馈修复（N02 三项交互）
+
+发布候选 5.1.0 的真机验证发现截图历史页三个交互问题；复现结论、根因与修复设计见
+[修复方案](../plans/2026-11-27-history-ocr-ux-fixes.md)，回归证据：
+
+| 问题 | 修复 | 自动化证据 | 真机门槛 |
+|---|---|---|---|
+| 中文输入法组字时整页重绘，候选词中断、搜索框只剩拼音 | 搜索框 IME 感知（`compositionstart/end`、忽略 `isComposing` 的 `input`、Enter 229 保护）+ 筛选只更新结果区（卡片 diff，不重建筛选栏与输入框） | test/n02-history-ocr-ux.test.js（IME 接线 / 结果区更新）；e2e/highlighter.spec.js「history search survives an IME composition」（真实 Electron 中组字期间不替换输入节点） | 微软拼音/搜狗实际输入中文（含候选词翻页与 Esc 取消） |
+| 无法判断 OCR 是否完成，空结果含义不明 | 记录级 OCR 状态（pending/done/empty/failed/skipped）+ 卡片徽标 + 页面状态条 + 单卡重试/页面级补索引 | test/n02-history-ocr-ux.test.js（状态写入、陈旧 pending、旧数据兼容、重试、状态条优先级） | 真实 OCR 模型下观察 pending→done/empty/failed 与「识别未索引项」进度 |
+| 标签只能手动输入搜索 | `history:list` 命令信封新增 `list-tags`，筛选栏标签下拉（精确匹配 + 条数）；过滤维度 `tag` | test/n02-history-ocr-ux.test.js（精确匹配、计数、信封路由）；test/history-service.test.js（过滤器形状） | 浅色/深色、窄窗与标签增删后下拉同步 |
+
+实现完成后经独立代码评审复核，另修正了修复自身引入/遗留的 8 处问题（筛选后“加载更多”
+失效、缩略图被版本失配误判、组字标志卡死、标签读取失败清空筛选、二次等待缺守卫、
+`index-ocr` 缺目标默认全量、空结果/失效文件重复补索引、截图保存路径多一次整表写入），
+明细见修复方案 §4；其中分页问题由 `e2e/main-window-ui.spec.js` 的“搜索后加载第二页”用例覆盖。
+
+## 说明
+
+- 本表只登记可以在 CI 复跑的用例；真机列写的是仍需在发布候选上执行、且不能由本地模拟替代的证据。
+- 测试文件名必须真实存在且包含对应工单编号（注释或用例名均可），由 `npm run check:review-evidence` 强制。
+- 新增 P0 时同一次提交必须补：实现、回归用例、本表一行。

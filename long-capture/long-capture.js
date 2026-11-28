@@ -44,6 +44,21 @@ const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true })
 const analysisCanvas = document.createElement('canvas')
 const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true })
 
+// U02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 4.2-1): the preview
+// is a scaled FOOTPRINT of the strip list, never a running rescale of the previous canvas.
+// The old code multiplied the whole preview by 1000/oldHeight once it passed 1200px, so a
+// long capture was resampled a dozen times (blurred top half) and the vertical mapping became
+// non-linear, which desynced the percentage trim line from the real cut. Each strip is now
+// resampled exactly once into a thumbnail; the preview is composed from those at one uniform
+// scale, so pixel y / preview height always equals raw y / raw height (up to 1px rounding).
+const PREVIEW_THUMB_EDGE = 160
+// Chromium refuses canvas dimensions above 32767 and huge canvases are pointless at this size;
+// a very long capture keeps the same linear mapping by shrinking the thumbnail edge instead.
+const PREVIEW_MAX_EDGE = 16384
+let previewSegments = []
+let previewScale = 0
+let previewCrossLength = 0
+
 function rejectWorkerRequests(error) {
   for (const request of workerRequests.values()) {
     clearTimeout(request.timeout)
@@ -125,6 +140,9 @@ function updateControls() {
 }
 
 function updateTrimPreview() {
+  // The preview is a linear thumbnail of the whole untrimmed extent (see appendPreview), so a
+  // percentage clip here really lands on the same raw pixel the main-process trim cuts. The
+  // old canvas was rescaled non-linearly, which is why this line used to drift.
   const rawLength = (axis === 'vertical' ? total.height : total.width) + (total.trimStart || 0) + (total.trimEnd || 0)
   if (!rawLength) { preview.style.clipPath = ''; return }
   const start = Math.min(49.5, (total.trimStart || 0) / rawLength * 100)
@@ -192,25 +210,44 @@ function drawCurrentFrame() {
   return analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height)
 }
 
-function makeStripCanvas(shift, initialized) {
+// U02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 4.2-2): a frame that
+// scrolled by `shift` pixels exposes that much new content at the leading/trailing edge, but
+// the edge rows may belong to a fixed top/bottom (or left/right) bar. `sticky` comes from
+// matcher.detectStickyBands via the worker result; this helper turns it into the source rect
+// that contains ONLY the scrolled content, falling back to the shipped full-edge cut when the
+// bands are absent or would not leave room for the whole increment.
+function normalizeStickyBand(value, length) {
+  const amount = Math.max(0, Math.round(Number(value) || 0))
+  return Math.min(amount, Math.max(0, length - 1))
+}
+
+function stripCutRect(shift, initialized, sticky) {
+  if (initialized) return { x: 0, y: 0, width: cropCanvas.width, height: cropCanvas.height }
+  const horizontal = axis === 'horizontal'
+  const length = horizontal ? cropCanvas.width : cropCanvas.height
+  const cross = horizontal ? cropCanvas.height : cropCanvas.width
+  const wanted = Math.min(length - 1, Math.abs(Number(shift) || 0))
+  if (!wanted) return { x: 0, y: 0, width: cropCanvas.width, height: cropCanvas.height }
+  const start = normalizeStickyBand(sticky?.start, length)
+  const end = normalizeStickyBand(sticky?.end, length)
+  // Only subtract the bands when the remaining content range can still supply the whole
+  // increment. A pathological band pair must never shorten the strip: the stitched extent
+  // and the matcher's position bookkeeping assume the strip is the full new-content length.
+  const useSticky = start + end > 0 && length - 1 - start - end >= wanted
+  const leading = Number(shift) < 0
+  const sourceAlong = leading
+    ? (useSticky ? start : 0)
+    : (useSticky ? length - end - wanted : length - wanted)
+  if (horizontal) return { x: sourceAlong, y: 0, width: wanted, height: cross }
+  return { x: 0, y: sourceAlong, width: cross, height: wanted }
+}
+
+function makeStripCanvas(shift, initialized, sticky) {
+  const rect = stripCutRect(shift, initialized, sticky)
   const strip = document.createElement('canvas')
-  let sourceX = 0
-  let sourceY = 0
-  if (initialized) {
-    strip.width = cropCanvas.width
-    strip.height = cropCanvas.height
-  } else if (axis === 'vertical') {
-    const amount = Math.min(cropCanvas.height - 1, Math.abs(shift))
-    strip.width = cropCanvas.width
-    strip.height = amount
-    sourceY = shift > 0 ? cropCanvas.height - amount : 0
-  } else {
-    const amount = Math.min(cropCanvas.width - 1, Math.abs(shift))
-    strip.width = amount
-    strip.height = cropCanvas.height
-    sourceX = shift > 0 ? cropCanvas.width - amount : 0
-  }
-  strip.getContext('2d').drawImage(cropCanvas, sourceX, sourceY, strip.width, strip.height, 0, 0, strip.width, strip.height)
+  strip.width = rect.width
+  strip.height = rect.height
+  strip.getContext('2d').drawImage(cropCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height)
   return strip
 }
 
@@ -218,45 +255,85 @@ function canvasBlob(canvas) {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error(t('long-capture.error.strip-encode-failed'))), 'image/png'))
 }
 
-function appendPreview(strip, position, firstStrip) {
-  const old = document.createElement('canvas')
-  old.width = preview.width
-  old.height = preview.height
-  old.getContext('2d').drawImage(preview, 0, 0)
-  if (firstStrip) {
-    if (axis === 'vertical') {
-      preview.width = 160
-      preview.height = Math.max(1, Math.round(strip.height * 160 / strip.width))
-    } else {
-      preview.height = 160
-      preview.width = Math.max(1, Math.round(strip.width * 160 / strip.height))
-    }
-    previewContext.drawImage(strip, 0, 0, preview.width, preview.height)
-  } else if (axis === 'vertical') {
-    const addition = Math.max(1, Math.round(strip.height * preview.width / strip.width))
-    let nextHeight = old.height + addition
-    const scale = nextHeight > 1200 ? 1000 / old.height : 1
-    const preservedHeight = Math.max(1, Math.round(old.height * scale))
-    const preservedWidth = Math.max(1, Math.round(old.width * scale))
-    nextHeight = preservedHeight + addition
-    preview.width = preservedWidth
-    preview.height = nextHeight
-    const y = position === 'prepend' ? addition : 0
-    previewContext.drawImage(old, 0, y, preservedWidth, preservedHeight)
-    previewContext.drawImage(strip, 0, position === 'prepend' ? 0 : preservedHeight, preservedWidth, addition)
+// Uniform preview scale for the stitched extent: the cross axis is thumbnailed to
+// PREVIEW_THUMB_EDGE px until the along axis would outgrow PREVIEW_MAX_EDGE, at which point
+// both axes shrink together so the mapping stays linear in both directions.
+function previewScaleFor(rawLength, crossLength) {
+  const cross = Math.max(1, Number(crossLength) || 0)
+  const length = Math.max(0, Number(rawLength) || 0)
+  if (!length) return 0
+  return Math.min(PREVIEW_THUMB_EDGE / cross, PREVIEW_MAX_EDGE / length)
+}
+
+function createPreviewThumb(strip, scale) {
+  const thumb = document.createElement('canvas')
+  thumb.width = Math.max(1, Math.round(strip.width * scale))
+  thumb.height = Math.max(1, Math.round(strip.height * scale))
+  thumb.getContext('2d').drawImage(strip, 0, 0, strip.width, strip.height, 0, 0, thumb.width, thumb.height)
+  return thumb
+}
+
+// Re-thumbnails an already cached thumbnail. Only the PREVIEW_MAX_EDGE cap path reaches this,
+// so the normal capture keeps the "each strip is resampled exactly once" property.
+function rescalePreviewThumb(segment, scale) {
+  const thumb = document.createElement('canvas')
+  thumb.width = Math.max(1, Math.round(segment.rawWidth * scale))
+  thumb.height = Math.max(1, Math.round(segment.rawHeight * scale))
+  thumb.getContext('2d').drawImage(segment.canvas, 0, 0, segment.canvas.width, segment.canvas.height, 0, 0, thumb.width, thumb.height)
+  return thumb
+}
+
+function renderPreview() {
+  if (!previewSegments.length || !previewScale) return
+  const rawLength = previewSegments.reduce((sum, segment) => sum + segment.along, 0)
+  const crossSize = Math.max(1, Math.round(previewCrossLength * previewScale))
+  const alongSize = Math.max(1, Math.round(rawLength * previewScale))
+  // Assigning the dimensions always resets the bitmap, so the loop below is a full redraw
+  // from the cached thumbnails - the preview itself is never used as a source.
+  if (axis === 'vertical') {
+    preview.width = crossSize
+    preview.height = alongSize
   } else {
-    const addition = Math.max(1, Math.round(strip.width * preview.height / strip.height))
-    let nextWidth = old.width + addition
-    const scale = nextWidth > 1200 ? 1000 / old.width : 1
-    const preservedWidth = Math.max(1, Math.round(old.width * scale))
-    const preservedHeight = Math.max(1, Math.round(old.height * scale))
-    nextWidth = preservedWidth + addition
-    preview.width = nextWidth
-    preview.height = preservedHeight
-    const x = position === 'prepend' ? addition : 0
-    previewContext.drawImage(old, x, 0, preservedWidth, preservedHeight)
-    previewContext.drawImage(strip, position === 'prepend' ? 0 : preservedWidth, 0, addition, preservedHeight)
+    preview.width = alongSize
+    preview.height = crossSize
   }
+  let offset = 0
+  for (const segment of previewSegments) {
+    // Snapping both slot boundaries keeps the mapping linear; per-strip rounding would drift.
+    const start = Math.round(offset * previewScale)
+    const end = Math.round((offset + segment.along) * previewScale)
+    const length = Math.max(1, end - start)
+    if (axis === 'vertical') {
+      previewContext.drawImage(segment.canvas, 0, 0, segment.canvas.width, segment.canvas.height, 0, start, crossSize, length)
+    } else {
+      previewContext.drawImage(segment.canvas, 0, 0, segment.canvas.width, segment.canvas.height, start, 0, length, crossSize)
+    }
+    offset += segment.along
+  }
+}
+
+function appendPreview(strip, position, firstStrip) {
+  const rawWidth = Math.max(1, strip.width)
+  const rawHeight = Math.max(1, strip.height)
+  if (firstStrip) {
+    previewSegments = []
+    previewScale = 0
+    previewCrossLength = axis === 'vertical' ? rawWidth : rawHeight
+  }
+  const along = axis === 'vertical' ? rawHeight : rawWidth
+  const cross = axis === 'vertical' ? rawWidth : rawHeight
+  if (!previewCrossLength) previewCrossLength = cross
+  const rawLength = previewSegments.reduce((sum, segment) => sum + segment.along, 0) + along
+  const scale = previewScaleFor(rawLength, previewCrossLength)
+  if (!scale) return
+  if (!previewScale || Math.abs(scale - previewScale) > 1e-9) {
+    previewSegments = previewSegments.map((segment) => ({ ...segment, canvas: rescalePreviewThumb(segment, scale) }))
+    previewScale = scale
+  }
+  const segment = { canvas: createPreviewThumb(strip, scale), along, cross, rawWidth, rawHeight }
+  if (position === 'prepend') previewSegments.unshift(segment)
+  else previewSegments.push(segment)
+  renderPreview()
   emptyPreview.hidden = true
 }
 
@@ -308,7 +385,7 @@ async function captureFrame() {
       statusKey = 'long-capture.status.initial-recorded'
     } else if (result.status === 'matched') {
       if (result.extension) {
-        const strip = makeStripCanvas(result.extension, false)
+        const strip = makeStripCanvas(result.extension, false, result.sticky)
         await uploadStrip(strip, result.extension > 0 ? 'append' : 'prepend', result.id)
         statusKey = 'long-capture.status.matched'
       } else {

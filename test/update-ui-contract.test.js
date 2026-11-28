@@ -29,7 +29,9 @@ test('main process owns updater lifecycle, diagnostics, channel settings, and in
   // budget); each still resolves the lazily created service through main.js's
   // resolver, so the updater is not constructed until it is really needed.
   assert.match(updateIpc, /getStatus: \(\) => service\(\)\.getStatus\(\)/)
-  assert.match(main, /updateService: createUpdateIpcController\(\{[\s\S]*getUpdateService: \(\) => resolveUpdateService\(\)/)
+  // H05: registration lives in main/ipc/index.js.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /updateService: createUpdateIpcController\(\{[\s\S]*getUpdateService: \(\) => resolveUpdateService\(\)/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*updateDomain\?\.dispose\(\)/)
 })
 

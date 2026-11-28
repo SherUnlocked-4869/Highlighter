@@ -28,6 +28,70 @@ const recordingQuality = window.recordingQuality
 // this file owns the MediaRecorder side effects (pause/resume) it asks for.
 const { createChunkBackpressurePolicy } = window.chunkBackpressure
 
+// N03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3): keystroke capsule
+// capture policy. The block between the markers is PURE and self-contained: the control bar calls
+// it, and test/n03-recording-hud.test.js extracts and executes the shipped block verbatim.
+// Privacy rule: only modifier chords (Ctrl/Alt/Meta + key) and a short whitelist of navigation /
+// function keys are recorded. Plain typing - including Shift+letter, digits, IME composition and
+// anything typed into an editable field - never leaves this window.
+/* N03-KEYSTROKE-POLICY-START */
+const KEYSTROKE_FLUSH_MS = 250
+const KEYSTROKE_BUFFER_LIMIT = 2000
+const KEYSTROKE_MODIFIER_KEYS = Object.freeze(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'OS', 'Fn'])
+const KEYSTROKE_SINGLE_KEYS = Object.freeze([
+  'Esc', 'Enter', 'Tab', 'Backspace', 'Delete', 'Insert', 'Home', 'End',
+  'PageUp', 'PageDown', 'Up', 'Down', 'Left', 'Right',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'
+])
+const KEYSTROKE_KEY_ALIASES = Object.freeze({
+  ' ': 'Space',
+  Spacebar: 'Space',
+  Escape: 'Esc',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right'
+})
+
+function isEditableKeystrokeTarget(target) {
+  if (!target || typeof target !== 'object') return false
+  const tag = String(target.tagName || '').toUpperCase()
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  return target.isContentEditable === true
+}
+
+function formatKeystrokeCombo(event) {
+  if (!event) return ''
+  const key = typeof event.key === 'string' ? event.key : ''
+  if (!key) return ''
+  const modifiers = []
+  if (event.ctrlKey === true) modifiers.push('Ctrl')
+  if (event.altKey === true) modifiers.push('Alt')
+  if (event.shiftKey === true) modifiers.push('Shift')
+  if (event.metaKey === true) modifiers.push('Win')
+  let label = KEYSTROKE_KEY_ALIASES[key] || key
+  if (label.length === 1) label = label.toUpperCase()
+  if (!/^[A-Za-z0-9]{1,16}$/.test(label)) return ''
+  if (modifiers.length === 0) return KEYSTROKE_SINGLE_KEYS.includes(label) ? label : ''
+  return modifiers.join('+') + '+' + label
+}
+
+function shouldCaptureKeystroke(event, state) {
+  if (!event || state !== 'recording') return false
+  if (event.repeat === true) return false
+  // IME composition (keydown keyCode 229 / isComposing) is text input, not a shortcut.
+  if (event.isComposing === true || event.keyCode === 229) return false
+  const key = typeof event.key === 'string' ? event.key : ''
+  if (!key || key === 'Unidentified' || key === 'Process') return false
+  if (KEYSTROKE_MODIFIER_KEYS.includes(key)) return false
+  if (isEditableKeystrokeTarget(event.target)) return false
+  const combo = formatKeystrokeCombo(event)
+  if (!combo) return false
+  const hasModifier = event.ctrlKey === true || event.altKey === true || event.metaKey === true
+  return hasModifier || KEYSTROKE_SINGLE_KEYS.includes(combo)
+}
+/* N03-KEYSTROKE-POLICY-END */
+
 const controlView = document.getElementById('controlView')
 const timeElement = document.getElementById('time')
 const statusLabel = document.getElementById('statusLabel')
@@ -168,6 +232,10 @@ let pausedTotal = 0
 let mediaStartedAtWall = 0
 let pausedIntervals = []
 let pauseStartedAtWall = 0
+// N03 keystroke capsules: captured locally (keydown only fires for this window) and piggybacked
+// on the authoritative state report, so the frozen preload/IPC surface needs no new channel.
+let pendingKeystrokes = []
+let keystrokeFlushTimer = 0
 let clockTimer = 0
 let countdownVersion = 0
 let stateVersion = 0
@@ -190,6 +258,12 @@ let captureMode = 'display'
 let windowCaptureTitle = ''
 let windowPixelSize = null
 let annotationAllowed = true
+// U03 (review §4.3): a Direct-Track take encodes the source track as-is, so it cannot absorb a
+// composited annotation layer. The entrance is disabled as soon as that decision is taken, instead
+// of letting the first stroke abort the recording through `annotations-present`. The lock state is
+// derived from `directTrackTakeActive()` (one source of truth); the hint node is created lazily.
+let annotationDirectTrackHint = null
+const ANNOTATION_DIRECT_TRACK_HINT_KEY = 'record.annotation.direct-track-disabled'
 // B04: per-take sound check. `preflight` is the pure state machine from
 // shared/audio-preflight.js; the streams/context below are its device half and are
 // released by releasePreflightDevices() on every exit path.
@@ -261,6 +335,43 @@ function finishTiming() {
   const intervals = pausedIntervals.map((interval) => ({ startWall: interval.startWall, endWall: interval.endWall }))
   if (pauseStartedAtWall) intervals.push({ startWall: pauseStartedAtWall, endWall: Date.now() })
   return { mediaStartedAtWall, pausedIntervals: intervals }
+}
+
+// N03: the renderer half of the shortcut capsules. `keydown` on this window is the only source
+// (no global hook, no text content); the policy above decides what is a shortcut worth showing.
+function resetKeystrokeCapture() {
+  pendingKeystrokes = []
+  if (keystrokeFlushTimer) {
+    clearTimeout(keystrokeFlushTimer)
+    keystrokeFlushTimer = 0
+  }
+}
+
+function flushKeystrokes() {
+  if (pendingKeystrokes.length === 0 || !sessionId) return false
+  const batch = pendingKeystrokes
+  pendingKeystrokes = []
+  reportState({ keystrokes: batch })
+  return true
+}
+
+function scheduleKeystrokeFlush() {
+  if (keystrokeFlushTimer) return
+  keystrokeFlushTimer = setTimeout(() => {
+    keystrokeFlushTimer = 0
+    flushKeystrokes()
+  }, KEYSTROKE_FLUSH_MS)
+}
+
+function handleKeystroke(event) {
+  if (!shouldCaptureKeystroke(event, state)) return
+  const combo = formatKeystrokeCombo(event)
+  if (!combo) return
+  pendingKeystrokes.push({ at: Date.now(), combo })
+  if (pendingKeystrokes.length > KEYSTROKE_BUFFER_LIMIT) {
+    pendingKeystrokes.splice(0, pendingKeystrokes.length - KEYSTROKE_BUFFER_LIMIT)
+  }
+  scheduleKeystrokeFlush()
 }
 
 function renderClock() {
@@ -364,16 +475,22 @@ function snapshotState() {
   }
 }
 
-function reportState() {
+function reportState(extra = null) {
   const status = reportStatusFor(state)
   if (!status) return
   stateVersion += 1
+  // N03: shortcut batches ride on the authoritative state report; the main process accumulates
+  // them and only ever persists the validated combo subset.
+  const keystrokes = extra && Array.isArray(extra.keystrokes) && extra.keystrokes.length > 0
+    ? extra.keystrokes
+    : null
   window.recordAPI.reportState({
     sessionId,
     status,
     elapsedMs: Math.round(elapsedTime()),
     microphoneMuted,
-    stateVersion
+    stateVersion,
+    ...(keystrokes ? { keystrokes } : {})
   })
 }
 
@@ -390,7 +507,35 @@ function setBusy(value) {
 }
 
 function annotationEnabled() {
+  // U03: a direct-track take cannot composite annotations, so the entrance stays off for its
+  // whole lifetime even while recording (see applyDirectTrackAnnotationLock()).
+  if (directTrackTakeActive()) return false
   return !busy && ['recording', 'paused'].includes(state) && moreOpen
+}
+
+// Creates and updates the visible "annotations are off in direct-track mode" hint. It is added
+// beside the annotation tools by script so record.html stays the static markup it always was; the
+// text is an i18n key resolved here, never a hard-coded sentence.
+function renderAnnotationDirectTrackHint(locked) {
+  if (!annotationDirectTrackHint) {
+    const hint = document.createElement('span')
+    hint.id = 'annotationDirectTrackHint'
+    hint.className = 'annotation-direct-track-hint'
+    hint.setAttribute('role', 'note')
+    hint.style.marginLeft = '6px'
+    hint.style.fontSize = '11px'
+    hint.style.opacity = '0.85'
+    annotationDirectTrackHint = hint
+    if (annotationToolsElement && typeof annotationToolsElement.appendChild === 'function') {
+      annotationToolsElement.appendChild(hint)
+    }
+  }
+  const hint = annotationDirectTrackHint
+  const label = t(ANNOTATION_DIRECT_TRACK_HINT_KEY)
+  if (hint.textContent !== label) hint.textContent = label
+  hint.title = label
+  hint.hidden = !locked
+  return hint
 }
 
 function renderAnnotationControls() {
@@ -401,14 +546,31 @@ function renderAnnotationControls() {
     annotationPalette.hidden = true
     return
   }
+  // U03: Direct-Track mode disables the whole entrance (tools, style, undo/clear) and shows the
+  // reason; it never hides the row, so the user learns why drawing is unavailable.
+  const directTrackLocked = directTrackTakeActive()
   const enabled = annotationEnabled()
+  renderAnnotationDirectTrackHint(directTrackLocked)
   annotationToolButtons.forEach((button) => {
     button.disabled = !enabled
     button.classList.toggle('active', button.dataset.annotationTool === annotationTool)
+    if (directTrackLocked) button.setAttribute('aria-disabled', 'true')
+    else button.removeAttribute('aria-disabled')
   })
   annotationStyleButton.disabled = !enabled
   annotationUndoButton.disabled = !enabled || annotationSnapshot.annotations.length === 0
   annotationClearButton.disabled = !enabled || annotationSnapshot.annotations.length === 0
+  if (directTrackLocked) {
+    annotationStyleButton.setAttribute('aria-disabled', 'true')
+    annotationUndoButton.setAttribute('aria-disabled', 'true')
+    annotationClearButton.setAttribute('aria-disabled', 'true')
+    annotationToolsElement.setAttribute('aria-disabled', 'true')
+  } else {
+    annotationStyleButton.removeAttribute('aria-disabled')
+    annotationUndoButton.removeAttribute('aria-disabled')
+    annotationClearButton.removeAttribute('aria-disabled')
+    annotationToolsElement.removeAttribute('aria-disabled')
+  }
   annotationSwatch.style.background = annotationColor
   annotationWidthMark.textContent = String(annotationWidth)
   annotationColorButtons.forEach((button) => button.classList.toggle('active', button.dataset.annotationColor === annotationColor))
@@ -570,6 +732,9 @@ function toggleMorePanel() {
 
 function sendAnnotationCommand(action = '') {
   if (!annotationAllowed) return Promise.resolve(true)
+  // U03: once a Direct-Track take owns the encoder input, no annotation command may reach the
+  // overlay; applyDirectTrackAnnotationLock() owns the one pointer/passthrough push instead.
+  if (directTrackTakeActive()) return Promise.resolve(true)
   return window.recordAPI.setAnnotationCommand({
     tool: annotationTool,
     color: annotationColor,
@@ -1189,6 +1354,18 @@ function recorderInputStream() {
   return recorderStream || canvasStream
 }
 
+// U03: the frozen window output size. The measure box main uses to size a window source
+// thumbnail is clamped (1920x1080), so a high-DPI or large window arrives with a reported
+// pixelSize smaller than the frames the captured stream actually produces; encoding at the
+// measured size would downscale the whole take. The first decoded frame is the truth, and
+// the measured size only remains as the fallback for a frame whose dimensions are not known.
+function windowOutputPixelSize(source = sourceVideo) {
+  const sourceWidth = Math.round(Number(source?.videoWidth) || 0)
+  const sourceHeight = Math.round(Number(source?.videoHeight) || 0)
+  if (sourceWidth >= 2 && sourceHeight >= 2) return { width: sourceWidth, height: sourceHeight }
+  return normalizeWindowPixelSize(windowPixelSize)
+}
+
 // Freezes the source frame into the output canvas (display crop or window contain fit).
 // This is the pre-C05 sizing block, extracted unchanged: both the normal path and the
 // defensive direct-track fallback must produce the identical surface.
@@ -1197,11 +1374,13 @@ function buildOutputCanvas() {
   // one place, and the local binding shadows the module-level output canvas.
   const canvas = document.createElement('canvas')
   if (captureMode === 'window') {
-    // R4 window mode (contract §2.2): frozen output size from init.window.pixelSize; the
-    // captured frames are letter-boxed into it, so a later window resize cannot change
-    // the encoded resolution. Even dimensions keep the H.264/VP9 export path valid.
-    const width = Math.max(2, Math.round(windowPixelSize?.width || 0))
-    const height = Math.max(2, Math.round(windowPixelSize?.height || 0))
+    // R4 window mode (contract §2.2): the captured frames are letter-boxed into a frozen
+    // output surface, so a later window resize cannot change the encoded resolution. U03:
+    // that surface follows the real source frame size when the stream reports one, not the
+    // clamped thumbnail measurement. Even dimensions keep the H.264/VP9 export path valid.
+    const frozen = windowOutputPixelSize()
+    const width = Math.max(2, Math.round(frozen?.width || 0))
+    const height = Math.max(2, Math.round(frozen?.height || 0))
     canvas.width = Math.max(2, width - (width % 2))
     canvas.height = Math.max(2, height - (height % 2))
     canvas._recordFit = fitContainRect(sourceVideo.videoWidth, sourceVideo.videoHeight, canvas.width, canvas.height)
@@ -1313,6 +1492,30 @@ function handleDirectTrackCompositionChange(reason) {
   return true
 }
 
+// U03: takes effect immediately after the one-time direct-track decision, BEFORE the take is
+// encoding. It forces the annotation tool back to pointer/passthrough and disables the entrance,
+// so the reported `annotations-present` interrupt can only still happen for a stroke that was
+// already in flight, not for a deliberate one. Idempotent; a no-op on the composited paths.
+function applyDirectTrackAnnotationLock() {
+  if (captureMode === 'window' || !directTrackTakeActive()) return false
+  annotationTool = 'pointer'
+  renderAnnotationControls()
+  // Deliberately not routed through sendAnnotationCommand(): that helper already refuses once
+  // the lock is active, and this is the push that establishes the lock in main.
+  try {
+    if (typeof window.recordAPI?.setAnnotationCommand === 'function') {
+      Promise.resolve(window.recordAPI.setAnnotationCommand({
+        tool: 'pointer',
+        color: annotationColor,
+        width: annotationWidth,
+        action: '',
+        resetVersion: annotationResetVersion
+      })).catch(() => {})
+    }
+  } catch {}
+  return true
+}
+
 async function prepareSource() {
   if (desktopStream && (canvasStream || recorderStream)) return
   try {
@@ -1338,6 +1541,9 @@ async function prepareSource() {
     // annotation count are all known here, and MediaRecorder does not exist yet.
     directTrackDecision = decideDirectTrackTake(sourceSize)
     canvas = directTrackDecision.bypass ? null : buildOutputCanvas()
+    // U03: lock the annotation entrance as soon as the direct decision is final, while this is
+    // still preparation (the countdown runs after this and the recorder does not exist yet).
+    if (directTrackDecision.bypass) applyDirectTrackAnnotationLock()
     framePacer = createFramePacer(frameRate)
     compositorActiveDurationMs = 0
     if (!directTrackDecision.bypass) {
@@ -1634,6 +1840,7 @@ async function startRecorder(fromState) {
   mediaStartedAtWall = Date.now()
   pausedIntervals = []
   pauseStartedAtWall = 0
+  resetKeystrokeCapture()
   recorder.start(1000)
   startedAt = Date.now()
   pausedAt = 0
@@ -1767,6 +1974,10 @@ async function runFinalize() {
   // deadline is reported as an interruption; main keeps the original file and seals the
   // confirmed prefix (or reports that nothing was confirmed).
   if (!(await awaitAppendQueue())) markAppendQueueTimeout()
+  // N03: flush the last shortcut batch on the state channel BEFORE the finish invoke; both travel
+  // over the same renderer->main pipe in order, so main has every capsule before it builds the
+  // events.json track.
+  flushKeystrokes()
   let result = null
   try {
     result = await window.recordAPI.finishSession(sessionId, { ...finishTiming(), interrupted: Boolean(appendError) })
@@ -2539,6 +2750,13 @@ window.recordAPI.onInit((data) => {
 if (typeof navigator.mediaDevices?.addEventListener === 'function') {
   navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
 }
+
+// N03: capture-phase so a control-bar button shortcut is still seen; the policy itself refuses
+// plain typing, editable targets and modifier-only presses.
+addEventListener('keydown', handleKeystroke, true)
+// A take cancelled from any path (discard, source lost while preparing) must not leak a late
+// timer that would report into a session main already dropped.
+addEventListener('beforeunload', resetKeystrokeCapture)
 
 // P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
 // re-renders the dynamic parts (status label, annotation titles, audio notice) too.

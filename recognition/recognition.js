@@ -186,17 +186,60 @@ function decodeImageData(imageData, enhanced = false) {
   return window.jsQR(pixels, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' })
 }
 
-function decodeCanvas(source) {
-  if (!window.jsQR) return null
+// Chromium ships the Shape Detection API (BarcodeDetector) on most desktop
+// platforms. It decodes in native code, so when it is available there is no
+// reason to run the pure-JS jsQR scan first; jsQR stays as the fallback for
+// Chromium builds where the constructor is absent or rejects the frame.
+let barcodeDetector
+function nativeBarcodeDetector() {
+  if (barcodeDetector !== undefined) return barcodeDetector
+  if (typeof window.BarcodeDetector !== 'function') {
+    barcodeDetector = null
+    return barcodeDetector
+  }
+  try {
+    barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] })
+  } catch {
+    barcodeDetector = null
+  }
+  return barcodeDetector
+}
+
+async function decodeWithNativeBarcode(source) {
+  const detector = nativeBarcodeDetector()
+  if (!detector) return null
+  try {
+    const results = await detector.detect(source)
+    const match = (Array.isArray(results) ? results : []).find((result) => typeof result?.rawValue === 'string' && result.rawValue)
+    return match ? { data: match.rawValue } : null
+  } catch {
+    // A detector that exists can still reject an unsupported frame; the jsQR
+    // fallback below owns the error semantics in that case.
+    return null
+  }
+}
+
+// jsQR is synchronous and a single scan can take tens of milliseconds on a
+// large frame, so the candidate loop yields to the event loop between frames
+// instead of blocking the window (which is also still painting the result UI).
+function yieldToMainThread() {
+  return new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+async function decodeCanvas(source) {
   const maxDimension = Math.max(source.width, source.height)
   const minDimension = Math.min(source.width, source.height)
   const base = maxDimension > 2400 ? resizedCanvas(source, 2400 / maxDimension) : source
+  const native = await decodeWithNativeBarcode(base)
+  if (native) return native
   const candidates = [base]
   if (minDimension < 900) {
     const scale = Math.min(3, 900 / Math.max(1, minDimension), 2400 / Math.max(1, maxDimension))
     if (scale > 1.15) candidates.push(resizedCanvas(source, scale))
   }
-  for (const candidate of candidates) {
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (index > 0) await yieldToMainThread()
+    const candidate = candidates[index]
     const imageData = candidate.getContext('2d').getImageData(0, 0, candidate.width, candidate.height)
     const direct = decodeImageData(imageData)
     if (direct) return direct
@@ -222,7 +265,7 @@ async function recognizeQr(dataUrl) {
   canvas.width = image.naturalWidth
   canvas.height = image.naturalHeight
   canvas.getContext('2d').drawImage(image, 0, 0)
-  const result = decodeCanvas(canvas)
+  const result = await decodeCanvas(canvas)
   if (!result?.data) throw new Error(t('recognition.error.qr-not-found'))
   renderQr(result.data)
 }

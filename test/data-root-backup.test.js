@@ -7,6 +7,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
+const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
@@ -1126,4 +1127,109 @@ test('D04 (19): a failing migration verification rolls the new root back', async
   assert.equal(result.code, 'verification-failed')
   assert.equal(result.rolledBack, true)
   assert.deepEqual((await fsp.readdir(restoreRoot).catch(() => [])).filter((name) => name.startsWith('.highlighter-restore-')), [])
+})
+
+// ---------------------------------------------------------------------------
+// N06 / DEV-09: the credential boundary is part of the backup CONTRACT, not of
+// the encryption layer. Neither the plaintext module package nor the password
+// archive that wraps it may carry an API key; the keys are DPAPI-bound to this
+// machine/user, so a cross-machine restore requires re-entering them. Product
+// decision and user-facing guidance:
+// docs/plans/2026-11-28-dev09-credential-migration-decision.md
+// ---------------------------------------------------------------------------
+
+// Every byte of the package, decoded as latin1 so binary files are scanned too. A secret that
+// only appears in a copied file (not in the manifest) is still a leaked secret.
+async function readPackageText(directory) {
+  const parts = []
+  const walk = async (current) => {
+    for (const entry of await fsp.readdir(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(absolute)
+        continue
+      }
+      parts.push(`${path.relative(directory, absolute)}\n${await fsp.readFile(absolute, 'latin1')}`)
+    }
+  }
+  await walk(directory)
+  return parts.join('\n')
+}
+
+function loadConfigLocaleTable() {
+  const previous = globalThis.__LOCALES
+  globalThis.__LOCALES = {}
+  try {
+    const file = path.join(__dirname, '..', 'shared', 'locales', 'config.js')
+    delete require.cache[require.resolve(file)]
+    require(file)
+    return globalThis.__LOCALES
+  } finally {
+    globalThis.__LOCALES = previous
+  }
+}
+
+test('DEV-09: a plaintext package never carries an API key and a restore keeps it out of the new root', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture)
+
+  // Whole-package scan: neither the settings snapshot nor any copied file may carry a
+  // credential, and the excluded credential files must not sneak in as plain files.
+  const packageText = await readPackageText(created.directory)
+  assert.doesNotMatch(packageText, /sk-secret|sk-provider|sk-file-secret/, 'no API-key shape is copied')
+  assert.doesNotMatch(packageText, /credentials\.json|secret\.key/, 'credential files are excluded by name')
+  assert.ok(created.modules.settings.redactedCount >= 1, 'the manifest records the settings redaction')
+
+  const restoreRoot = path.join(fixture.parent, 'restored-credentials')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
+  assert.equal(restored.ok, true, `${restored.code} ${restored.message}`)
+  const configText = await fsp.readFile(path.join(restoreRoot, 'config', 'config.json'), 'utf8')
+  assert.doesNotMatch(configText, /sk-secret|sk-provider|sk-file-secret/)
+  const restoredConfig = JSON.parse(configText)
+  assert.equal(Object.hasOwn(restoredConfig, 'credentials'), false, 'the restored settings have no credential block')
+  assert.equal(restoredConfig.settings.screenshot.saveDirectory, fixture.externalShots, 'the rest of the settings survive')
+  assert.equal(restoredConfig.captureHistory[0].pinned, true, 'the restore is a real restore, not an empty root')
+  // The receipt reports what was restored and never echoes a credential back.
+  assert.doesNotMatch(JSON.stringify(restored), /sk-secret|sk-provider|sk-file-secret/)
+  assert.deepEqual(restored.sensitiveModules, ['history', 'clipboard', 'recordings'])
+})
+
+test('DEV-09: the reconfiguration guidance ships in all three languages with the backup controls', () => {
+  const tables = loadConfigLocaleTable()
+  const guidanceKey = 'config.settings-system.backup-key-hint'
+  const languages = ['zh-CN', 'en-US', 'zh-TW']
+  for (const language of languages) {
+    assert.equal(typeof tables[language]?.[guidanceKey], 'string', `${language} is missing ${guidanceKey}`)
+    assert.ok(tables[language][guidanceKey].trim().length > 0, `${language} has an empty ${guidanceKey}`)
+  }
+  // The copy is the user-facing re-entry instruction, not a migration promise.
+  assert.match(tables['zh-CN'][guidanceKey], /密钥/)
+  assert.match(tables['zh-CN'][guidanceKey], /重新填写|重新输入/)
+  assert.match(tables['en-US'][guidanceKey], /keys?/i)
+  assert.match(tables['en-US'][guidanceKey], /not included|excluded/i)
+  assert.match(tables['en-US'][guidanceKey], /re-enter|enter them again/i)
+  assert.doesNotMatch(tables['en-US'][guidanceKey], /[\u4e00-\u9fff]/)
+  assert.match(tables['zh-TW'][guidanceKey], /金鑰/)
+  assert.match(tables['zh-TW'][guidanceKey], /重新填寫|重新輸入/)
+
+  // The settings page renders that one statement above the directory backup actions, and the
+  // single-file archive card lives in the same "local backup" section: both export paths are
+  // covered by the same instruction and neither adds a migration claim of its own.
+  const settingsSource = fs.readFileSync(path.join(__dirname, '..', 'config', 'routes', 'settings.js'), 'utf8')
+  const section = settingsSource.slice(settingsSource.indexOf('const backupSettings'), settingsSource.indexOf('const diagnosticsSettings'))
+  assert.equal((section.match(/backup-key-hint/g) || []).length, 1, 'the guidance is stated exactly once')
+  const guidanceIndex = section.indexOf('backup-key-hint')
+  const archiveIndex = section.indexOf('data-section="backup-archive"')
+  assert.ok(guidanceIndex > 0 && archiveIndex > 0, 'both backup cards are in the same section')
+  assert.ok(guidanceIndex < archiveIndex, 'the credential guidance precedes the single-file archive card')
+  const archiveHint = tables['en-US']['config.settings-system.backup-archive-hint']
+  assert.equal(typeof archiveHint, 'string')
+  assert.doesNotMatch(archiveHint, /api[- ]?key|credential/i, 'the archive copy never claims keys are included')
+  // The restore receipts exist in every language; they report the import, they do not promise keys.
+  for (const language of languages) {
+    for (const key of ['config.settings-system.backup-restored', 'config.settings-system.backup-archive-restored']) {
+      assert.equal(typeof tables[language][key], 'string', `${language} is missing ${key}`)
+      assert.doesNotMatch(tables[language][key], /api[- ]?key|credential/i, `${key} must not claim credential migration`)
+    }
+  }
 })

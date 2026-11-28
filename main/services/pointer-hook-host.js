@@ -16,6 +16,10 @@
 //     the bounded buffer. Down/up are never throttled (they drive the click track).
 
 const SelectionHook = require('selection-hook')
+// DEV-04: JS-side second line of the keyboard privacy filter. The native addon already drops
+// plain typing / IME / repeats / sensitive focus, but events.json is privacy-sensitive and the
+// utility process must never forward anything outside the frozen capsule grammar.
+const { inspectGlobalKeystroke } = require('../domains/record/keystroke-capture')
 
 const MOVE_INTERVAL_MS = 50
 const COORDINATE_LIMIT = 100000
@@ -23,6 +27,11 @@ const COORDINATE_LIMIT = 100000
 let hook = null
 let disposed = false
 let lastMove = { x: null, y: null, at: 0 }
+// DEV-04: keyboard capture is opt-in per take (config.demoKeystrokes) and only enabled while the
+// take is actually recording. 'off' | 'enabled' | 'unsupported' | 'error'.
+let keyboardOptIn = false
+let keyboardRequested = false
+let keyboardMode = 'off'
 
 function parentPort() {
   return process.parentPort || null
@@ -65,8 +74,12 @@ function emitPointer(kind, data) {
 }
 
 function stopHook(reason = 'stop') {
+  setKeyboardEventsEnabled(false)
+  keyboardMode = 'off'
+  keyboardRequested = false
+  keyboardOptIn = false
   if (!hook) {
-    send({ type: 'status', status: 'stopped', reason, hookRunning: false })
+    send({ type: 'status', status: 'stopped', reason, hookRunning: false, keyboard: 'off' })
     return true
   }
   try {
@@ -78,12 +91,47 @@ function stopHook(reason = 'stop') {
     send({ type: 'error', message: error?.message || String(error) })
   }
   hook = null
-  send({ type: 'status', status: 'stopped', reason, hookRunning: false })
+  send({ type: 'status', status: 'stopped', reason, hookRunning: false, keyboard: 'off' })
   return true
 }
 
-function startHook() {
+// DEV-04 native contract: `setKeyboardEventsEnabled(bool)` is opt-in, default off, and cleared by
+// stop()/cleanup(). Feature-detected so a stale addon binary simply keeps keyboard capture off
+// instead of breaking recording.
+function setKeyboardEventsEnabled(enabled) {
+  if (!hook) return false
+  if (typeof hook.setKeyboardEventsEnabled !== 'function') {
+    keyboardMode = enabled ? 'unsupported' : 'off'
+    return false
+  }
+  try {
+    const applied = hook.setKeyboardEventsEnabled(enabled === true)
+    keyboardMode = enabled === true ? (applied === false ? 'unsupported' : 'enabled') : 'off'
+    return applied !== false
+  } catch (error) {
+    keyboardMode = 'error'
+    send({ type: 'error', message: error?.message || String(error) })
+    return false
+  }
+}
+
+// Native `key-combo` payload: { tMs, vkCode, scanCode, modifiers, combo, context }. The native
+// hook only emits combos whose event-time focus it positively classified as a safe non-text
+// surface (`context: 'safe'`); password/text-input/IME/unknown focus is dropped before
+// JavaScript. The filter re-validates the label AND requires that positive context, then returns
+// only `{ at, combo }`; nothing else leaves this process.
+function forwardKeyCombo(payload) {
+  if (disposed || !keyboardRequested) return
+  const accepted = inspectGlobalKeystroke(payload)
+  if (!accepted.ok) return
+  send({ type: 'keystroke', combo: accepted.combo, at: accepted.at })
+}
+
+function startHook(startMessage = {}) {
   if (disposed) return false
+  keyboardOptIn = startMessage.keystrokes === true
+  keyboardRequested = keyboardOptIn
+  keyboardMode = 'off'
   try {
     if (hook) {
       try { hook.stop() } catch {}
@@ -95,10 +143,16 @@ function startHook() {
     hook.on('mouse-move', (data) => emitPointer('move', data))
     hook.on('mouse-down', (data) => emitPointer('down', data))
     hook.on('mouse-up', (data) => emitPointer('up', data))
+    // DEV-04: subscribe BEFORE the hook starts so the first shortcut of a take is not missed.
+    // Unknown event names are harmless on EventEmitter-like addons, and `keyboardRequested`
+    // gates forwarding even if a legacy addon happens to emit something.
+    if (keyboardRequested && typeof hook.on === 'function') {
+      hook.on('key-combo', (data) => forwardKeyCombo(data))
+    }
     hook.on('status', (status) => {
       // startHook() reports 'started' once below; do not duplicate it.
       if (status === 'started') return
-      send({ type: 'status', status, hookRunning: hook ? !!hook.isRunning() : false })
+      send({ type: 'status', status, hookRunning: hook ? !!hook.isRunning() : false, keyboard: keyboardMode })
     })
     hook.on('error', (error) => {
       send({ type: 'error', message: error?.message || String(error) })
@@ -108,7 +162,7 @@ function startHook() {
     if (started === false) {
       try { hook.cleanup() } catch {}
       hook = null
-      send({ type: 'status', status: 'start-failed', hookRunning: false })
+      send({ type: 'status', status: 'start-failed', hookRunning: false, keyboard: 'off' })
       return false
     }
     try {
@@ -116,12 +170,14 @@ function startHook() {
     } catch (error) {
       send({ type: 'error', message: error?.message || String(error) })
     }
-    send({ type: 'status', status: 'started', hookRunning: true })
+    if (keyboardRequested) setKeyboardEventsEnabled(true)
+    send({ type: 'status', status: 'started', hookRunning: true, keyboard: keyboardMode })
     return true
   } catch (error) {
     hook = null
+    keyboardMode = 'off'
     send({ type: 'error', message: error?.message || String(error) })
-    send({ type: 'status', status: 'start-failed', hookRunning: false })
+    send({ type: 'status', status: 'start-failed', hookRunning: false, keyboard: 'off' })
     return false
   }
 }
@@ -133,17 +189,28 @@ function handleMessage(raw) {
   if (!message || typeof message !== 'object') return
   switch (message.type) {
     case 'start':
-      startHook()
+      startHook(message)
       break
     case 'stop':
       stopHook(message.reason || 'stop')
       break
+    // DEV-04 lifecycle: enable/disable global keyboard capture without tearing down the mouse
+    // hook (pause/resume, or a take that opted in/out). A disable message is exact: no
+    // `key-combo` is forwarded after it returns. Enabling is only possible for a take that opted
+    // in through the start message, so a buggy/late message cannot turn capture on.
+    case 'keyboard': {
+      keyboardRequested = keyboardOptIn && message.enabled === true
+      setKeyboardEventsEnabled(keyboardRequested)
+      send({ type: 'status', status: 'keyboard', enabled: keyboardRequested, keyboard: keyboardMode })
+      break
+    }
     case 'ping':
       send({
         type: 'pong',
         hookRunning: !!hook && (() => {
           try { return !!hook.isRunning() } catch { return false }
         })(),
+        keyboard: keyboardMode,
         pid: process.pid
       })
       break

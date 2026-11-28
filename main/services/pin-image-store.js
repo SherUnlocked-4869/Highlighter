@@ -16,6 +16,11 @@
 //     the I/O settles (a late handle can only be closed);
 //   * resident / queued / in-flight / failed-fallback bytes are reported separately and one
 //     underlying buffer is counted exactly once;
+//   * the resident set is LRU (P1 §6.5, 2026-11-26 review): once the 32 MiB target is exceeded,
+//     the LEAST RECENTLY USED resident pin is spilled - not the newest one, which is what the
+//     old FIFO behaviour did (the first pins stayed resident forever and every new pin paid for
+//     the disk round trip). `read()` and `retain()` mark a pin used; an image larger than the
+//     whole target can never be resident and spills immediately, as before;
 //   * the resident target (32 MiB) and concurrency (2) are unchanged, and a byte-based hard
 //     cap is applied to the queue and to in-flight payloads BEFORE a new buffer is accepted.
 //     A full queue answers a retryable error.
@@ -191,6 +196,8 @@ function createPinImageStore({
     } catch {}
   }
   let sequence = 0
+  // Monotonic recency stamp for the LRU resident set. Only relative order matters.
+  let accessClock = 0
   let openHandles = 0
   let spillFailures = 0
   let closed = false
@@ -312,6 +319,57 @@ function createPinImageStore({
     )
   }
 
+  function touch(entry) {
+    entry.lastUsed = ++accessClock
+  }
+
+  // Moves one resident buffer into the spill queue. The bytes leave the resident set
+  // synchronously, so the budget is correct before the disk work starts.
+  function spillResident(entry) {
+    const payload = entry.bytes
+    entry.bytes = null
+    entry.pendingBytes = payload
+    queuedBytes += payload.length
+    startSpill(entry)
+  }
+
+  // Brings the resident set back under the target after `entry` was inserted as resident.
+  // When the new pin fits the target, the least recently used OLDER pins are spilled and the
+  // new one stays in memory (LRU); the new pin itself is the victim only when it can never fit,
+  // and each victim is selected in recency order. Every victim is chosen and the queue byte cap
+  // is checked BEFORE any buffer is dropped, so a refusal leaves the store exactly as it was
+  // and the caller may retry.
+  function evictResidentsFor(entry) {
+    const size = entry.bytes.length
+    const victims = []
+    if (size > memoryBudget) {
+      victims.push(entry)
+    } else {
+      let usage = residentUsage()
+      const candidates = []
+      for (const asset of assets.values()) {
+        if (asset.bytes && asset !== entry) candidates.push(asset)
+      }
+      candidates.sort((left, right) => left.lastUsed - right.lastUsed)
+      for (const candidate of candidates) {
+        if (usage <= memoryBudget) break
+        victims.push(candidate)
+        usage -= candidate.bytes.length
+      }
+      if (usage > memoryBudget) victims.push(entry)
+    }
+    let victimBytes = 0
+    for (const victim of victims) victimBytes += victim.bytes.length
+    if (queuedBytes + victimBytes > queuedBytesLimit) {
+      throw codedError(STORE_FULL_ERROR, 'image-store-full', {
+        retryable: true,
+        bytes: queuedBytes + victimBytes,
+        limit: queuedBytesLimit
+      })
+    }
+    for (const victim of victims) spillResident(victim)
+  }
+
   // `add` answers an id. When the queue cannot take another buffer it throws a RETRYABLE
   // error instead of accepting work the disk cannot start; an image beyond the single-asset
   // quota is refused as unsupported (non-retryable).
@@ -333,26 +391,21 @@ function createPinImageStore({
       handle: null,
       ready: null,
       disposed: false,
-      inflight: 0
+      inflight: 0,
+      lastUsed: ++accessClock
     }
     assets.set(id, entry)
     if (residentUsage() <= memoryBudget) return id
-    if (queuedBytes + size > queuedBytesLimit) {
-      // Refuse BEFORE creating another buffer: the caller may retry once the queue drains.
+    try {
+      evictResidentsFor(entry)
+    } catch (error) {
+      // The queue refused the work before any buffer moved: undo the insertion so the
+      // caller's retry sees the same state a refused `add` always left behind.
       assets.delete(id)
-      throw codedError(STORE_FULL_ERROR, 'image-store-full', {
-        retryable: true,
-        bytes: queuedBytes + size,
-        limit: queuedBytesLimit
-      })
+      entry.disposed = true
+      entry.bytes = null
+      throw error
     }
-    // Over budget: move the pixels out of the resident set immediately, then let the shared
-    // queue do the disk work asynchronously. The buffer sits in the QUEUED bucket until the
-    // job starts.
-    entry.bytes = null
-    entry.pendingBytes = bytes
-    queuedBytes += size
-    startSpill(entry)
     return id
   }
 
@@ -380,6 +433,9 @@ function createPinImageStore({
   async function read(id) {
     const entry = assets.get(id)
     if (!entry || closed) throw codedError(RELEASED_ERROR, 'image-store-released')
+    // A read is the strongest "still in use" signal, so it refreshes the pin's LRU position
+    // before the (possibly spilled) pixels are served.
+    touch(entry)
     if (entry.state === 'resident') return { bytes: entry.bytes, mime: entry.mime }
     if (entry.ready) await entry.ready
     if (entry.disposed || !assets.has(id) || closed) throw codedError(RELEASED_ERROR, 'image-store-released')
@@ -407,6 +463,8 @@ function createPinImageStore({
     const entry = assets.get(id)
     if (!entry || entry.disposed) return false
     entry.refs += 1
+    // A retained pin (crash recovery rebuild, for example) is about to be used again.
+    touch(entry)
     return true
   }
 

@@ -23,7 +23,9 @@ function checkBuildOrder(steps, buildCommand) {
 }
 
 test('native build and both x64 release targets use the complete battery publish directory', () => {
-  assert.match(scripts['build:device-battery'], /^powershell .* -File native\/device-battery\/build\.ps1$/)
+  // 8416120 switched every npm PowerShell step from Windows PowerShell 5.1 to pwsh 7; the gate
+  // pins the new interpreter so the build cannot silently fall back to 5.1's ANSI decoding.
+  assert.match(scripts['build:device-battery'], /^pwsh -NoProfile -File native\/device-battery\/build\.ps1$/)
   assert.ok(scripts['build:native'].split(' && ').includes('npm run build:device-battery'))
   const resource = {
     from: 'native/device-battery/bin',

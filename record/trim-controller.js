@@ -89,6 +89,124 @@
 
   const demoApi = sharedDemo || createMissingDemoModule()
 
+  // ---------------------------------------------------------------------------------------
+  // N03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3)
+  //
+  // Two pure helpers that let the editor use the main process's suggestions without ever
+  // touching the segment list directly: the keystroke capsule track is normalised defensively
+  // (an events.json written by another build cannot inject arbitrary text into the HUD), and
+  // "remove silent pauses" is expressed as the COMPLEMENT of the suggested cuts, so the result
+  // is an ordinary R4 multi-segment edit: editable, undoable, previewable and exportable through
+  // the existing pipeline.
+  //
+  // Privacy note: keystrokes are already filtered at capture time (modifier chords + a short
+  // navigation/function-key whitelist). The editor only renders the labels it is given.
+  //
+  // P2-08: KEYSTROKE_SOURCE_LIMIT is the project's persistence cap (main/services/
+  // recording-project-service.js KEYSTROKE_LIMIT), NOT a render budget. The editor must keep the
+  // WHOLE source track, because the trim selection is projected onto it by keystrokePlan() ->
+  // shared normalizeKeystrokeOverlay(); the 500-window / 64-label render budget is applied to the
+  // PROJECTED sequence there, and its loss is disclosed with exact counts + source-time range.
+  // Reading only the first 500 here deleted the tail before projection, so a legal 600-capsule
+  // project trimmed to its last 100 s planned 0 capsules and `dropped` stayed null.
+  const KEYSTROKE_SOURCE_LIMIT = Math.max(
+    1,
+    Math.round(Number(options.KEYSTROKE_OVERLAY_LIMITS && options.KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS) || 2000)
+  )
+  const KEYSTROKE_CAPSULE_MAX_LENGTH = 48
+  const KEYSTROKE_CAPSULE_PATTERN = /^(?:(?:Ctrl|Alt|Shift|Win)\+){1,4}(?:[A-Z0-9]|Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$|^(?:Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$/
+  const PAUSE_CUT_MAX_SEGMENTS = 20
+  const PAUSE_CUT_MIN_KEEP_MS = 100
+  const PAUSE_CUT_MIN_LENGTH_MS = 300
+
+  function normalizeKeystrokeCapsules(value, durationMs) {
+    if (!Array.isArray(value)) return []
+    const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+    const capsules = []
+    for (const entry of value.slice(0, KEYSTROKE_SOURCE_LIMIT)) {
+      if (!entry || typeof entry !== 'object') continue
+      const combo = typeof entry.combo === 'string' ? entry.combo.trim() : ''
+      if (!combo || combo.length > KEYSTROKE_CAPSULE_MAX_LENGTH) continue
+      if (!KEYSTROKE_CAPSULE_PATTERN.test(combo)) continue
+      const tMs = Math.round(Number(entry.tMs))
+      if (!Number.isFinite(tMs) || tMs < 0) continue
+      if (limit > 0 && tMs > limit) continue
+      capsules.push({ tMs, combo })
+    }
+    capsules.sort((left, right) => left.tMs - right.tMs)
+    // The input slice above already bounds the list by the project's own cap; read time applies NO
+    // render truncation (keystrokePlan lets the shared normaliser budget the projected sequence).
+    return capsules
+  }
+
+  function normalizePauseCuts(value, durationMs) {
+    if (!Array.isArray(value)) return []
+    const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+    const cuts = []
+    for (const entry of value.slice(0, 200)) {
+      const startMs = Math.max(0, Math.round(Number(entry?.startMs) || 0))
+      const endMs = Math.max(0, Math.round(Number(entry?.endMs) || 0))
+      if (!(endMs - startMs >= PAUSE_CUT_MIN_LENGTH_MS)) continue
+      if (limit > 0 && endMs > limit) continue
+      cuts.push({ startMs, endMs })
+    }
+    cuts.sort((left, right) => left.startMs - right.startMs)
+    const merged = []
+    for (const cut of cuts) {
+      const previous = merged[merged.length - 1]
+      if (previous && cut.startMs <= previous.endMs) previous.endMs = Math.max(previous.endMs, cut.endMs)
+      else merged.push({ ...cut })
+    }
+    return merged
+  }
+
+  // Main answers either `{ ok:true, cuts, removedMs }` or `{ ok:false, code }`; a missing field
+  // (an older main process) normalises to "unavailable" so the editor explains instead of guessing.
+  function normalizePauseAnalysis(value, durationMs) {
+    if (!value || typeof value !== 'object') return { status: 'unavailable', code: '', cuts: [], removedMs: 0 }
+    if (value.ok === true) {
+      const cuts = normalizePauseCuts(value.cuts, durationMs)
+      const removedMs = cuts.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+      return { status: cuts.length > 0 ? 'ready' : 'nothing', code: '', cuts, removedMs }
+    }
+    const code = typeof value.code === 'string' ? value.code : 'analysis-failed'
+    return { status: 'failed', code, cuts: [], removedMs: 0 }
+  }
+
+  // Suggested CUT ranges -> the kept segments (their complement) that the R4 timeline already
+  // understands. Kept fragments shorter than the exporter minimum are folded back into the cut
+  // (a 40 ms sliver of speech is not worth a segment), and the 20-segment export cap is honoured
+  // by dropping the shortest kept fragments until the list fits.
+  function pauseCutsToKeepSegments(cuts, durationMs, options = {}) {
+    const duration = Math.max(0, Math.round(Number(durationMs) || 0))
+    const maxSegments = Math.max(1, Math.round(Number(options.maxSegments) || PAUSE_CUT_MAX_SEGMENTS))
+    const minKeepMs = Math.max(1, Math.round(Number(options.minKeepMs) || PAUSE_CUT_MIN_KEEP_MS))
+    if (!(duration > 0)) return { ok: false, code: 'duration-unavailable' }
+    const normalized = normalizePauseCuts(cuts, duration)
+    if (normalized.length === 0) return { ok: false, code: 'nothing-to-cut' }
+    const kept = []
+    let cursor = 0
+    for (const cut of normalized) {
+      const startMs = Math.max(cursor, Math.min(cut.startMs, duration))
+      if (startMs - cursor >= minKeepMs) kept.push({ startMs: cursor, endMs: startMs })
+      cursor = Math.max(cursor, Math.min(cut.endMs, duration))
+    }
+    if (duration - cursor >= minKeepMs) kept.push({ startMs: cursor, endMs: duration })
+    if (kept.length === 0) return { ok: false, code: 'nothing-kept' }
+    while (kept.length > maxSegments) {
+      let smallest = 0
+      for (let index = 1; index < kept.length; index += 1) {
+        if (kept[index].endMs - kept[index].startMs < kept[smallest].endMs - kept[smallest].startMs) smallest = index
+      }
+      kept.splice(smallest, 1)
+    }
+    const removedMs = kept.reduce((removed, segment, index) => {
+      const previousEnd = index === 0 ? 0 : kept[index - 1].endMs
+      return removed + Math.max(0, segment.startMs - previousEnd)
+    }, 0) + Math.max(0, duration - kept[kept.length - 1].endMs)
+    return { ok: true, segments: kept, removedMs }
+  }
+
   const TERMINAL_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
   const EXPORT_FORMATS = Object.freeze(['mp4', 'gif', 'webm'])
   const HISTORY_LIMIT = 50
@@ -166,7 +284,11 @@
     'recording.editor.error.fps-above-source',
     'recording.editor.error.too-many-segments',
     'recording.editor.error.overlapping-segments',
-    'recording.editor.error.ambiguous-selection'
+    'recording.editor.error.ambiguous-selection',
+    // N03/DEV-05: exported capsule overlay (label + validation error).
+    'recording.editor.keystrokes.export',
+    'recording.editor.keystrokes.export-title',
+    'recording.editor.error.invalid-keystroke-option'
   ])
 
   // Stable code -> locale key. Every code the export service can return has an entry; an
@@ -205,7 +327,9 @@
     'fps-above-source': 'recording.editor.error.fps-above-source',
     'too-many-segments': 'recording.editor.error.too-many-segments',
     'overlapping-segments': 'recording.editor.error.overlapping-segments',
-    'ambiguous-selection': 'recording.editor.error.ambiguous-selection'
+    'ambiguous-selection': 'recording.editor.error.ambiguous-selection',
+    // N03/DEV-05: a keystroke overlay payload the main process refused.
+    'invalid-keystroke-option': 'recording.editor.error.invalid-keystroke-option'
   })
 
   function errorKey(code) {
@@ -296,6 +420,14 @@
       demo: { style: demoApi.normalizeDemoStyle(null), zooms: [] },
       eventTrack: null,
       eventsState: { loaded: false, available: false, degraded: '', clickCount: 0, pointerCount: 0, truncated: false },
+      // N03: shortcut capsules (media time) plus the main process's dead-air suggestion. Both are
+      // read-only derived data; they never enter the draft. `loading` means the events load has not
+      // answered yet, so a click can explain "still analysing" instead of claiming unavailability.
+      keystrokes: [],
+      // N03/DEV-05: the user's export choice for the capsule overlay (session-only, like the video
+      // options: it is not part of the draft and a reopened project starts with it off).
+      exportKeystrokes: false,
+      pauseAnalysis: { status: 'loading', code: '', cuts: [], removedMs: 0 },
       ignoredSuggestions: [],
       suggestions: [],
       // Session playback window `{startMs,endMs}`; project playback `{mode:'kept',fromMs}`.
@@ -441,6 +573,30 @@
       return applySegments(materializedFull(), { reason: 'reset-edits' })
     }
 
+    // N03: "one click remove silent pauses". The suggestion is turned into the COMPLEMENT of the
+    // cut list, then applied through the normal segment editor: it records one undo step, marks
+    // the draft dirty and notifies with reason `pause-cuts` so the page autosaves it. Nothing is
+    // written to disk here; the existing draft/export pipeline owns that.
+    function applyPauseCuts() {
+      if (isFrozen()) return { ok: false, code: 'frozen' }
+      if (!model.projectId) return { ok: false, code: 'session-mode' }
+      const analysis = model.pauseAnalysis
+      if (!analysis || analysis.status === 'loading') return { ok: false, code: 'analysis-pending' }
+      if (analysis.status === 'unavailable') return { ok: false, code: 'analysis-unavailable' }
+      if (analysis.status === 'failed') return { ok: false, code: analysis.code || 'analysis-failed' }
+      if (analysis.status !== 'ready' || analysis.cuts.length === 0) return { ok: false, code: 'nothing-to-cut' }
+      const result = pauseCutsToKeepSegments(analysis.cuts, model.metadata.durationMs)
+      if (!result.ok) return result
+      const applied = applySegments(result.segments, { reason: 'pause-cuts' })
+      if (!applied) return { ok: false, code: 'nothing-to-cut' }
+      return {
+        ok: true,
+        removedMs: result.removedMs,
+        cuts: analysis.cuts.length,
+        segments: result.segments.map((segment) => ({ ...segment }))
+      }
+    }
+
     // Boundary drag entry points. While beginEdit() is active the moves are transient (the
     // drag is one undo entry); a direct call (keyboard/nudge) records its own entry.
     function moveBoundary(index, edge, targetMs) {
@@ -492,6 +648,63 @@
       return timeline.segmentAt(model.segments, atMs, model.metadata.durationMs) >= 0
     }
 
+    // P2-05: the segments the EXPORTER will see. buildRequest() omits `segments` for a
+    // whole-recording selection (main canonicalises it to one [0,duration] range) and session
+    // mode sends its legacy single `range`, so the preview plan must be projected through the
+    // very same list or the capsule HUD could disagree with the film after an edit.
+    function plannedSegments() {
+      if (!model.projectId) {
+        return [{ startMs: model.range.startMs, endMs: model.range.endMs }]
+      }
+      if (model.segments.length > 0 && !isFullSelection()) {
+        return model.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs }))
+      }
+      return [{ startMs: 0, endMs: Math.max(0, model.metadata.durationMs) }]
+    }
+
+    // P2-05: ONE visible sequence for the preview HUD and the exported film. Runs the same shared
+    // normaliser the main process runs, from the same raw source sequence and the same segments,
+    // so `plan.items` is the exporter's plan measured back against the media clock. A retained
+    // material cap is not hidden here: `plan.dropped` carries the exact capsule/label counts and
+    // the first/last dropped source time, which the editor shows in the export panel BEFORE the
+    // user confirms.
+    function keystrokePlan() {
+      const limits = options.KEYSTROKE_OVERLAY_LIMITS || {}
+      const fallback = {
+        items: [],
+        truncated: false,
+        total: { windows: 0, labels: 0 },
+        dropped: null,
+        // The exact cap that produced `dropped` differs by scenario (the 64-label material cap or
+        // the 500-window render budget), so both are disclosed instead of attributing every loss
+        // to the label cap (P2-08 follow-up).
+        maxLabels: Math.max(0, Math.round(finiteNumber(limits.MAX_LABELS) || 0)),
+        maxWindows: Math.max(0, Math.round(finiteNumber(limits.MAX_RENDER_WINDOWS) || 0))
+      }
+      if (model.keystrokes.length === 0) return fallback
+      const normalized = options.normalizeKeystrokeOverlay({
+        enabled: true,
+        items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+      }, plannedSegments(), model.metadata.durationMs)
+      if (!normalized || normalized.ok !== true || !normalized.value) return fallback
+      const value = normalized.value
+      return {
+        items: value.sourceItems.map((entry) => ({ tMs: entry.tMs, durationMs: entry.durationMs, combo: entry.combo })),
+        truncated: value.truncated === true,
+        total: { windows: value.total.windows, labels: value.total.labels },
+        dropped: value.dropped
+          ? {
+              items: value.dropped.items,
+              labels: value.dropped.labels,
+              firstSourceMs: value.dropped.firstSourceMs,
+              lastSourceMs: value.dropped.lastSourceMs
+            }
+          : null,
+        maxLabels: fallback.maxLabels,
+        maxWindows: fallback.maxWindows
+      }
+    }
+
     function state() {
       const gif = gifBudget()
       const videoBudgetResult = videoBudget()
@@ -535,6 +748,24 @@
           resolutions: timeline.availableResolutions(model.metadata.video.width, model.metadata.video.height),
           frameRates: timeline.availableFrameRates(model.metadata.video.frameRate),
           qualities: [...timeline.QUALITY_LEVELS]
+        },
+        // N03: HUD data. `items` is media-time data only (no draft state), so the view can render
+        // the capsule at the right playback position without owning the normalisation rules.
+        // P2-05: `plan` is the exporter's own visible sequence (see keystrokePlan), so the HUD
+        // and the film can never show a different set of capsules.
+        keystrokes: {
+          available: model.keystrokes.length > 0,
+          count: model.keystrokes.length,
+          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo })),
+          // DEV-05: the export choice plus whether the track can support it at all.
+          exportSelected: model.keystrokes.length > 0 && model.exportKeystrokes === true,
+          plan: keystrokePlan()
+        },
+        pauseAnalysis: {
+          status: model.pauseAnalysis.status,
+          code: model.pauseAnalysis.code,
+          removedMs: model.pauseAnalysis.removedMs,
+          cuts: model.pauseAnalysis.cuts.map((cut) => ({ startMs: cut.startMs, endMs: cut.endMs }))
         },
         playing: model.playing ? { ...model.playing } : null,
         playheadMs: model.playheadMs,
@@ -980,7 +1211,7 @@
       model.suggestions = suggestions.filter((suggestion) => !model.ignoredSuggestions.includes(suggestion.id))
     }
 
-    function applyEventTrack(track, { degraded = '' } = {}) {
+    function applyEventTrack(track, { degraded = '', pauseAnalysis = null } = {}) {
       if (track && typeof track === 'object') {
         try {
           model.eventTrack = demoApi.normalizeClickTrack(track)
@@ -1008,6 +1239,15 @@
           truncated: false
         }
       }
+      // N03: the capsule track and the pause suggestion are independent of the R5 pointer shape;
+      // demo.normalizeClickTrack drops unknown fields, so they are normalised here from the raw
+      // track the main process sent.
+      const rawKeystrokes = track && typeof track === 'object' ? track.keystrokes : null
+      model.keystrokes = normalizeKeystrokeCapsules(rawKeystrokes, model.metadata.durationMs)
+      // A project without shortcuts (or a reload after one lost its track) must not keep an export
+      // switch that promises capsules it cannot render.
+      if (model.keystrokes.length === 0) model.exportKeystrokes = false
+      model.pauseAnalysis = normalizePauseAnalysis(pauseAnalysis, model.metadata.durationMs)
       // Ripples need clicks; without an event track the switch must not pretend to work.
       if ((!model.eventTrack || model.eventTrack.clicks.length === 0) && model.demo.style.ripples) {
         model.demo.style = demoApi.normalizeDemoStyle({ ...model.demo.style, ripples: false })
@@ -1016,6 +1256,19 @@
       recomputeSuggestions()
       notify({ reason: 'events-loaded' })
       return true
+    }
+
+    // N03/DEV-05: the export switch for the capsule overlay. Only meaningful when the take has a
+    // keystroke track and only target formats the exporter can composite (mp4/webm/gif all can).
+    // Session-only: it is not persisted in the draft and does not touch the segment undo stack.
+    function setExportKeystrokes(enabled) {
+      if (isFrozen()) return false
+      const available = model.keystrokes.length > 0
+      const next = enabled === true && available
+      if (next === model.exportKeystrokes) return next
+      model.exportKeystrokes = next
+      notify({ reason: 'keystroke-export' })
+      return next
     }
 
     function setDemoStylePatch(patch, reason = 'demo-style') {
@@ -1399,6 +1652,20 @@
           }
         }
       }
+      // N03/DEV-05: the capsule overlay choice rides the frozen request (source-time capsules;
+      // the main process projects them onto the kept segments and clips at cut boundaries).
+      // Omitted when off or when the take has no shortcuts, so a pre-N03 project keeps the old
+      // request and the old argv path.
+      // P2-05: the FULL raw sequence is sent, not the pre-filtered preview plan: the shared
+      // normaliser is not idempotent over a filtered subset (a dropped label's window can clip a
+      // kept neighbour), so re-running it on the same source sequence is the only way the export
+      // plan stays byte-identical to the preview plan the HUD played.
+      if (model.exportKeystrokes && model.keystrokes.length > 0) {
+        request.keystrokes = {
+          enabled: true,
+          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+        }
+      }
       return request
     }
 
@@ -1554,6 +1821,10 @@
       splitAt,
       deleteSegmentAt,
       resetEdits,
+      // N03: one-click dead-air removal (segment complement of the main-process suggestion).
+      applyPauseCuts,
+      // N03/DEV-05: user's choice to burn the shortcut capsules into the exported film.
+      setExportKeystrokes,
       moveBoundary,
       moveJunction,
       beginEdit,
@@ -1627,6 +1898,11 @@
     createRecordTrimController,
     errorKey,
     formatClock,
-    parseTimeInput
+    // N03 pure helpers (behaviour-tested in test/n03-recording-hud.test.js).
+    normalizeKeystrokeCapsules,
+    normalizePauseAnalysis,
+    normalizePauseCuts,
+    parseTimeInput,
+    pauseCutsToKeepSegments
   }
 })

@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { execFile, spawn } = require('child_process')
+const { StringDecoder } = require('node:string_decoder')
 
 // P0-1-T6: `status.message` is rendered by the local-search window
 // (search/search.js), so it is UI copy and resolves through the shared runtime.
@@ -25,6 +26,9 @@ const READY_CACHE_MS = 2000
 const STATUS_REFRESH_MIN_INTERVAL_MS = 5000
 const DEFAULT_CACHE_LIMIT = 24
 const DEFAULT_IDLE_TIMEOUT_MS = 120000
+// F04: a process-path round trip is a single sub-millisecond QueryFullProcessImageNameW
+// inside the sidecar; the timeout only guards against a wedged sidecar.
+const PROCESS_PROBE_TIMEOUT_MS = 2000
 const SORT_MODES = new Set([
   'modified-desc', 'modified-asc',
   'name-asc', 'name-desc',
@@ -39,6 +43,15 @@ function clampInteger(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.round(number)))
 }
 
+// P2-03: the one readiness predicate every JS entry point shares. The Rust status
+// protocol reports whether *this round's* query probe answered (`queryAnswered`);
+// the display snapshot can keep `dbLoaded: true` for a live instance whose query
+// channel went silent, so `running && dbLoaded` is not enough. A snapshot that
+// lacks the field (an older sidecar) fails closed — the sidecar ships with the app.
+function snapshotIsReady(snapshot) {
+  return snapshot?.running === true && snapshot?.dbLoaded === true && snapshot?.queryAnswered === true
+}
+
 class EverythingService {
   constructor(options = {}) {
     this.sidecarPath = options.sidecarPath
@@ -48,7 +61,7 @@ class EverythingService {
     this.log = options.log || (() => {})
     this.onStatusChange = typeof options.onStatusChange === 'function' ? options.onStatusChange : null
     this.getUseBundledEverything = options.getUseBundledEverything || (() => true)
-    this.processProbe = options.processProbe || ((pid) => probeProcessImagePath(pid, this.log))
+    this.processProbe = options.processProbe || ((pid) => this.probeProcessImagePath(pid))
     this.runCommand = options.runCommand || ((file, args) => new Promise((resolve, reject) => {
       execFile(file, args, { windowsHide: true }, (error) => (error ? reject(error) : resolve()))
     }))
@@ -64,6 +77,7 @@ class EverythingService {
     this.ready = false
     this.stopping = false
     this.stdoutBuffer = ''
+    this.stdoutDecoder = new StringDecoder('utf8')
     this.pending = new Map()
     this.inFlight = new Map()
     this.resultCache = new Map()
@@ -77,6 +91,7 @@ class EverythingService {
       messageKey: '',
       running: false,
       dbLoaded: false,
+      queryAnswered: false,
       version: null,
       managedByHighlighter: false,
       available: fs.existsSync(this.sidecarPath)
@@ -98,6 +113,7 @@ class EverythingService {
       messageKey: 'main.everything.ready',
       running: true,
       dbLoaded: true,
+      queryAnswered: true,
       version: 'e2e',
       probeTotal: 1,
       managedByHighlighter: false,
@@ -109,19 +125,30 @@ class EverythingService {
   // otherwise show a stale `running:false` until a search window opens. Probe
   // on demand here — lightweight status only, never spawning the bundled
   // Everything (that stays a search-window behavior).
+  //
+  // P2-5: only the 5 s throttle may reuse the last published snapshot. A live
+  // bridge sidecar is NOT a fresh sample: the Everything instance behind it can
+  // go query-silent (or recover) without the sidecar process exiting, so a
+  // refresh past the interval must ask the sidecar again. Treating
+  // `sidecarActive` as sufficient used to pin `ready/queryAnswered:true` (or a
+  // stale `waiting`) until some unrelated entry point happened to re-probe.
   async refreshStatus() {
     if (this.e2eQuery) return this.getFakeStatus()
     if (this.refreshPromise) return this.refreshPromise
-    const sidecarActive = !!(this.process && !this.process.killed && this.ready)
     const probedRecently = Date.now() - (this.lastStatusProbeAt || 0) < STATUS_REFRESH_MIN_INTERVAL_MS
-    if (sidecarActive || probedRecently) return this.getStatus()
+    if (probedRecently) return this.getStatus()
     this.refreshPromise = (async () => {
       try {
+        // Reuse the live sidecar when there is one; a cold caller still starts
+        // the JSON-lines bridge (never the bundled Everything.exe).
         await this.ensureStarted()
         const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS)
         this.lastStatusProbeAt = Date.now()
         const running = !!snapshot?.running
-        const ready = running && !!snapshot?.dbLoaded
+        // P2-03: the shared readiness predicate. An index-loaded but query-silent
+        // instance keeps `running && dbLoaded` yet must stay in "waiting" (and never
+        // seed the ready cache) until a round answers on the query channel.
+        const ready = snapshotIsReady(snapshot)
         this.applySidecarStatus(snapshot, {
           managedByHighlighter: !!this.managedEverything,
           phase: ready ? 'ready' : (running ? 'waiting' : 'idle'),
@@ -161,7 +188,7 @@ class EverythingService {
     if (this.idleTimeoutMs <= 0) return
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null
-      if (this.pending.size === 0 && this.inFlight.size === 0) this.stop()
+      if (this.pending.size === 0 && this.inFlight.size === 0) this.stopSidecar()
     }, this.idleTimeoutMs)
     this.idleTimer.unref?.()
   }
@@ -185,6 +212,9 @@ class EverythingService {
     this.stopping = false
     this.ready = false
     this.stdoutBuffer = ''
+    // A fresh stream needs a fresh decoder: bytes still buffered from the
+    // previous sidecar must never leak into the new one's first line.
+    this.stdoutDecoder = new StringDecoder('utf8')
     return new Promise((resolve, reject) => {
       const child = this.spawn(this.sidecarPath, [], {
         windowsHide: true,
@@ -234,7 +264,14 @@ class EverythingService {
   }
 
   handleStdout(chunk, onMessage) {
-    this.stdoutBuffer += chunk.toString('utf8')
+    // Pipe chunks arrive as raw Buffers and a 3-byte UTF-8 Chinese character
+    // can straddle the boundary between two of them. Decoding each chunk on its
+    // own (chunk.toString('utf8')) emits U+FFFD for both halves, which still
+    // parses as JSON and silently corrupts 600 Chinese paths. One StringDecoder
+    // per stream keeps the unfinished bytes until the next chunk completes
+    // them. String chunks (when an encoding is already set upstream) pass
+    // through unchanged.
+    this.stdoutBuffer += typeof chunk === 'string' ? chunk : this.stdoutDecoder.write(chunk)
     let newline = this.stdoutBuffer.indexOf('\n')
     while (newline >= 0) {
       const line = this.stdoutBuffer.slice(0, newline).trim()
@@ -302,6 +339,10 @@ class EverythingService {
     return this.setStatus({
       running: !!status?.running,
       dbLoaded: !!status?.dbLoaded,
+      // P2-03: copy this round's query-channel answer into the published status.
+      // Unknown/missing means "not answered" so readiness can never be inferred
+      // from a display snapshot alone.
+      queryAnswered: status?.queryAnswered === true,
       version: status?.version ?? null,
       ...patch
     })
@@ -310,7 +351,10 @@ class EverythingService {
   async waitReady(timeoutMs = READY_TIMEOUT_MS) {
     const result = await this.request({ action: 'wait-ready', timeoutMs }, timeoutMs + 10000)
     this.applySidecarStatus(result?.status, { managedByHighlighter: !!this.managedEverything })
-    return result?.ready === true
+    // P2-03: accept the sidecar's ready flag only together with the shared JS
+    // predicate, so a sidecar that predates `queryAnswered` fails closed instead of
+    // reporting ready from `dbLoaded` alone.
+    return result?.ready === true && snapshotIsReady(this.status)
   }
 
   async spawnBundledEverything() {
@@ -352,7 +396,9 @@ class EverythingService {
 
   async ensureReadyInternal(options = {}) {
     const timeoutMs = clampInteger(options.timeoutMs, 3000, 120000, READY_TIMEOUT_MS)
-    if (this.status.phase === 'ready' && Date.now() - (this.lastReadyAt || 0) < READY_CACHE_MS) {
+    // P2-03: the 2 s ready cache is only a shortcut for a state the shared predicate
+    // already blessed; re-check it so a stale phase cannot bypass the round answer.
+    if (this.status.phase === 'ready' && snapshotIsReady(this.status) && Date.now() - (this.lastReadyAt || 0) < READY_CACHE_MS) {
       return this.getStatus()
     }
     await this.ensureStarted()
@@ -388,7 +434,13 @@ class EverythingService {
       throw new Error(message)
     }
 
-    if (snapshot.running && snapshot.dbLoaded) {
+    // P2-03: the same shared predicate as refreshStatus. A query-silent but
+    // index-loaded instance keeps `running:true, dbLoaded:true` in the display
+    // snapshot but is not ready: it must land in "waiting" (never set `lastReadyAt`)
+    // and fall through to wait-ready, whose Rust predicate re-selects an instance
+    // that answers the query channel. An answering instance with an empty index is
+    // ready (`probeTotal: 0` is not a blocker).
+    if (snapshotIsReady(snapshot)) {
       this.lastReadyAt = Date.now()
       this.setStatus({ phase: 'ready', message: t('main.everything.ready'), messageKey: 'main.everything.ready' })
       return this.getStatus()
@@ -450,6 +502,12 @@ class EverythingService {
     if (existing) return existing
 
     await this.ensureReady()
+    // P2-03: ensureReady() only resolves after the shared predicate holds, but
+    // re-assert it here so no future shortcut (including the ready cache) can send a
+    // query to an instance whose query channel stayed silent this round.
+    if (!snapshotIsReady(this.status)) {
+      throw new Error('Everything 组件尚未就绪')
+    }
     // Another caller may have created the identical request while this one
     // waited for readiness — coalesce onto it instead of duplicating work.
     const coalesced = this.inFlight.get(cacheKey)
@@ -499,7 +557,25 @@ class EverythingService {
     }
   }
 
-  stop() {
+  // F04: the 120 s idle reclaim stops only the JSON-lines sidecar. The bundled
+  // Everything.exe keeps running with its warm index — killing it forced the next
+  // search to cold-start Everything and rescan the disk (seconds).
+  //
+  // Routed through `stop()` on purpose: that was the pre-F04 idle entry point and
+  // callers (including the existing service tests and main.js) still replace or
+  // invoke it. No arguments means the full dispose on application quit.
+  stopSidecar() {
+    return this.stop({ sidecarOnly: true })
+  }
+
+  stop(options = {}) {
+    if (options && options.sidecarOnly) return this.shutdownSidecar()
+    return this.dispose()
+  }
+
+  // Stops the sidecar process and rejects whatever it still owed; never touches
+  // the managed Everything.exe, so the index stays warm across idle periods.
+  shutdownSidecar() {
     this.clearIdleTimer()
     this.stopping = true
     if (this.process && !this.process.killed) {
@@ -515,30 +591,74 @@ class EverythingService {
     }
     this.pending.clear()
     this.inFlight.clear()
-    this.setStatus({ phase: 'idle', message: '', messageKey: '', running: false, dbLoaded: false, managedByHighlighter: false })
-    return this.stopManagedEverything()
-  }
-}
-
-async function probeProcessImagePath(pid, log = () => {}) {
-  const script = `(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=${Number(pid)}").ExecutablePath`
-  return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      windowsHide: true,
-      timeout: 10000
-    }, (error, stdout) => {
-      if (error) {
-        log('Process probe failed:', error.message)
-        resolve('')
-        return
-      }
-      resolve(String(stdout || '').trim())
+    // Idle reclaim keeps the managed Everything.exe alive, so keep reporting the
+    // ownership it still has; the next status probe re-confirms the rest.
+    this.setStatus({
+      phase: 'idle',
+      message: '',
+      messageKey: '',
+      running: false,
+      dbLoaded: false,
+      queryAnswered: false,
+      managedByHighlighter: !!this.managedEverything
     })
-  })
+  }
+
+  // F04: application quit path. The managed Everything.exe is verified through
+  // the sidecar's process-path action while the sidecar is still alive (the
+  // PowerShell/WMI probe is gone), then the sidecar itself is stopped.
+  async dispose() {
+    this.clearIdleTimer()
+    // The idle timer may already have reclaimed the sidecar, and a quit after a
+    // long idle period still has to verify — and kill — the managed Everything
+    // process. Start the sidecar again for that one probe only.
+    if (this.managedEverything && !(this.process && !this.process.killed && this.ready)) {
+      try {
+        await this.ensureStarted()
+      } catch (error) {
+        this.log('Everything sidecar restart for shutdown failed:', error.message)
+      }
+    }
+    this.stopping = true
+    // `stopManagedEverything` writes its process-path request synchronously, so
+    // the observable teardown below can happen without awaiting the IPC.
+    const managedStop = this.stopManagedEverything()
+    this.ready = false
+    this.setStatus({
+      phase: 'idle',
+      message: '',
+      messageKey: '',
+      running: false,
+      dbLoaded: false,
+      queryAnswered: false,
+      managedByHighlighter: false
+    })
+    const stoppedManaged = await managedStop
+    this.shutdownSidecar()
+    return stoppedManaged
+  }
+
+  // F04: process image paths are resolved by the Rust sidecar through
+  // QueryFullProcessImageNameW (<1 ms) instead of cold-starting PowerShell + WMI
+  // (hundreds of milliseconds to seconds). Any failure yields '' — the caller
+  // then refuses to kill a pid it cannot verify rather than guessing from a
+  // possibly reused pid.
+  async probeProcessImagePath(pid) {
+    const processId = Number(pid)
+    if (!Number.isInteger(processId) || processId <= 0 || processId > 0xffffffff) return ''
+    try {
+      const result = await this.request({ action: 'process-path', pid: processId }, PROCESS_PROBE_TIMEOUT_MS)
+      return typeof result?.path === 'string' ? result.path : ''
+    } catch (error) {
+      this.log('Process probe failed:', error.message)
+      return ''
+    }
+  }
 }
 
 module.exports = {
   EverythingService,
+  snapshotIsReady,
   SORT_MODES,
   EVERYTHING_DOWNLOAD_URL
 }

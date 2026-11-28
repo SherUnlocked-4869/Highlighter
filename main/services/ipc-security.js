@@ -35,6 +35,11 @@ const IPC_SURFACES = Object.freeze([
       'data-root:backup-inspect',
       'data-root:backup-restore',
       'data-root:backup-delete',
+      // N06 (review section 5.6): single-file backup archives. Both handlers own
+      // their native save/open dialog in main, so the renderer submits only the
+      // module ids and an in-memory password - never a path.
+      'data-root:backup-export-archive',
+      'data-root:backup-import-archive',
       'history:list',
       'history:thumbnail',
       'history:sources',
@@ -93,7 +98,12 @@ const IPC_SURFACES = Object.freeze([
   {
     role: 'clipboard',
     page: 'clipboard/clipboard.html',
-    handles: ['clipboard:list', 'clipboard:detail', 'clipboard:previews', 'clipboard:copy', 'clipboard:paste', 'clipboard:set-pinned', 'clipboard:delete', 'clipboard:prepare-clear', 'clipboard:commit-clear', 'clipboard:status', 'clipboard:set-paused'],
+    handles: ['clipboard:list', 'clipboard:detail', 'clipboard:previews', 'clipboard:copy', 'clipboard:paste', 'clipboard:set-pinned', 'clipboard:delete', 'clipboard:prepare-clear', 'clipboard:commit-clear', 'clipboard:status', 'clipboard:set-paused',
+      // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.2):
+      // one-click image actions. Every answer is a value-only receipt: the main process
+      // reads the pixels and owns the save dialog, so the page never learns or submits a
+      // path, a URL or a byte buffer.
+      'clipboard:image-ocr', 'clipboard:image-table', 'clipboard:image-pin', 'clipboard:copy-text'],
     listeners: ['clipboard:ready', 'clipboard:interactive', 'clipboard:close']
   },
   {

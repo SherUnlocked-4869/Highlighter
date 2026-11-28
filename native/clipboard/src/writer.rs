@@ -69,22 +69,31 @@ pub fn copy_item(
     id: &str,
     op: &str,
 ) -> Result<(), &'static str> {
-    // Drain capture before loading/decoding the original: capture and history
-    // image conversion must not multiply one another's peak memory.
+    // F05: load the payload and prepare every clipboard format (4K PNG decode,
+    // BGRA conversion and the CF_DIBV5 SHA-256) BEFORE the exclusive lease. The
+    // barrier used to cover 150-350 ms of decode/hash work, far longer than the
+    // 60 ms selection-hook lease wait; now it only covers the clipboard write and
+    // its verification. The payload bytes are immutable, so preparing them
+    // outside the lease cannot publish a mix of old and new content.
+    let (mime, formats) = {
+        let (mime, bytes) = {
+            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
+            locked.payload(id, false)?
+        };
+        let formats = prepare_formats(&mime, &bytes)?;
+        (mime, formats)
+    };
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
     let owned_sequence = std::cell::Cell::new(barrier.baseline());
     let result = (|| {
-        let data = {
-            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
-            let payload = locked.payload(id, false)?;
-            if locked.begin_copy(id, op)? {
-                Some(payload)
-            } else {
-                None
-            }
-        };
-        if let Some((mime, bytes)) = data {
-            let proof = copy(context, &mime, &bytes)?;
+        // The receipt is claimed inside the lease so a lease failure leaves no
+        // pending operation behind; a replayed operation is a no-op.
+        let newly_claimed = store
+            .lock()
+            .map_err(|_| "STORAGE_FAILED")?
+            .begin_copy(id, op)?;
+        if newly_claimed {
+            let proof = publish_formats(context, formats, &mime)?;
             owned_sequence.set(proof.sequence);
             store
                 .lock()
@@ -110,17 +119,35 @@ pub fn prepare_paste(
     id: &str,
     op: &str,
 ) -> Result<PasteWrite, &'static str> {
+    // F05: an already-recorded operation is answered before any payload work, so
+    // an idempotent retry does not pay for a decode it will discard. This read is
+    // read-only; `begin_paste` (which records the pending receipt) stays inside
+    // the lease so a lease failure still leaves no half-written operation.
+    {
+        let locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
+        if let Some(prior) = locked.paste_prior(id, op)? {
+            return Ok(PasteWrite::Completed(prior));
+        }
+    }
+    // F05: decode and build the published formats before the exclusive lease; see
+    // `copy_item` for why the pre-decode moved out of the barrier.
+    let (mime, formats) = {
+        let (mime, bytes) = {
+            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
+            locked.payload(id, false)?
+        };
+        let formats = prepare_formats(&mime, &bytes)?;
+        (mime, formats)
+    };
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
     let sequence = std::cell::Cell::new(barrier.baseline());
     let result = (|| {
-        let (mime, bytes) = {
-            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
-            if let Some(prior) = locked.begin_paste(id, op)? {
-                return Ok(PasteWrite::Completed(prior));
-            }
-            locked.payload(id, false)?
-        };
-        let proof = copy(context, &mime, &bytes).map_err(|code| {
+        let locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
+        if let Some(prior) = locked.begin_paste(id, op)? {
+            return Ok(PasteWrite::Completed(prior));
+        }
+        drop(locked);
+        let proof = publish_formats(context, formats, &mime).map_err(|code| {
             if code == "COPY_OUTCOME_UNKNOWN" {
                 "PASTE_OUTCOME_UNKNOWN"
             } else {
@@ -207,22 +234,20 @@ pub fn publish_image(
     bytes: &[u8],
     private: bool,
 ) -> Result<PublicationProof, &'static str> {
-    let started = Instant::now();
     let mut formats = Vec::new();
     // Markers first: if one of them cannot be prepared, nothing is published at all.
     if private {
         formats.extend(exclusion_markers()?);
     }
     formats.extend(image_formats(bytes)?);
-    publish_formats(context, formats, "image/png", started)
+    publish_formats(context, formats, "image/png")
 }
 
-fn copy(
-    context: &WriterContext,
-    mime: &str,
-    bytes: &[u8],
-) -> Result<PublicationProof, &'static str> {
-    let started = Instant::now();
+/// F05: builds every format the publication will carry, without touching the
+/// clipboard. Decoding a 4K PNG and converting it to CF_DIBV5 BGRA is the most
+/// expensive part of a history copy, so callers run this before acquiring the
+/// exclusive barrier lease. The returned globals are published as-is afterwards.
+fn prepare_formats(mime: &str, bytes: &[u8]) -> Result<Vec<(u32, Global)>, &'static str> {
     let mut formats = Vec::new();
     if mime.starts_with("text/plain") {
         let text = std::str::from_utf8(bytes).map_err(|_| "INVALID_ENCODING")?;
@@ -249,7 +274,7 @@ fn copy(
     } else {
         return Err("UNSUPPORTED");
     }
-    publish_formats(context, formats, mime, started)
+    Ok(formats)
 }
 
 /// Opens the clipboard ONCE, publishes the prepared formats in order, verifies what landed
@@ -259,8 +284,8 @@ fn publish_formats(
     context: &WriterContext,
     formats: Vec<(u32, Global)>,
     mime: &str,
-    started: Instant,
 ) -> Result<PublicationProof, &'static str> {
+    let started = Instant::now();
     let original_sequence = unsafe { GetClipboardSequenceNumber() };
     let mut trace = PublicationTrace::default();
     let result = (|| unsafe {
@@ -306,7 +331,17 @@ fn publish_formats(
         if !trace.owner_is_ours || GetClipboardSequenceNumber() != candidate {
             return Err("CLIPBOARD_CHANGED");
         }
-        verify_formats(&signatures, mime, verifying + Duration::from_millis(500))?;
+        verify_formats(
+            &signatures,
+            mime,
+            verifying + Duration::from_millis(500),
+            // F05: we are the current owner in this generation and the sequence
+            // number has not moved since our publication, so re-hashing every
+            // 64 MiB global (another full pass after the one done while building
+            // the formats) cannot prove anything new. Only the allocation sizes
+            // are re-checked; a generation/owner change still takes the full path.
+            context.unchanged(generation),
+        )?;
         trace.content_matched = true;
         if !context.unchanged(generation) || GetClipboardSequenceNumber() != candidate {
             return Err("CLIPBOARD_CHANGED");
@@ -345,10 +380,52 @@ impl Drop for Open {
     }
 }
 
+/// F05: the per-format verification shared by the live clipboard path and the
+/// unit tests. The allocation size is always re-checked; the content hash is only
+/// recomputed when `trusted` is false. Trusted means `context.unchanged(generation)`
+/// - our writer still owns the clipboard in the generation the formats were
+/// published under, and the sequence number did not move, so the bytes are
+/// necessarily ours and another full 64 MiB SHA-256 pass proves nothing new.
+fn verify_entries(
+    signatures: &[Signature],
+    deadline: Instant,
+    trusted: bool,
+    mut size_of: impl FnMut(u32) -> Result<usize, &'static str>,
+    mut content_matches: impl FnMut(
+        u32,
+        usize,
+        usize,
+        &[u8; 32],
+        Instant,
+    ) -> Result<bool, &'static str>,
+) -> Result<(), &'static str> {
+    for expected in signatures {
+        if Instant::now() >= deadline {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+        let size = size_of(expected.format)?;
+        if !allocation_matches(expected.length, size) {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+        if trusted {
+            continue;
+        }
+        if !content_matches(expected.format, expected.length, size, &expected.digest, deadline)? {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+    }
+    Ok(())
+}
+
+fn allocation_matches(expected: usize, actual: usize) -> bool {
+    actual >= expected && actual <= expected.saturating_add(65536)
+}
+
 unsafe fn verify_formats(
     signatures: &[Signature],
     mime: &str,
     deadline: Instant,
+    trusted: bool,
 ) -> Result<(), &'static str> {
     let mut format = 0;
     let mut count = 0;
@@ -369,40 +446,49 @@ unsafe fn verify_formats(
             return Err("PUBLICATION_UNVERIFIED");
         }
     }
-    for expected in signatures {
-        if Instant::now() >= deadline {
-            return Err("PUBLICATION_UNVERIFIED");
-        }
-        let handle = GetClipboardData(expected.format).map_err(|_| "PUBLICATION_UNVERIFIED")?;
-        let memory = HGLOBAL(handle.0);
-        let size = GlobalSize(memory);
-        if size < expected.length || size > expected.length.saturating_add(65536) {
-            return Err("PUBLICATION_UNVERIFIED");
-        }
-        let pointer = GlobalLock(memory);
-        if pointer.is_null() {
-            return Err("PUBLICATION_UNVERIFIED");
-        }
-        let checked = (|| {
-            let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), size);
-            let mut digest = Sha256::new();
-            for chunk in bytes[..expected.length].chunks(65536) {
-                if Instant::now() >= deadline {
-                    return Err("PUBLICATION_UNVERIFIED");
-                }
-                digest.update(chunk);
-            }
-            if <[u8; 32]>::from(digest.finalize()) != expected.digest
-                || bytes[expected.length..].iter().any(|byte| *byte != 0)
-            {
+    verify_entries(
+        signatures,
+        deadline,
+        trusted,
+        |format| {
+            let handle =
+                GetClipboardData(format).map_err(|_| "PUBLICATION_UNVERIFIED")?;
+            Ok(GlobalSize(HGLOBAL(handle.0)))
+        },
+        |format, length, size, digest, deadline| {
+            let handle =
+                GetClipboardData(format).map_err(|_| "PUBLICATION_UNVERIFIED")?;
+            let memory = HGLOBAL(handle.0);
+            // The size was checked in `size_of`; re-check it against the handle we
+            // are about to walk so a clipboard change in between cannot make the
+            // slice longer than its allocation.
+            if GlobalSize(memory) != size {
                 return Err("PUBLICATION_UNVERIFIED");
             }
-            Ok(())
-        })();
-        let _ = GlobalUnlock(memory);
-        checked?;
-    }
-    Ok(())
+            let pointer = GlobalLock(memory);
+            if pointer.is_null() {
+                return Err("PUBLICATION_UNVERIFIED");
+            }
+            let checked = (|| {
+                let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), size);
+                let mut hasher = Sha256::new();
+                for chunk in bytes[..length].chunks(65536) {
+                    if Instant::now() >= deadline {
+                        return Err("PUBLICATION_UNVERIFIED");
+                    }
+                    hasher.update(chunk);
+                }
+                if <[u8; 32]>::from(hasher.finalize()) != *digest
+                    || bytes[length..].iter().any(|byte| *byte != 0)
+                {
+                    return Err("PUBLICATION_UNVERIFIED");
+                }
+                Ok(true)
+            })();
+            let _ = GlobalUnlock(memory);
+            checked
+        },
+    )
 }
 
 #[cfg(test)]
@@ -431,5 +517,142 @@ mod tests {
         let mut broken = b"\x89PNG\r\n\x1a\n".to_vec();
         broken.extend_from_slice(&[0u8; 8]);
         assert!(image_formats(&broken).is_err());
+    }
+
+    // F05 (report report section 3.5): `prepare_formats` is what moved out of the exclusive
+    // barrier lease. It must build the concrete clipboard formats without any
+    // clipboard call, so a text payload becomes one CF_UNICODETEXT global.
+    #[test]
+    fn f05_prepare_formats_builds_payloads_before_the_lease() {
+        let formats = prepare_formats("text/plain;charset=utf-8", b"hi")
+            .expect("text formats must be preparable offline");
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].0, 13);
+        // UTF-16LE with a terminating NUL: 2 characters * 2 bytes + 2.
+        assert_eq!(formats[0].1.length, 6);
+        assert_eq!(
+            prepare_formats("application/x-unknown", b"x").err(),
+            Some("UNSUPPORTED")
+        );
+    }
+
+    // F05 (report report section 3.5): a publication that still owns the clipboard in the
+    // observed generation is only re-checked for allocation size. The second
+    // full SHA-256 pass over a 64 MiB CF_DIBV5 was the dominant cost inside the
+    // exclusive barrier lease, so the trusted path must not touch the bytes.
+    #[test]
+    fn f05_trusted_verification_skips_the_content_hash() {
+        let signatures = [
+            Signature {
+                format: 17,
+                length: 64,
+                digest: [7u8; 32],
+            },
+            Signature {
+                format: 13,
+                length: 6,
+                digest: [9u8; 32],
+            },
+        ];
+        let mut size_checks = 0;
+        let mut content_checks = 0;
+        let result = verify_entries(
+            &signatures,
+            Instant::now() + Duration::from_secs(1),
+            true,
+            |_| {
+                size_checks += 1;
+                Ok(64)
+            },
+            |_, _, _, _, _| {
+                content_checks += 1;
+                Ok(false)
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(size_checks, 2, "every allocation is still size-checked");
+        assert_eq!(
+            content_checks, 0,
+            "the generation-unchanged fast path must not re-hash the published globals"
+        );
+    }
+
+    // Negative control for the fast path: without the trusted owner/generation
+    // observation the same bytes are hashed and a mismatch still fails.
+    #[test]
+    fn f05_untrusted_verification_hashes_the_content() {
+        let signatures = [Signature {
+            format: 17,
+            length: 64,
+            digest: [7u8; 32],
+        }];
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut content_checks = 0;
+        assert_eq!(
+            verify_entries(
+                &signatures,
+                deadline,
+                false,
+                |_| Ok(64),
+                |_, _, _, _, _| {
+                    content_checks += 1;
+                    Ok(false)
+                },
+            ),
+            Err("PUBLICATION_UNVERIFIED")
+        );
+        assert_eq!(content_checks, 1);
+        assert_eq!(
+            verify_entries(
+                &signatures,
+                deadline,
+                true,
+                |_| Ok(64),
+                |_, _, _, _, _| {
+                    content_checks += 1;
+                    Ok(false)
+                },
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            content_checks, 1,
+            "the trusted re-check on identical input did not hash again"
+        );
+    }
+
+    // F05: skipping the hash is never skipping the allocation bounds - a global
+    // that is smaller than the signature or over the 64 KiB slack is rejected.
+    #[test]
+    fn f05_trusted_verification_still_bounds_the_allocation_size() {
+        let signatures = [Signature {
+            format: 17,
+            length: 64,
+            digest: [7u8; 32],
+        }];
+        let deadline = Instant::now() + Duration::from_secs(1);
+        for size in [63, 64 + 65537] {
+            assert_eq!(
+                verify_entries(
+                    &signatures,
+                    deadline,
+                    true,
+                    |_| Ok(size),
+                    |_, _, _, _, _| Ok(true),
+                ),
+                Err("PUBLICATION_UNVERIFIED"),
+                "size {size} must be rejected even on the trusted path"
+            );
+        }
+        assert_eq!(
+            verify_entries(
+                &signatures,
+                deadline,
+                true,
+                |_| Ok(64),
+                |_, _, _, _, _| Ok(true),
+            ),
+            Ok(())
+        );
     }
 }

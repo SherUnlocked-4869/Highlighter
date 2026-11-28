@@ -65,6 +65,9 @@
     <main class="editor-body">
       <section class="stage-column">
         <div id="video-stage" class="video-stage">
+          <!-- N03 (review section 5.3): the shortcut capsule overlays the bottom of the preview while
+               playing. It is an editor-only overlay; export compositing is out of scope. -->
+          <div id="keystroke-capsule" class="keystroke-capsule" role="status" aria-live="polite" hidden></div>
           <!-- R5 parity frame: background/margins/radius/shadow use the same style values as
                the exporter; the canvas aspect ratio comes from shared/recording-demo.js. -->
           <div id="demo-preview-frame" class="demo-preview-frame" data-demo="off">
@@ -98,6 +101,9 @@
               <input id="range-end-input" class="time-input" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" value="00:00.0">
             </label>
             <button id="play-range" class="action-button" type="button" data-i18n="recording.editor.timeline.play-kept">Play kept content</button>
+            <!-- N03: the capsule HUD is opt-in. It only shows the shortcut combos recorded during
+                 the capture; the recording itself is never modified. -->
+            <button id="toggle-keystrokes" class="action-button keystroke-toggle" type="button" data-testid="toggle-keystrokes" data-i18n="recording.editor.keystrokes.toggle" data-i18n-title="recording.editor.keystrokes.toggle-title" aria-pressed="false">Shortcut capsules</button>
             <!-- B08: pin the frame the preview currently shows. The title carries the phase-1
                  scope (source pixels only) so the option never promises the export compositor. -->
             <button id="pin-frame" class="action-button" type="button" data-testid="pin-frame" data-i18n="record.pin-frame.action" data-i18n-title="record.pin-frame.title" title="Pin current frame">Pin current frame</button>
@@ -109,6 +115,11 @@
             <button id="undo-edit" class="action-button" type="button" data-testid="undo-edit" data-i18n="recording.editor.timeline.undo">Undo</button>
             <button id="redo-edit" class="action-button" type="button" data-testid="redo-edit" data-i18n="recording.editor.timeline.redo">Redo</button>
             <button id="reset-edits" class="action-button" type="button" data-testid="reset-edits" data-i18n="recording.editor.timeline.reset">Full range</button>
+            <!-- N03: one-click dead-air removal. Main analyses the audio track with ffmpeg and
+                 corroborates the silent spans with the pointer-idle event track; the resulting
+                 suggestion is applied as an ordinary, undoable multi-segment edit. -->
+            <button id="cut-silence" class="action-button" type="button" data-testid="cut-silence" data-i18n="recording.editor.pause.cut">Remove silent pauses</button>
+            <span id="pause-cut-status" class="pause-cut-status" role="status" aria-live="polite"></span>
             <span id="empty-selection-hint" class="timeline-hint" data-i18n="recording.editor.timeline.empty" hidden>Everything was deleted; restore the full range to export.</span>
           </div>
         </section>
@@ -164,6 +175,15 @@
             <span data-i18n="recording.editor.output-size">Output size</span>
             <strong id="export-output-size"></strong>
           </div>
+          <!-- DEV-05: the take's recorded shortcut capsules are available in the preview HUD; this
+               switch decides whether they are also burned into the exported MP4/WebM/GIF. -->
+          <label class="demo-toggle export-capsule-toggle">
+            <input id="export-keystrokes" type="checkbox" data-testid="export-keystrokes" data-i18n-title="recording.editor.keystrokes.export-title">
+            <span data-i18n="recording.editor.keystrokes.export">Shortcuts in video</span>
+          </label>
+          <!-- P2-05: when a retained export material cap drops capsules, the exact counts and
+               source-time range are shown here before the user confirms the export. -->
+          <p id="keystroke-truncation" class="export-hint keystroke-truncation" data-testid="keystroke-truncation" role="status" aria-live="polite" hidden></p>
           <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
         </section>
 

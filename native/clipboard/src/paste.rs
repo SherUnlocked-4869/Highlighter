@@ -76,6 +76,8 @@ struct PasteTrace {
     foreground_matches: bool,
     focus_matches: bool,
     keys_released: bool,
+    /// True when the user's still-held Ctrl was reused instead of synthesizing it.
+    reused_ctrl: bool,
     target_valid: bool,
     outcome: String,
     elapsed_micros: u64,
@@ -164,6 +166,68 @@ fn released() -> bool {
     ]
     .iter()
     .all(|key| unsafe { GetAsyncKeyState(key.0 as i32) >= 0 })
+}
+
+fn key_down(key: VIRTUAL_KEY) -> bool {
+    unsafe { GetAsyncKeyState(key.0 as i32) < 0 }
+}
+
+fn ctrl_held() -> bool {
+    key_down(VK_LCONTROL) || key_down(VK_RCONTROL)
+}
+
+/// Everything except Ctrl is up, so a paste can reuse the Ctrl the user is still
+/// holding (Ctrl+Enter keeps it down through the panel hide). Any other modifier,
+/// V itself, or a mouse button still blocks the reuse.
+fn released_except_control() -> bool {
+    [
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+        VK_V,
+        VK_LBUTTON,
+        VK_RBUTTON,
+        VK_MBUTTON,
+    ]
+    .iter()
+    .all(|key| unsafe { GetAsyncKeyState(key.0 as i32) >= 0 })
+}
+
+/// How long the commit phase waits for the shortcut modifiers to be released.
+/// 600 ms covers a relaxed Ctrl+Enter release; waiting the full window is the
+/// exception (a still-held Ctrl is reused, other held keys fail fast) so the
+/// local barrier is normally held far shorter.
+const MODIFIER_RELEASE_WAIT: Duration = Duration::from_millis(600);
+
+struct PasteBatch {
+    inputs: Vec<INPUT>,
+    /// Synthetic key-downs as (index in `inputs`, virtual key). A partial SendInput
+    /// only inserts a prefix of `inputs`, so these indices decide what to release.
+    downs: Vec<(usize, VIRTUAL_KEY)>,
+}
+
+/// Build the single paste batch. Ctrl+V is the normal shape; when the user's own
+/// Ctrl is still physically down only V is synthesized, which the target still
+/// resolves as Ctrl+V.
+fn paste_batch(reuse_held_ctrl: bool) -> PasteBatch {
+    let mut batch = PasteBatch {
+        inputs: Vec::with_capacity(4),
+        downs: Vec::with_capacity(2),
+    };
+    if !reuse_held_ctrl {
+        batch.downs.push((batch.inputs.len(), VK_LCONTROL));
+        batch.inputs.push(key(VK_LCONTROL, false));
+    }
+    batch.downs.push((batch.inputs.len(), VK_V));
+    batch.inputs.push(key(VK_V, false));
+    batch.inputs.push(key(VK_V, true));
+    if !reuse_held_ctrl {
+        batch.inputs.push(key(VK_LCONTROL, true));
+    }
+    batch
 }
 fn key(key: VIRTUAL_KEY, up: bool) -> INPUT {
     INPUT {
@@ -365,7 +429,8 @@ fn inject(prepared: &Prepared, trace: &mut PasteTrace) -> Result<Value, &'static
             trace.foreground_request_succeeded = SetForegroundWindow(target.window).as_bool();
         }
     }
-    let deadline = Instant::now() + Duration::from_millis(300);
+    let deadline = Instant::now() + MODIFIER_RELEASE_WAIT;
+    let mut reuse_held_ctrl = false;
     loop {
         if !prepared.proof.current() {
             return Ok(copied_only("CLIPBOARD_CHANGED"));
@@ -381,51 +446,120 @@ fn inject(prepared: &Prepared, trace: &mut PasteTrace) -> Result<Value, &'static
         if !foreground.0.is_null() && foreground != target.window && foreground != prepared.panel {
             return Ok(copied_only("FOCUS_CHANGED"));
         }
-        if trace.foreground_matches
-            && trace.focus_matches
-            && trace.target_valid
-            && trace.keys_released
-        {
-            break;
+        if trace.foreground_matches && trace.focus_matches && trace.target_valid {
+            if trace.keys_released {
+                break;
+            }
+            // Ctrl+Enter: the user often keeps Ctrl down after the panel hides.
+            // Once the target window has focus and no other key is held, reuse that
+            // Ctrl and synthesize only V - the target still sees Ctrl+V. Waiting for
+            // a slow release used to fail with FOCUS_OR_KEYS_BUSY after 300 ms.
+            if ctrl_held() && released_except_control() {
+                reuse_held_ctrl = true;
+                break;
+            }
         }
         if Instant::now() >= deadline {
             return Ok(copied_only("FOCUS_OR_KEYS_BUSY"));
         }
         thread::sleep(Duration::from_millis(10));
     }
-    if !input_desktop() || !target.focused() || !released() || !prepared.proof.current() {
+    // Re-validate the exact state the batch depends on. A released reuse-Ctrl must
+    // not become a bare V keystroke, and a re-pressed key must keep the original
+    // fail-closed FOCUS_CHANGED semantics.
+    if !input_desktop() || !target.focused() || !prepared.proof.current() {
         return Ok(copied_only("FOCUS_CHANGED"));
     }
+    if reuse_held_ctrl {
+        if !ctrl_held() || !released_except_control() {
+            return Ok(copied_only("FOCUS_CHANGED"));
+        }
+    } else if !released() {
+        return Ok(copied_only("FOCUS_CHANGED"));
+    }
+    trace.reused_ctrl = reuse_held_ctrl;
     // One batch, one attempt. Success only proves insertion into the input
     // stream; it cannot prove that the target application consumed the paste.
-    let inputs = [
-        key(VK_LCONTROL, false),
-        key(VK_V, false),
-        key(VK_V, true),
-        key(VK_LCONTROL, true),
-    ];
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let batch = paste_batch(reuse_held_ctrl);
+    let sent = unsafe { SendInput(&batch.inputs, size_of::<INPUT>() as i32) };
     if sent == 0 {
         return Ok(copied_only("INPUT_BLOCKED"));
     }
-    if sent != inputs.len() as u32 {
+    if sent != batch.inputs.len() as u32 {
         // Release only keys whose synthetic downs were actually inserted.
         // No paste retry; a partial batch has an unknown external outcome.
-        let cleanup: Vec<_> = [
-            if sent == 2 {
-                Some(key(VK_V, true))
-            } else {
-                None
-            },
-            Some(key(VK_LCONTROL, true)),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        unsafe {
-            SendInput(&cleanup, size_of::<INPUT>() as i32);
+        let cleanup: Vec<_> = batch
+            .downs
+            .iter()
+            .filter(|(index, _)| *index < sent as usize)
+            .rev()
+            .map(|(_, vk)| key(*vk, true))
+            .collect();
+        if !cleanup.is_empty() {
+            unsafe {
+                SendInput(&cleanup, size_of::<INPUT>() as i32);
+            }
         }
         return Err("PASTE_OUTCOME_UNKNOWN");
     }
     Ok(json!({"copied":true,"outcome":"injected"}))
 }
+
+#[cfg(test)]
+mod paste_batch_tests {
+    //! Pure input-batch tests: no clipboard, no input injection, no desktop. The
+    //! physical Ctrl-reuse decision itself can only be exercised against real key
+    //! state, so the batch shape and the wait budget are pinned here.
+    use super::*;
+
+    fn vk_of(input: &INPUT) -> VIRTUAL_KEY {
+        // Reading the input union is unsafe by definition; the values were built by
+        // `key()` in this module, so the layout is the keyboard variant.
+        unsafe { input.Anonymous.ki.wVk }
+    }
+
+    fn is_keyup(input: &INPUT) -> bool {
+        unsafe { input.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP) }
+    }
+
+    fn tag_of(input: &INPUT) -> usize {
+        unsafe { input.Anonymous.ki.dwExtraInfo }
+    }
+
+    #[test]
+    fn normal_paste_uses_one_symmetric_ctrl_v_batch() {
+        let batch = paste_batch(false);
+        assert_eq!(batch.inputs.len(), 4);
+        assert_eq!(batch.downs.len(), 2);
+        assert_eq!(batch.downs[0], (0, VK_LCONTROL));
+        assert_eq!(batch.downs[1], (1, VK_V));
+        assert_eq!(vk_of(&batch.inputs[0]), VK_LCONTROL);
+        assert_eq!(is_keyup(&batch.inputs[0]), false);
+        assert_eq!(vk_of(&batch.inputs[1]), VK_V);
+        assert_eq!(is_keyup(&batch.inputs[1]), false);
+        assert_eq!(vk_of(&batch.inputs[2]), VK_V);
+        assert_eq!(is_keyup(&batch.inputs[2]), true);
+        assert_eq!(vk_of(&batch.inputs[3]), VK_LCONTROL);
+        assert_eq!(is_keyup(&batch.inputs[3]), true);
+        assert!(batch.inputs.iter().all(|input| tag_of(input) == 0x484c5041));
+    }
+
+    #[test]
+    fn reused_ctrl_paste_sends_only_v_and_keeps_partial_cleanup_consistent() {
+        let batch = paste_batch(true);
+        assert_eq!(batch.inputs.len(), 2);
+        assert_eq!(batch.downs, vec![(0, VK_V)]);
+        assert_eq!(vk_of(&batch.inputs[0]), VK_V);
+        assert_eq!(is_keyup(&batch.inputs[0]), false);
+        assert_eq!(vk_of(&batch.inputs[1]), VK_V);
+        assert_eq!(is_keyup(&batch.inputs[1]), true);
+    }
+
+    #[test]
+    fn modifier_release_window_is_600ms() {
+        // A Ctrl still held after 300 ms used to fail with FOCUS_OR_KEYS_BUSY; the
+        // scan window is now 600 ms and the reuse branch normally ends it early.
+        assert_eq!(MODIFIER_RELEASE_WAIT, Duration::from_millis(600));
+    }
+}
+

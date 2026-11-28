@@ -151,7 +151,22 @@
     'recording.editor.error.action-unavailable': '当前操作不可用',
     'recording.editor.error.export-not-ready': '录制文件尚未就绪，暂时不能导出。',
     'recording.editor.draft-conflict.message': '草稿版本已变化，项目已重新载入。请确认当前选区后继续。',
-    'recording.editor.draft-conflict.reload': '重新载入'
+    'recording.editor.draft-conflict.reload': '重新载入',
+    // N03: shortcut capsule HUD + one-click dead-air removal.
+    'recording.editor.keystrokes.toggle': '快捷键胶囊',
+    'recording.editor.keystrokes.toggle-title': '播放时在画面底部显示录制中记录的快捷键组合（仅修饰键组合与功能键，不记录普通输入）',
+    'recording.editor.keystrokes.export': '导出画面显示快捷键',
+    'recording.editor.keystrokes.export-title': '把录制中记录的快捷键胶囊叠加进导出成片，显示时长与位置和预览一致（约 1.1 秒）',
+    'recording.editor.keystrokes.truncated': '快捷键覆盖层受导出上限限制（最多 {maxWindows} 个显示区间、{maxLabels} 种不同快捷键标签）：{count} 个按键胶囊（{labels} 种标签，{first}–{last}）将不会出现在成片中。',
+    'recording.editor.error.invalid-keystroke-option': '快捷键覆盖层参数无效，已停止本次导出；请关闭该选项后重试。',
+    'recording.editor.pause.cut': '一键裁剪空白停顿',
+    'recording.editor.pause.applied': '已移除 {count} 段静音停顿（约 {removed}），可撤销',
+    'recording.editor.pause.nothing': '没有可裁剪的静音停顿',
+    'recording.editor.pause.no-audio': '该录制没有音轨，无法分析静音停顿；时间轴未改动',
+    'recording.editor.pause.failed': '静音分析不可用，时间轴未改动',
+    'recording.editor.pause.no-idle': '静音段内鼠标仍在移动，未建议裁剪；时间轴未改动',
+    'recording.editor.pause.analysis-running': '正在分析静音停顿，请稍候…',
+    'recording.editor.pause.unavailable': '当前窗口没有静音分析通道，时间轴未改动'
   })
 
   add('en-US', {
@@ -290,7 +305,22 @@
     'recording.editor.error.action-unavailable': 'That action is unavailable right now',
     'recording.editor.error.export-not-ready': 'The recording file is not ready, so it cannot be exported yet.',
     'recording.editor.draft-conflict.message': 'The draft version changed and the project was reloaded. Check the selection and continue.',
-    'recording.editor.draft-conflict.reload': 'Reload'
+    'recording.editor.draft-conflict.reload': 'Reload',
+    // N03: shortcut capsule HUD + one-click dead-air removal.
+    'recording.editor.keystrokes.toggle': 'Shortcut capsules',
+    'recording.editor.keystrokes.toggle-title': 'Show the shortcut combinations recorded during the capture at the bottom of the preview (modifier chords and function keys only; plain typing is never recorded)',
+    'recording.editor.keystrokes.export': 'Show shortcuts in the exported video',
+    'recording.editor.keystrokes.export-title': 'Burn the recorded shortcut capsules into the exported video; the 1.1 s display window and position match the preview',
+    'recording.editor.keystrokes.truncated': 'Shortcut overlay export limits (at most {maxWindows} display windows and {maxLabels} distinct labels): {count} capsules ({labels} labels, {first}–{last}) will not appear in the film.',
+    'recording.editor.error.invalid-keystroke-option': 'The shortcut overlay settings were rejected, so the export was stopped. Turn the option off and try again.',
+    'recording.editor.pause.cut': 'Remove silent pauses',
+    'recording.editor.pause.applied': 'Removed {count} silent pause(s) (~{removed}); undo is available',
+    'recording.editor.pause.nothing': 'No silent pause to remove',
+    'recording.editor.pause.no-audio': 'This recording has no audio track, so silence cannot be analysed. The timeline was not changed.',
+    'recording.editor.pause.failed': 'Silence analysis is unavailable. The timeline was not changed.',
+    'recording.editor.pause.no-idle': 'The pointer kept moving during the silent parts, so nothing was suggested. The timeline was not changed.',
+    'recording.editor.pause.analysis-running': 'Analysing silent pauses; try again in a moment.',
+    'recording.editor.pause.unavailable': 'Silence analysis is not available in this window. The timeline was not changed.'
   })
 
   add('zh-TW', {
@@ -429,6 +459,21 @@
     'recording.editor.error.action-unavailable': '目前操作不可用',
     'recording.editor.error.export-not-ready': '錄製檔案尚未就緒，暫時不能匯出。',
     'recording.editor.draft-conflict.message': '草稿版本已變更，專案已重新載入。請確認目前選區後繼續。',
-    'recording.editor.draft-conflict.reload': '重新載入'
+    'recording.editor.draft-conflict.reload': '重新載入',
+    // N03: shortcut capsule HUD + one-click dead-air removal.
+    'recording.editor.keystrokes.toggle': '快捷鍵膠囊',
+    'recording.editor.keystrokes.toggle-title': '播放時在畫面底部顯示錄製中記錄的快捷鍵組合（僅修飾鍵組合與功能鍵，不記錄一般輸入）',
+    'recording.editor.keystrokes.export': '匯出畫面顯示快速鍵',
+    'recording.editor.keystrokes.export-title': '把錄製中記錄的快速鍵膠囊疊加進匯出成片，顯示時間與位置和預覽一致（約 1.1 秒）',
+    'recording.editor.keystrokes.truncated': '快速鍵覆蓋層受匯出上限限制（最多 {maxWindows} 個顯示區間、{maxLabels} 種不同快速鍵標籤）：{count} 個按鍵膠囊（{labels} 種標籤，{first}–{last}）將不會出現在成片中。',
+    'recording.editor.error.invalid-keystroke-option': '快速鍵覆蓋層參數無效，已停止本次匯出；請關閉該選項後重試。',
+    'recording.editor.pause.cut': '一鍵裁剪空白停頓',
+    'recording.editor.pause.applied': '已移除 {count} 段靜音停頓（約 {removed}），可復原',
+    'recording.editor.pause.nothing': '沒有可裁剪的靜音停頓',
+    'recording.editor.pause.no-audio': '此錄製沒有音軌，無法分析靜音停頓；時間軸未改動',
+    'recording.editor.pause.failed': '靜音分析無法使用，時間軸未改動',
+    'recording.editor.pause.no-idle': '靜音段內滑鼠仍在移動，未建議裁剪；時間軸未改動',
+    'recording.editor.pause.analysis-running': '正在分析靜音停頓，請稍候…',
+    'recording.editor.pause.unavailable': '目前視窗沒有靜音分析通道，時間軸未改動'
   })
 })()

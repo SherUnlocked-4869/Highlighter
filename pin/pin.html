@@ -12,6 +12,11 @@
 <script src="../shared/locales/pin.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="../shared/ocr-text-overlay.js"></script>
+<!-- DEV-02: the offscreen current-view compositor. It must load before pin.js (the
+     renderer only wires it; all geometry lives in the UMD module for node tests). -->
+<script src="pin-view-export.js"></script>
+<!-- DEV-08: bounded diff-display math for the opt-in real-pixel compare mode. -->
+<script src="pin-diff-view.js"></script>
 </head>
 <body data-rotation="0">
 <!-- #rotor is the rotation frame (P1, plan §9.3): the main process already sized
@@ -34,6 +39,27 @@
 <div id="zoomBadge">100%</div>
 <div id="opacityBadge" data-i18n-title="pin.opacity.title" title="Opacity">100%</div>
 <div id="clickThroughTag" data-i18n="pin.click-through.label" data-i18n-title="pin.click-through.title" title="Click-through active">Click-through · hover to exit</div>
+<!-- N05: transient operation toast shared by the onion-skin modes and the workspace
+     snapshot actions. Text always comes from t(), never from static markup. -->
+<div id="pinToast" role="status" hidden></div>
+<!-- DEV-08: the opt-in real-pixel compare overlay. It shows a red translucent mask over
+     the pixels that differ between the screen underneath and the pinned picture, plus a
+     ratio badge. It is renderer-only feedback: the view export, copy/save, workspace
+     snapshots and recovery tickets never include it. -->
+<canvas id="pinDiffOverlay" hidden></canvas>
+<div id="pinDiffBadge" role="status" hidden></div>
+<!-- N05: inline snapshot naming. The pin window is the only surface that can own a
+     text input without a new IPC channel, and a native prompt() does not exist in
+     Electron. The overlay is pointer-transparent until opened. -->
+<div id="pinWorkspaceNaming" hidden>
+  <div id="pinWorkspaceNamingTitle" data-i18n="pin.workspace.naming-title"></div>
+  <input id="pinWorkspaceNameInput" type="text" maxlength="64" autocomplete="off" spellcheck="false" data-i18n-placeholder="pin.workspace.naming-placeholder">
+  <div id="pinWorkspaceNamingHint" data-i18n="pin.workspace.naming-hint"></div>
+  <div id="pinWorkspaceNamingActions">
+    <button type="button" id="pinWorkspaceNameCancel" data-i18n="pin.workspace.naming-cancel"></button>
+    <button type="button" id="pinWorkspaceNameConfirm" data-i18n="pin.workspace.naming-confirm"></button>
+  </div>
+</div>
 <script src="pin.js"></script>
 </body>
 </html>

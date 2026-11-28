@@ -188,15 +188,22 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
         SetLastError(ERROR_SUCCESS);
         format = EnumClipboardFormats(format);
         if (format == 0) break;
-        if (++formats > 64) return false;
         // These cannot be copied losslessly as HGLOBAL. Abort before clearing,
         // instead of discarding private or GDI-only data during fallback.
         if ((format >= CF_PRIVATEFIRST && format <= CF_PRIVATELAST)
             || (format >= CF_GDIOBJFIRST && format <= CF_GDIOBJLAST)
             || format == CF_OWNERDISPLAY || format == CF_DSPTEXT || format == CF_DSPBITMAP
             || format == CF_DSPMETAFILEPICT || format == CF_DSPENHMETAFILE) return false;
+        // Skip synthesized / non-backupable formats BEFORE charging the format budget.
+        // A rich clipboard enumerates many synthesized entries (CF_TEXT, CF_BITMAP, ...)
+        // that were previously counted, so a large clipboard could exhaust the 64-format
+        // limit and fail every fallback even though few real formats needed backing up.
         if (IsSkippedFormat(format))
             continue;
+        // Only formats that are actually stored count against the cap. 256 keeps room
+        // for application format families (Office/images) while still bounding the
+        // transaction; the 64 MiB byte budget below bounds the data itself.
+        if (++formats > 256) return false;
 
         // CF_ENHMETAFILE uses HENHMETAFILE, not HGLOBAL
         if (format == CF_ENHMETAFILE)

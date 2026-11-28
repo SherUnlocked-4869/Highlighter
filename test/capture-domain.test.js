@@ -23,10 +23,12 @@ test('main.js delegates capture domain instead of inlining window factories and 
 })
 
 test('main.js routes capture ownership and task checks through the domain', () => {
+  const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
   assert.match(main, /captureDomain\?\.ownsWindow\(win\)/)
   assert.match(main, /captureDomain\?\.isTaskActive\(\)/)
   assert.match(main, /captureDomain\.createCaptureWindow\(/)
-  assert.match(main, /\.\.\.captureDomain\.createCaptureController\(\)/)
+  // H05: the channels are registered by the aggregated IPC module now.
+  assert.match(ipcIndex, /\.\.\.captureDomain\.createCaptureController\(\)/)
 })
 
 test('capture domain owns window lifecycle and smart-select helpers', () => {
@@ -407,6 +409,33 @@ test('every output path that consumes serials advances the counter, including co
   afterCopy.close()
   afterRecord.close()
   afterLong.close()
+})
+
+// P1-01 review: the region overlay must hand the workbench's capture request id to the record
+// domain, so the record domain can bind (and later consume) the one-shot workbench config to the
+// exact overlay that produced the rectangle. The quick entry carries no request id.
+test('the region recording entry forwards the overlay capture request id (P1-01 review)', async () => {
+  const recorded = []
+  const harness = createHarness({
+    createRecordWindow: async (options) => { recorded.push(options) }
+  })
+  const win = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]), regionRequestId: 'region-request-7' })
+  assert.equal(win._recordRegionRequestId, 'region-request-7')
+  const controller = harness.domain.createCaptureController()
+  await controller.startRegionRecording(
+    { sender: {} },
+    { selectionBounds: { x: 5, y: 6, width: 70, height: 80 }, serialNumber: 3 }
+  )
+  assert.equal(recorded.length, 1)
+  assert.equal(recorded[0].regionRequestId, 'region-request-7')
+  assert.deepEqual(recorded[0].selectionBounds, { x: 5, y: 6, width: 70, height: 80 })
+
+  // A quick-entry overlay (no workbench request) forwards the empty id, never a stale one.
+  const quick = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(quick._recordRegionRequestId, '')
+  await controller.startRegionRecording({ sender: {} }, { selectionBounds: { x: 0, y: 0, width: 10, height: 10 } })
+  assert.equal(recorded.length, 2)
+  assert.equal(recorded[1].regionRequestId, '')
 })
 
 // OCR 评审修复：开关关闭时不推进计数，否则"先关后开"时首张启用截图不再从 1 开始。

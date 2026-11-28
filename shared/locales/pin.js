@@ -43,6 +43,12 @@
     'pin.view-export.failed': '导出当前视图失败',
     'pin.view-export.empty': '当前视图是空的，没有可导出的像素',
     'pin.view-export.not-visible': '贴图当前不可见，请先显示贴图再导出当前视图',
+    // DEV-02: the offscreen compositor reports bounded, retryable failures; the dialog
+    // title stays the existing "export failed" string and the detail names the cause.
+    'pin.view-export.too-large': '当前视图的像素尺寸过大，请先缩小贴图再重试导出',
+    'pin.view-export.timeout': '渲染当前视图超时，请重试',
+    'pin.view-export.unavailable': '贴图窗口尚未准备好，暂时无法导出当前视图',
+    'pin.view-export.render-failed': '贴图窗口渲染当前视图失败，请重试',
     'pin.copy-once.button': '贴图',
     'pin.copy-once.tip': '贴图（右键或长按可选择“贴图并复制标注结果”）',
     'pin.copy-once.menu-label': '贴图输出',
@@ -57,7 +63,61 @@
     'pin.copy-once.retry-copy': '重试复制',
     'pin.copy-once.dismiss': '关闭输出状态',
     'pin.copy-once.hint-pin-limit': '贴图最多 20 张，请先关闭一些再重试贴图。',
-    'pin.copy-once.hint-clipboard-busy': '剪贴板被其他程序占用，请稍后重试复制。'
+    'pin.copy-once.hint-clipboard-busy': '剪贴板被其他程序占用，请稍后重试复制。',
+
+    // N05 (review section 5.5): pixel-aligned onion skin mode. The pin window owns
+    // the visual state, so every message here is a renderer toast.
+    'pin.onion.difference-on': '像素对齐：差分模式（Ctrl+Shift+D 关闭）',
+    'pin.onion.flash-on': '像素对齐：闪烁对比（Ctrl+Shift+F 关闭）',
+    'pin.onion.off': '已退出像素对齐',
+    'pin.onion.unavailable': '像素对齐需在“点击穿透 + 半透明”下使用',
+    'pin.onion.reduced-motion': '系统已开启“减少动态效果”，闪烁改用静态差分',
+
+    // N05 / DEV-08: the onion compare menu and the opt-in real-pixel mode. The side
+    // effect is stated where the user turns it on: the exclusion mechanism that keeps the
+    // pin out of its own sample also keeps it out of screenshots/recordings.
+    'pin.onion.menu-label': '像素比对',
+    'pin.onion.mode-off': '关闭比对',
+    'pin.onion.mode-difference': '差分模式',
+    'pin.onion.mode-flash': '闪烁对比',
+    'pin.onion.mode-real-diff': '真实像素比对（实验）',
+    'pin.onion.real-diff.side-effect': '开启期间本贴图不会出现在屏幕截图/录屏中（比对排除机制）',
+    'pin.onion.real-diff-on': '真实像素比对已开启：红色表示与下方屏幕不同的像素',
+    'pin.onion.real-diff-off': '已关闭真实像素比对',
+    'pin.onion.real-diff.waiting': '正在采样下方屏幕…',
+    'pin.onion.real-diff.changed': '差异 {ratio}%',
+    'pin.onion.real-diff.no-change': '与下方屏幕无差异',
+    'pin.onion.real-diff.unavailable': '当前无法进行像素比对（{code}）',
+    'pin.onion.real-diff.failed': '真实像素比对不可用，已恢复普通显示',
+
+    // N05: pin workspace snapshots (persisted by the pin domain; the context menu
+    // and the status toasts are the only surfaces).
+    'pin.workspace.menu-label': '工作区快照',
+    'pin.workspace.menu-save': '保存当前工作区…',
+    'pin.workspace.menu-restore': '恢复工作区快照',
+    'pin.workspace.menu-delete': '删除工作区快照',
+    'pin.workspace.menu-empty': '（还没有快照）',
+    'pin.workspace.untitled': '（未命名快照）',
+    'pin.workspace.menu-suspend': '挂起全部贴图（可从托盘恢复）',
+    'pin.workspace.menu-resume': '恢复挂起的贴图',
+    'pin.workspace.pin-count': '{count} 张贴图',
+    'pin.workspace.naming-title': '保存工作区快照',
+    'pin.workspace.naming-placeholder': '给这组贴图起个名字',
+    'pin.workspace.naming-hint': '保存所有活动贴图的位置、缩放、旋转、不透明度与当前画面',
+    'pin.workspace.naming-confirm': '保存',
+    'pin.workspace.naming-cancel': '取消',
+    'pin.workspace.toast-saved': '已保存快照“{name}”',
+    'pin.workspace.toast-name-required': '请先输入快照名称',
+    'pin.workspace.toast-save-failed': '保存工作区快照失败',
+    'pin.workspace.toast-restore-failed': '恢复工作区快照失败',
+    'pin.workspace.toast-all-missing': '快照中的图片已丢失，未做任何更改',
+    'pin.workspace.toast-not-found': '找不到该快照',
+    'pin.workspace.toast-busy': '上一个工作区操作还没结束，请稍后再试',
+    'pin.workspace.toast-deleted': '已删除快照“{name}”',
+    'pin.workspace.toast-delete-failed': '删除快照失败',
+    'pin.workspace.toast-resumed': '已恢复挂起的贴图',
+    'pin.workspace.restore-missing-title': '部分贴图没有恢复',
+    'pin.workspace.restore-missing-message': '已恢复 {restored} / {total} 张贴图，{missing} 张因图片缺失或创建失败被跳过。'
   })
 
   add('en-US', {
@@ -88,6 +148,10 @@
     'pin.view-export.failed': 'Could not export the current view',
     'pin.view-export.empty': 'The current view is empty - there are no pixels to export',
     'pin.view-export.not-visible': 'The pin is not visible; show it first, then export the current view',
+    'pin.view-export.too-large': 'The current view is too large in pixels - shrink the pin, then retry the export',
+    'pin.view-export.timeout': 'Timed out composing the current view - please retry',
+    'pin.view-export.unavailable': 'The pin window is not ready to export its current view yet',
+    'pin.view-export.render-failed': 'Could not compose the current view - please retry',
     'pin.copy-once.button': 'Pin',
     'pin.copy-once.tip': 'Pin (right-click or long-press to pin and copy the annotated result)',
     'pin.copy-once.menu-label': 'Pin output',
@@ -102,7 +166,56 @@
     'pin.copy-once.retry-copy': 'Retry copy',
     'pin.copy-once.dismiss': 'Dismiss output status',
     'pin.copy-once.hint-pin-limit': 'Up to 20 pins - close some, then retry the pin.',
-    'pin.copy-once.hint-clipboard-busy': 'Another program is holding the clipboard - retry the copy in a moment.'
+    'pin.copy-once.hint-clipboard-busy': 'Another program is holding the clipboard - retry the copy in a moment.',
+
+    // N05: pixel-aligned onion skin mode (renderer toasts).
+    'pin.onion.difference-on': 'Pixel diff: difference mode (Ctrl+Shift+D to turn off)',
+    'pin.onion.flash-on': 'Pixel diff: blinking compare (Ctrl+Shift+F to turn off)',
+    'pin.onion.off': 'Pixel diff off',
+    'pin.onion.unavailable': 'Pixel diff needs click-through and a semi-transparent pin',
+    'pin.onion.reduced-motion': 'Reduced motion is on, so the blink was replaced by a static difference',
+
+    'pin.onion.menu-label': 'Pixel compare',
+    'pin.onion.mode-off': 'Turn compare off',
+    'pin.onion.mode-difference': 'Difference mode',
+    'pin.onion.mode-flash': 'Blinking compare',
+    'pin.onion.mode-real-diff': 'Real pixel compare (experimental)',
+    'pin.onion.real-diff.side-effect': 'While this runs the pin is excluded from screen captures/recordings (the exclusion mechanism)',
+    'pin.onion.real-diff-on': 'Real pixel compare on: red marks pixels that differ from the screen underneath',
+    'pin.onion.real-diff-off': 'Real pixel compare off',
+    'pin.onion.real-diff.waiting': 'Sampling the screen underneath…',
+    'pin.onion.real-diff.changed': 'Difference {ratio}%',
+    'pin.onion.real-diff.no-change': 'No difference from the screen underneath',
+    'pin.onion.real-diff.unavailable': 'Pixel compare unavailable right now ({code})',
+    'pin.onion.real-diff.failed': 'Real pixel compare is unavailable; normal display restored',
+
+    // N05: pin workspace snapshots.
+    'pin.workspace.menu-label': 'Workspace snapshots',
+    'pin.workspace.menu-save': 'Save current workspace…',
+    'pin.workspace.menu-restore': 'Restore workspace snapshot',
+    'pin.workspace.menu-delete': 'Delete workspace snapshot',
+    'pin.workspace.menu-empty': '(no snapshots yet)',
+    'pin.workspace.untitled': '(untitled snapshot)',
+    'pin.workspace.menu-suspend': 'Suspend every pin (restore from the tray)',
+    'pin.workspace.menu-resume': 'Resume suspended pins',
+    'pin.workspace.pin-count': '{count} pin(s)',
+    'pin.workspace.naming-title': 'Save workspace snapshot',
+    'pin.workspace.naming-placeholder': 'Name this group of pins',
+    'pin.workspace.naming-hint': 'Saves every active pin position, zoom, rotation, opacity and its current picture',
+    'pin.workspace.naming-confirm': 'Save',
+    'pin.workspace.naming-cancel': 'Cancel',
+    'pin.workspace.toast-saved': 'Snapshot "{name}" saved',
+    'pin.workspace.toast-name-required': 'Type a snapshot name first',
+    'pin.workspace.toast-save-failed': 'Could not save the workspace snapshot',
+    'pin.workspace.toast-restore-failed': 'Could not restore the workspace snapshot',
+    'pin.workspace.toast-all-missing': 'The snapshot images are gone - nothing was changed',
+    'pin.workspace.toast-not-found': 'That snapshot no longer exists',
+    'pin.workspace.toast-busy': 'Another workspace action is still running - try again in a moment',
+    'pin.workspace.toast-deleted': 'Snapshot "{name}" deleted',
+    'pin.workspace.toast-delete-failed': 'Could not delete the snapshot',
+    'pin.workspace.toast-resumed': 'Suspended pins are back',
+    'pin.workspace.restore-missing-title': 'Some pins were not restored',
+    'pin.workspace.restore-missing-message': 'Restored {restored} / {total} pins; {missing} were skipped (missing picture or create failure).'
   })
 
   add('zh-TW', {
@@ -133,6 +246,10 @@
     'pin.view-export.failed': '匯出目前檢視失敗',
     'pin.view-export.empty': '目前檢視是空的，沒有可匯出的像素',
     'pin.view-export.not-visible': '貼圖目前不可見，請先顯示貼圖再匯出目前檢視',
+    'pin.view-export.too-large': '目前檢視的像素尺寸過大，請先縮小貼圖再重試匯出',
+    'pin.view-export.timeout': '算繪目前檢視逾時，請重試',
+    'pin.view-export.unavailable': '貼圖視窗尚未準備好，暫時無法匯出目前檢視',
+    'pin.view-export.render-failed': '貼圖視窗算繪目前檢視失敗，請重試',
     'pin.copy-once.button': '貼圖',
     'pin.copy-once.tip': '貼圖（按右鍵或長按可選擇「貼圖並複製標註結果」）',
     'pin.copy-once.menu-label': '貼圖輸出',
@@ -147,6 +264,55 @@
     'pin.copy-once.retry-copy': '重試複製',
     'pin.copy-once.dismiss': '關閉輸出狀態',
     'pin.copy-once.hint-pin-limit': '貼圖最多 20 張，請先關閉一些再重試貼圖。',
-    'pin.copy-once.hint-clipboard-busy': '剪貼簿被其他程式占用，請稍後重試複製。'
+    'pin.copy-once.hint-clipboard-busy': '剪貼簿被其他程式占用，請稍後重試複製。',
+
+    // N05: pixel-aligned onion skin mode (renderer toasts).
+    'pin.onion.difference-on': '像素對齊：差分模式（Ctrl+Shift+D 關閉）',
+    'pin.onion.flash-on': '像素對齊：閃爍對比（Ctrl+Shift+F 關閉）',
+    'pin.onion.off': '已退出像素對齊',
+    'pin.onion.unavailable': '像素對齊需在「點擊穿透 + 半透明」下使用',
+    'pin.onion.reduced-motion': '系統已開啟「減少動態效果」，閃爍改用靜態差分',
+
+    'pin.onion.menu-label': '像素比對',
+    'pin.onion.mode-off': '關閉比對',
+    'pin.onion.mode-difference': '差分模式',
+    'pin.onion.mode-flash': '閃爍對比',
+    'pin.onion.mode-real-diff': '真實像素比對（實驗）',
+    'pin.onion.real-diff.side-effect': '開啟期間本貼圖不會出現在螢幕擷取/錄影中（比對排除機制）',
+    'pin.onion.real-diff-on': '真實像素比對已開啟：紅色表示與下方螢幕不同的像素',
+    'pin.onion.real-diff-off': '已關閉真實像素比對',
+    'pin.onion.real-diff.waiting': '正在取樣下方螢幕…',
+    'pin.onion.real-diff.changed': '差異 {ratio}%',
+    'pin.onion.real-diff.no-change': '與下方螢幕無差異',
+    'pin.onion.real-diff.unavailable': '目前無法進行像素比對（{code}）',
+    'pin.onion.real-diff.failed': '真實像素比對無法使用，已還原一般顯示',
+
+    // N05: pin workspace snapshots.
+    'pin.workspace.menu-label': '工作區快照',
+    'pin.workspace.menu-save': '儲存目前工作區…',
+    'pin.workspace.menu-restore': '還原工作區快照',
+    'pin.workspace.menu-delete': '刪除工作區快照',
+    'pin.workspace.menu-empty': '（還沒有快照）',
+    'pin.workspace.untitled': '（未命名快照）',
+    'pin.workspace.menu-suspend': '掛起全部貼圖（可從托盤還原）',
+    'pin.workspace.menu-resume': '還原掛起的貼圖',
+    'pin.workspace.pin-count': '{count} 張貼圖',
+    'pin.workspace.naming-title': '儲存工作區快照',
+    'pin.workspace.naming-placeholder': '給這組貼圖起個名字',
+    'pin.workspace.naming-hint': '儲存所有作用中貼圖的位置、縮放、旋轉、不透明度與目前畫面',
+    'pin.workspace.naming-confirm': '儲存',
+    'pin.workspace.naming-cancel': '取消',
+    'pin.workspace.toast-saved': '已儲存快照「{name}」',
+    'pin.workspace.toast-name-required': '請先輸入快照名稱',
+    'pin.workspace.toast-save-failed': '儲存工作區快照失敗',
+    'pin.workspace.toast-restore-failed': '還原工作區快照失敗',
+    'pin.workspace.toast-all-missing': '快照中的圖片已遺失，未做任何變更',
+    'pin.workspace.toast-not-found': '找不到該快照',
+    'pin.workspace.toast-busy': '上一個工作區操作還沒結束，請稍後再試',
+    'pin.workspace.toast-deleted': '已刪除快照「{name}」',
+    'pin.workspace.toast-delete-failed': '刪除快照失敗',
+    'pin.workspace.toast-resumed': '已還原掛起的貼圖',
+    'pin.workspace.restore-missing-title': '部分貼圖沒有還原',
+    'pin.workspace.restore-missing-message': '已還原 {restored} / {total} 張貼圖，{missing} 張因圖片遺失或建立失敗被跳過。'
   })
 })()

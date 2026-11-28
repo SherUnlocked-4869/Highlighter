@@ -31,6 +31,22 @@ function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
   })
   handle('detail', (_event, args) => { object(args, ['id']); return service.command('detail', { id: id(args.id) }) })
   handle('previews', (event, args) => { object(args, ['ids']); return domain.previews(event, ids(args.ids)) })
+  // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.2):
+  // one-click image actions. `id` is the only payload - the main process reads the
+  // pixels from its own store and owns the save dialog, so the page cannot submit or
+  // learn a path, a URL or a byte buffer.
+  handle('image-ocr', (event, args) => { object(args, ['id']); return domain.imageOcr(event, id(args.id)) })
+  handle('image-table', (event, args) => { object(args, ['id']); return domain.imageTable(event, id(args.id)) })
+  handle('image-pin', (event, args) => { object(args, ['id']); return domain.imagePin(event, id(args.id)) })
+  // The OCR result sheet's copy button. A text payload capped at the clipboard
+  // store's own text ceiling keeps this from becoming a generic large-write channel;
+  // the main process owns the system clipboard, so the sandboxed page needs no
+  // clipboard permission of its own.
+  handle('copy-text', (event, args) => {
+    object(args, ['text'])
+    if (typeof args.text !== 'string' || Buffer.byteLength(args.text, 'utf8') > 1024 * 1024) throw new Error('INVALID_TEXT')
+    return domain.copyText(event, args.text)
+  })
   handle('copy', (_event, args) => { object(args, ['id', 'operationId']); return service.command('copy', { id: id(args.id), operationId: id(args.operationId) }) })
   handle('paste', (event, args) => { object(args, ['id', 'operationId']); return domain.paste(event, id(args.id), id(args.operationId)) })
   handle('set-pinned', (_event, args) => {

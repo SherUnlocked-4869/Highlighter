@@ -280,6 +280,48 @@ function createCaptureDomain(deps) {
   }
 
   // -------------------------------------------------------------------------
+  // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2):
+  // the background OCR index for screenshot history.
+  //
+  // main.js constructs the domains before the IPC aggregation, and registerAllIpc() is where the
+  // indexer is built (it owns the OCR controller and the settings resolver), so the indexer
+  // arrives through this attach point instead of a constructor dependency. Until it is attached
+  // every persist below keeps its shipped behaviour: a record is written and nothing else happens.
+  // -------------------------------------------------------------------------
+  let historyOcrIndexer = null
+
+  function attachHistoryOcrIndexer(indexer) {
+    historyOcrIndexer = indexer && typeof indexer.enqueue === 'function' ? indexer : null
+    return historyOcrIndexer !== null
+  }
+
+  function enqueueHistoryOcr(historyItem) {
+    if (!historyOcrIndexer || !historyItem || typeof historyItem !== 'object') return false
+    try {
+      // enqueue() only appends to an idle serial queue; it never waits for OCR.
+      return historyOcrIndexer.enqueue(historyItem) !== false
+    } catch (error) {
+      log('History OCR enqueue failed:', error?.message || String(error))
+      return false
+    }
+  }
+
+  // The one door every history write in this domain goes through: persist, then hand the new
+  // record to the indexer. It accepts the promise shape too so a fake/alternate persistHistory
+  // cannot make the index silently skip the row.
+  function persistHistoryEntry(imageData, meta) {
+    const created = persistHistory(imageData, meta)
+    if (created && typeof created.then === 'function') {
+      return created.then((historyItem) => {
+        enqueueHistoryOcr(historyItem)
+        return historyItem
+      })
+    }
+    enqueueHistoryOcr(created)
+    return created
+  }
+
+  // -------------------------------------------------------------------------
   // B01: the one-shot "do not keep this capture" switch.
   //
   // The renderer sends the switch value with EVERY action's meta, because that is
@@ -291,6 +333,20 @@ function createCaptureDomain(deps) {
   function resolveSkipHistory(win, meta) {
     if (meta && typeof meta.skipHistory === 'boolean') return meta.skipHistory === true
     return win != null && win._skipHistory === true
+  }
+
+  // U02 / DEV-01: the optional pin re-annotation snapshot travels inside the EXISTING
+  // capture:pin / capture:pin-reannotate payload as `meta.pinEditable` (no new IPC
+  // channel). It is removed from `meta` here - BEFORE any history write, retry receipt or
+  // window field copies it - and handed to the pin domain as a separate argument, so an
+  // unredacted base bitmap can never be serialised by a path that only knows `meta`.
+  // A skipped ("do not keep") capture never forwards one even if a stale renderer sent it.
+  function pullPinEditable(meta, skipHistory) {
+    if (!meta || typeof meta !== 'object' || meta.pinEditable === undefined) return null
+    const raw = meta.pinEditable
+    delete meta.pinEditable
+    if (skipHistory === true) return null
+    return raw
   }
 
   function historyEnabledNow() {
@@ -334,7 +390,7 @@ function createCaptureDomain(deps) {
     const persistStarted = Date.now()
     setImmediate(() => {
       try {
-        persistHistory(buffer, { ...meta, action: plan.action })
+        persistHistoryEntry(buffer, { ...meta, action: plan.action })
         performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: plan.action })
       } catch (error) {
         log('Capture history persist failed:', error.message)
@@ -475,9 +531,15 @@ function createCaptureDomain(deps) {
   }
 
   function attemptPinOutput(event, captureWindow, buffer, meta, skipHistory = false) {
+    // U02 / DEV-01: the editable snapshot for this attempt lives on the capture window
+    // (transient, same lifetime as the one-shot receipt) so the shipped call shape and its
+    // contract tests stay unchanged. It is never read by the history writer.
+    const editableSnapshot = captureWindow?._pinEditableSnapshot || null
     if (pinBudgetReached(event, captureWindow)) return { ok: false, code: 'PIN_LIMIT' }
     try {
-      const created = pinDomain.pinFromCapture(event, buffer, meta)
+      const created = editableSnapshot
+        ? pinDomain.pinFromCapture(event, buffer, meta, '', { editableSnapshot })
+        : pinDomain.pinFromCapture(event, buffer, meta)
       // B01: the pin is the same result as the capture that produced it, so it carries
       // the switch into its re-annotate editor instead of re-enabling history there.
       if (created?.pinWindow) {
@@ -499,7 +561,7 @@ function createCaptureDomain(deps) {
     const persistStarted = Date.now()
     setImmediate(() => {
       try {
-        persistHistory(buffer, { ...meta, action: 'pin' })
+        persistHistoryEntry(buffer, { ...meta, action: 'pin' })
         performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin-copy' })
       } catch (error) {
         log('Capture history persist failed:', error.message)
@@ -511,9 +573,12 @@ function createCaptureDomain(deps) {
   // One confirmation = one export = at most ONE history record, even when only one
   // of the two outputs landed. The receipt lives on the capture window so a retry
   // can only fill in the missing half.
-  async function pinAndCopyOnce(event, captureWindow, buffer, meta) {
+  async function pinAndCopyOnce(event, captureWindow, buffer, meta, editableSnapshot = null) {
     const skipHistory = resolveSkipHistory(captureWindow, meta)
+    if (captureWindow && typeof captureWindow === 'object') captureWindow._pinEditableSnapshot = editableSnapshot
     const attempted = {
+      // The snapshot argument is optional: the shipped call shape stays valid when there
+      // is nothing editable to carry (old flat pins, private captures, history editors).
       pin: attemptPinOutput(event, captureWindow, buffer, meta, skipHistory),
       copy: await copyBufferToClipboard(buffer, { skipHistory })
     }
@@ -541,7 +606,7 @@ function createCaptureDomain(deps) {
     }
   }
 
-  async function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
+  async function retryPinCopy(captureWindow, kind, { event, buffer, meta, editableSnapshot = null }) {
     const prior = captureWindow?._pinCopyState
     if (!prior || !prior.outputs) return stalePinCopyReceipt()
     const skipHistory = resolveSkipHistory(captureWindow, meta)
@@ -552,6 +617,7 @@ function createCaptureDomain(deps) {
       return { ...prior, reattempted: [] }
     }
     const attempted = {}
+    if (captureWindow && typeof captureWindow === 'object') captureWindow._pinEditableSnapshot = editableSnapshot
     if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta, skipHistory)
     else attempted.copy = await copyBufferToClipboard(buffer, { skipHistory })
     const receipt = summarizePinCopyOutputs({ prior: prior.outputs, attempted })
@@ -631,6 +697,21 @@ function createCaptureDomain(deps) {
       clearTimeout(timer)
       return snapshot || null
     }, () => null)
+  }
+
+  // P1 §6.2 (2026-11-26 review): skip the synchronous full-image decode for buffers far
+  // too large to be a blank capture. Buffers at or below the limit keep the original pixel probe.
+  //
+  // The review proposed 32 KiB, but that estimate does not hold with this repo's PNG encoder: a
+  // solid-colour 4K frame is ~166 KiB black and ~37 KiB white, so 32 KiB would skip probing
+  // exactly the images the probe exists for (a failed native capture returns a black frame).
+  // 256 KiB still skips every real screenshot (hundreds of KiB to several MiB) and keeps the
+  // blank fallback working for 1080p and 4K. Measured with sharp 0.35.5, the same encoder the
+  // capture path uses.
+  const BLANK_CAPTURE_DECODE_LIMIT = 256 * 1024
+
+  function canBeBlankCapture(buffer) {
+    return Buffer.isBuffer(buffer) && buffer.length <= BLANK_CAPTURE_DECODE_LIMIT
   }
 
   function isBlankCapture(image) {
@@ -723,7 +804,7 @@ function createCaptureDomain(deps) {
             fallbackReason = 'native-size-mismatch'
             throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
           }
-          if (isBlankCapture(nativeImage.createFromBuffer(buffer))) {
+          if (canBeBlankCapture(buffer) && isBlankCapture(nativeImage.createFromBuffer(buffer))) {
             fallbackReason = 'native-blank'
             throw new Error('原生抓屏返回空白画面')
           }
@@ -763,8 +844,10 @@ function createCaptureDomain(deps) {
         windowId = capture.windowId
         if (capture.protected || !windowId) throw new Error('无法捕获焦点窗口')
         if (capture.imageBuffer) {
-          const image = nativeImage.createFromBuffer(capture.imageBuffer)
-          if (!isBlankCapture(image)) {
+          // Same blank short-circuit as the full-display path: only a small PNG can be blank.
+          const blank = canBeBlankCapture(capture.imageBuffer) &&
+            isBlankCapture(nativeImage.createFromBuffer(capture.imageBuffer))
+          if (!blank) {
             log('Focused capture backend:', 'native')
             return capture.imageBuffer
           }
@@ -1072,6 +1155,10 @@ function createCaptureDomain(deps) {
     })
     currentCaptureWindow = captureWindow
     captureWindow._editingPinWindow = options.editingPinWindow || null
+    // P1-01 follow-up: the record domain binds the workbench's one-shot capture config to the
+    // region-capture request that opened this overlay. It travels on the window (not on a channel)
+    // so the confirm path can hand it back without trusting the renderer; the quick entry has none.
+    captureWindow._recordRegionRequestId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
     // B01: a pin created with "do not keep this capture" hands the switch to its
     // re-annotate editor, so reopening the same pixels does not silently start
     // writing history again. Any other capture starts with the renderer's default
@@ -1150,6 +1237,10 @@ function createCaptureDomain(deps) {
         // document at all (plain screenshot / pin re-annotation / blank canvas), and the renderer
         // then keeps the original "new screenshot" semantics.
         documentEditor: options.documentEditor || null,
+        // U02 / DEV-01: a pin re-annotation session carries the document-shaped snapshot
+        // restored from the pin window (base image + source-pixel annotations + style).
+        // Null for every other mode, including old flat pins.
+        pinEditable: options.pinEditable || null,
         smartSelect: !!captureWindow._smartSelectContext,
         cursorPosition: (() => {
           const point = screen.getCursorScreenPoint()
@@ -1317,9 +1408,18 @@ function createCaptureDomain(deps) {
         }
         if (!Object.values(bounds).every(Number.isFinite)) throw new Error('录制区域无效')
         const display = screen.getDisplayMatching(bounds)
-        await createRecordWindow({ display, selectionBounds: bounds })
+        // P1-01 follow-up: the record domain only consumes the workbench config whose request id
+        // matches this overlay; a quick-entry overlay forwards the empty id and gets no workbench
+        // options. The id lives on the window, so the renderer cannot forge one.
+        // P1-01 re-review: the record domain re-checks that request after every await and returns
+        // null (without creating any window) when the overlay was cancelled/replaced meanwhile.
+        const created = await createRecordWindow({
+          display,
+          selectionBounds: bounds,
+          regionRequestId: captureWindow._recordRegionRequestId || ''
+        })
         if (!captureWindow.isDestroyed()) captureWindow.close()
-        return true
+        return created !== null
       },
       startLong: (event, payload = {}) => {
         reportCaptureSerial(payload)
@@ -1418,10 +1518,13 @@ function createCaptureDomain(deps) {
         if (!buffer.length) throw new Error('截图图片数据为空')
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const skipHistory = resolveSkipHistory(captureWindow, meta)
+        // U02 / DEV-01: strip the editable snapshot from the meta ONCE, before the retry
+        // receipt, the history write or the pin window copies meta anywhere.
+        const editableSnapshot = pullPinEditable(meta, skipHistory)
         // B03: a retry never re-attempts an output that already succeeded, and never
         // writes a second history record (see retryPinCopy).
         if (retry === 'pin' || retry === 'copy') {
-          return retryPinCopy(captureWindow, retry, { event, buffer, meta: { ...meta, skipHistory } })
+          return retryPinCopy(captureWindow, retry, { event, buffer, meta: { ...meta, skipHistory }, editableSnapshot })
         }
         // An unknown retry selector is a stale caller, never a new confirmation: firing
         // the legacy pin path here would create a second pin for a request that asked
@@ -1431,7 +1534,7 @@ function createCaptureDomain(deps) {
         // The shipped single-output path, unchanged: pin only, one history record,
         // and a failure still throws to the renderer's alert.
         if (copy !== true) {
-          const created = pinDomain.pinFromCapture(event, buffer, meta)
+          const created = pinDomain.pinFromCapture(event, buffer, meta, '', editableSnapshot ? { editableSnapshot } : {})
           if (created?.pinWindow) {
             created.pinWindow._skipHistory = skipHistory
             // D05 (18): the flag travels in the retained metadata, so a recovered pin keeps it.
@@ -1440,7 +1543,7 @@ function createCaptureDomain(deps) {
           scheduleHistoryWrite(captureWindow, plan, buffer, meta)
           return null
         }
-        return await pinAndCopyOnce(event, captureWindow, buffer, meta)
+        return await pinAndCopyOnce(event, captureWindow, buffer, meta, editableSnapshot)
       },
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
@@ -1448,7 +1551,12 @@ function createCaptureDomain(deps) {
         const sender = BrowserWindow.fromWebContents(event.sender)
         const skipHistory = resolveSkipHistory(sender, meta)
         const plan = capturePlan('pin-reannotate', skipHistory)
-        const created = pinDomain.pinFromCapture(event, buffer, meta, action)
+        // U02 / DEV-01: same in-memory snapshot bridge as capture:pin, still on the
+        // existing channel and still stripped before the history write below.
+        const editableSnapshot = pullPinEditable(meta, skipHistory)
+        const created = editableSnapshot
+          ? pinDomain.pinFromCapture(event, buffer, meta, action, { editableSnapshot })
+          : pinDomain.pinFromCapture(event, buffer, meta, action)
         const captureWindow = created?.captureWindow
         // B01: this is the same result, so the pin inherits the switch for its editor.
         if (created?.pinWindow) {
@@ -1478,7 +1586,7 @@ function createCaptureDomain(deps) {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })
         if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
-        return persistHistory(buffer, { ...meta, action: type })
+        return persistHistoryEntry(buffer, { ...meta, action: type })
       },
       recordHistory: (event, { imageBuffer, dataUrl, meta } = {}) => {
         reportCaptureSerial(meta)
@@ -1486,7 +1594,7 @@ function createCaptureDomain(deps) {
         const skipHistory = resolveSkipHistory(captureWindow, meta)
         const plan = capturePlan('record-history', skipHistory)
         if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
-        return persistHistory(imageBuffer ?? dataUrl, meta)
+        return persistHistoryEntry(imageBuffer ?? dataUrl, meta)
       },
       exportPdf: async (event, { imageBuffer, dataUrl, meta, mode } = {}) => {
         reportCaptureSerial(meta)
@@ -1530,6 +1638,8 @@ function createCaptureDomain(deps) {
     createCaptureWindow,
     createDocumentEditorWindow,
     editHistoryDocument,
+    // N02: main/ipc/index.js attaches the background OCR indexer here after it builds it.
+    attachHistoryOcrIndexer,
     sendCaptureInit,
     revealCaptureWindow,
     createSmartSelectSession,

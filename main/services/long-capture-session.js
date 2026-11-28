@@ -83,35 +83,56 @@ class LongCaptureSession {
     if (!this.strips.length) throw new Error('没有可导出的长截图内容')
     if (this.outputPath && fs.existsSync(this.outputPath)) return this.outputPath
     const sharp = require('sharp')
-    const rawSize = this.getUntrimmedSize()
     const size = this.getSize()
+    const vertical = this.axis === 'vertical'
+    // P1 §6.3 (2026-11-26 review): compose once, straight to result.png. The old code always
+    // encoded composite.png first and then either fs.copyFileSync()'d it or decoded it again to
+    // extract the trim, so a trimmed capture paid for two full-image encodes and one decode.
+    //
+    // The trim is applied by moving the strip window instead of extracting afterwards: sharp
+    // runs `extract` before `composite`, so a post-composite extract would cut the wrong
+    // pixels. Fully visible strips are composited from their file; at most two boundary strips
+    // are cropped to raw pixels first (no extra PNG encode) and then placed in the same pass.
+    const outputLength = vertical ? size.height : size.width
+    const visibleEnd = this.trimStart + outputLength
+    const inputs = []
     let offset = 0
-    const inputs = this.strips.map((strip) => {
-      const input = {
-        input: strip.filePath,
-        left: this.axis === 'horizontal' ? offset : 0,
-        top: this.axis === 'vertical' ? offset : 0
+    for (const strip of this.strips) {
+      const stripLength = vertical ? strip.height : strip.width
+      const stripStart = offset
+      offset += stripLength
+      const start = Math.max(stripStart, this.trimStart)
+      const end = Math.min(stripStart + stripLength, visibleEnd)
+      const cropLength = end - start
+      if (cropLength <= 0) continue
+      const target = start - this.trimStart
+      const cropStart = start - stripStart
+      if (cropStart === 0 && cropLength === stripLength) {
+        inputs.push(vertical
+          ? { input: strip.filePath, left: 0, top: target }
+          : { input: strip.filePath, left: target, top: 0 })
+        continue
       }
-      offset += this.axis === 'vertical' ? strip.height : strip.width
-      return input
-    })
-    const compositePath = path.join(this.directory, 'composite.png')
+      const extract = vertical
+        ? { left: 0, top: cropStart, width: strip.width, height: cropLength }
+        : { left: cropStart, top: 0, width: cropLength, height: strip.height }
+      const raw = await sharp(strip.filePath, { limitInputPixels: false })
+        .extract(extract)
+        .ensureAlpha()
+        .raw()
+        .toBuffer()
+      inputs.push(vertical
+        ? { input: raw, raw: { width: strip.width, height: cropLength, channels: 4 }, left: 0, top: target }
+        : { input: raw, raw: { width: cropLength, height: strip.height, channels: 4 }, left: target, top: 0 })
+    }
     this.outputPath = path.join(this.directory, 'result.png')
     await sharp({
-      create: { width: rawSize.width, height: rawSize.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+      create: { width: size.width, height: size.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
       limitInputPixels: false
     })
       .composite(inputs)
       .png({ compressionLevel: 6 })
-      .toFile(compositePath)
-    if (this.trimStart || this.trimEnd) {
-      const extract = this.axis === 'vertical'
-        ? { left: 0, top: this.trimStart, width: size.width, height: size.height }
-        : { left: this.trimStart, top: 0, width: size.width, height: size.height }
-      await sharp(compositePath, { limitInputPixels: false }).extract(extract).png({ compressionLevel: 6 }).toFile(this.outputPath)
-    } else {
-      fs.copyFileSync(compositePath, this.outputPath)
-    }
+      .toFile(this.outputPath)
     return this.outputPath
   }
 

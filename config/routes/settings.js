@@ -128,7 +128,7 @@ function renderGeneralSettings() {
     ['ai', 'config.plugin.ai-title', 'config.plugin.ai-description'],
     ['video', 'config.plugin.video-title', 'config.plugin.video-description']
   ]
-  const appearanceSettings = `<section class="section"><h2 class="section-title">${t('config.general.appearance-section')}</h2><div class="card form-card">
+  const appearanceSettings = `<section class="section"><h2 class="section-title">${t('config.general.appearance-section')}</h2><div class="card form-card" data-section="appearance">
     <div class="form-row">${settingsFieldLabel('theme', 'config.appearance.theme', 'config.appearance.theme-hint')}<select id="theme" aria-describedby="themeHint"><option value="system">${t('config.appearance.theme-system')}</option><option value="light">${t('config.appearance.theme-light')}</option><option value="dark">${t('config.appearance.theme-dark')}</option></select></div>
     <div class="form-row">${settingsFieldLabel('mainColor', 'config.appearance.main-color', 'config.appearance.main-color-hint')}<input id="mainColor" aria-describedby="mainColorHint" type="color" value="${settings.mainColor}"></div>
     <div class="form-row">${settingsFieldLabel('borderRadius', 'config.appearance.border-radius')}<input id="borderRadius" type="range" min="0" max="20" value="${settings.borderRadius}"></div>
@@ -137,17 +137,17 @@ function renderGeneralSettings() {
     <div class="form-row">${settingsFieldLabel('skinOpacity', 'config.appearance.skin-opacity')}<input id="skinOpacity" type="range" min="0" max="100" value="${settings.skinOpacity || 0}"></div>
     <div class="form-row" style="align-items:flex-start;padding:14px 0">${settingsFieldLabel('customCss', 'config.appearance.custom-css', 'config.appearance.custom-css-hint')}<textarea id="customCss" aria-describedby="customCssHint" class="textarea" style="min-height:130px">${escapeHtml(settings.customCss || '')}</textarea></div>
   </div></section>`
-  const interfaceSettings = `<section class="section"><h2 class="section-title">${t('config.general.interface-section')}</h2><div class="card form-card">
+  const interfaceSettings = `<section class="section"><h2 class="section-title">${t('config.general.interface-section')}</h2><div class="card form-card" data-section="interface">
     <div class="form-row">${settingsFieldLabel('interfaceLanguage', 'config.setting.language')}<select id="interfaceLanguage"><option value="zh-CN">${t('common.language.zh')}</option><option value="en-US">${t('common.language.en')}</option><option value="zh-TW">${t('common.language.zh-hant')}</option></select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.zoom')}</b><small>${t('config.settings-general.zoom-hint')}</small></div><span>${t('config.settings-general.zoom-auto')}</span></div>
   </div></section>`
-  const startupSettings = `<section class="section"><h2 class="section-title">${t('config.general.startup-section')}</h2><div class="card form-card">
+  const startupSettings = `<section class="section"><h2 class="section-title">${t('config.general.startup-section')}</h2><div class="card form-card" data-section="startup">
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.auto-start')}</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.enable-tray')}</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.game-mode')}</b><small>${t('config.settings-system.game-mode-hint')}</small></div>${switchMarkup(settings.system.gameMode, 'gameMode', 'system')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.run-log')}</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div>
   </div></section>`
-  const moduleSettings = `<section class="section"><h2 class="section-title">${t('config.general.modules-section')} <small>${t('config.plugins.description')}</small></h2><div class="card form-card">
+  const moduleSettings = `<section class="section"><h2 class="section-title">${t('config.general.modules-section')} <small>${t('config.plugins.description')}</small></h2><div class="card form-card" data-section="modules">
     ${moduleRows.map(([key, title, description]) => `<div class="form-row"><div class="form-label"><b>${t(title)}</b><small>${t(description)}</small></div>${switchMarkup(settings.plugins[key], key, 'plugins')}</div>`).join('')}
   </div></section>`
   const updateSection = `<section class="section"><h2 class="section-title">${t('config.about.update-section')}</h2><div id="updateCard"><div class="card update-card"><div class="update-head"><div><p>${t('config.about.update-checking')}</p></div></div></div></div></section>`
@@ -216,6 +216,29 @@ function bindFunctionCaptureTab() {
   }
   const selectionMask = document.getElementById('selectionMask')
   selectionMask.onchange = () => updateSettings({ screenshot: { selectionMask: selectionMask.value.trim() } })
+  // U05: the watermark contract (settings-defaults.js + capture.js' watermark panel) already
+  // existed; only the settings form was missing. Every write merges into the stored object so
+  // the fields capture.js does not expose here (color/spacing/fontSize/rotation) survive.
+  const saveWatermark = (patch) => {
+    const current = (settings.screenshot && settings.screenshot.watermark) || {}
+    return updateSettings({ screenshot: { watermark: { ...current, ...patch } } })
+  }
+  const watermarkContent = document.getElementById('watermarkContent')
+  watermarkContent.onchange = () => saveWatermark({ content: watermarkContent.value.trim() })
+  const watermarkOpacity = document.getElementById('watermarkOpacity')
+  watermarkOpacity.onchange = () => {
+    const value = Math.max(0, Math.min(100, Math.round(Number(watermarkOpacity.value) || 0)))
+    watermarkOpacity.value = String(value)
+    saveWatermark({ opacity: value })
+  }
+  const watermarkDateSuffix = document.getElementById('watermarkDateSuffix')
+  watermarkDateSuffix.onclick = () => {
+    const current = (settings.screenshot && settings.screenshot.watermark) || {}
+    const next = current.dateSuffix !== true
+    watermarkDateSuffix.classList.toggle('on', next)
+    watermarkDateSuffix.setAttribute('aria-checked', String(next))
+    return saveWatermark({ dateSuffix: next })
+  }
   bindSwitches()
 }
 
@@ -360,6 +383,9 @@ function renderFunctionSettings() {
     <div class="form-row">${settingsFieldLabel('historyLimit', 'config.function-settings.history-limit')}<input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div>
     <div class="form-row">${settingsFieldLabel('historyDirectory', 'config.settings-system.history-directory', 'config.settings-system.history-directory-hint')}<div class="action-group field-actions"><input id="historyDirectory" aria-describedby="historyDirectoryHint" type="text" required value="${escapeHtml(settings.screenshot.historyDirectory)}"><button class="button" id="chooseHistoryDirectory">${t('config.settings-system.choose')}</button></div></div>
     <div class="form-row">${settingsFieldLabel('selectionMask', 'config.settings-general.selection-mask')}<input id="selectionMask" type="text" value="${escapeHtml(settings.screenshot.selectionMask)}"></div>
+    <div class="form-row">${settingsFieldLabel('watermarkContent', 'config.function-settings.watermark-content', 'config.function-settings.watermark-content-hint')}<input id="watermarkContent" aria-describedby="watermarkContentHint" type="text" value="${escapeHtml(settings.screenshot.watermark?.content || '')}"></div>
+    <div class="form-row">${settingsFieldLabel('watermarkOpacity', 'config.function-settings.watermark-opacity')}<input id="watermarkOpacity" type="number" min="0" max="100" value="${Math.max(0, Math.min(100, Number(settings.screenshot.watermark?.opacity) || 0))}"></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.watermark-date-suffix')}</b></div><button type="button" class="switch ${settings.screenshot.watermark?.dateSuffix === true ? 'on' : ''}" id="watermarkDateSuffix" role="switch" aria-checked="${settings.screenshot.watermark?.dateSuffix === true}"></button></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.double-click-copy')}</b></div>${switchMarkup(settings.screenshot.doubleClickCopy, 'doubleClickCopy', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.show-color-picker')}</b></div>${switchMarkup(settings.screenshot.showColorPicker, 'showColorPicker', 'screenshot')}</div>
   </div>`
@@ -445,7 +471,16 @@ const SYSTEM_BACKUP_ERROR_KEYS = {
   'invalid-target': 'config.settings-system.backup-error-invalid-target',
   'io-error': 'config.settings-system.backup-error-io-error',
   'backup-failed': 'config.settings-system.backup-error-backup-failed',
-  'quiesce-failed': 'config.settings-system.backup-error-quiesce-failed'
+  'quiesce-failed': 'config.settings-system.backup-error-quiesce-failed',
+  // N06 single-file archive codes (see main/services/encrypted-backup.js).
+  'archive-failed': 'config.settings-system.backup-archive-error-failed',
+  'invalid-archive': 'config.settings-system.backup-archive-error-invalid',
+  'future-archive': 'config.settings-system.backup-archive-error-future',
+  'archive-write-failed': 'config.settings-system.backup-archive-error-write',
+  'archive-too-large': 'config.settings-system.backup-archive-error-too-large',
+  'password-required': 'config.settings-system.backup-archive-error-password-required',
+  'password-too-long': 'config.settings-system.backup-archive-error-password-too-long',
+  'decrypt-failed': 'config.settings-system.backup-archive-error-decrypt'
 }
 
 function formatBackupBytes(value) {
@@ -670,20 +705,99 @@ function bindSystemBackupControls() {
   }
 }
 
+// N06 (review section 5.6): single-file `.hlbackup.zip` export/import. Both
+// endpoints own their native file dialogs in the main process, so this block
+// only collects the module selection plus an OPTIONAL password. The password
+// lives in the input element and is cleared as soon as the request settles.
+function systemArchiveApi() {
+  const api = window.electronAPI
+  if (!api || typeof api.backupExportArchive !== 'function' || typeof api.backupImportArchive !== 'function') return null
+  return api
+}
+
+function bindBackupArchiveControls() {
+  const passwordInput = document.getElementById('backupArchivePassword')
+  const exportButton = document.getElementById('exportBackupArchive')
+  const importButton = document.getElementById('importBackupArchive')
+  const showButton = document.getElementById('toggleBackupArchivePassword')
+  if (!passwordInput || !exportButton || !importButton) return
+
+  const api = systemArchiveApi()
+  const busy = (button, active, labelKey) => {
+    if (!button.isConnected) return
+    button.disabled = active
+    button.textContent = t(labelKey)
+  }
+  if (showButton) {
+    showButton.onclick = () => {
+      const visible = passwordInput.type === 'text'
+      passwordInput.type = visible ? 'password' : 'text'
+      showButton.textContent = t(visible
+        ? 'config.settings-system.backup-archive-show'
+        : 'config.settings-system.backup-archive-hide')
+    }
+  }
+
+  exportButton.onclick = async () => {
+    if (!api) { toast(t('config.settings-system.backup-archive-unavailable')); return }
+    const modules = [...document.querySelectorAll('[data-backup-module]')].filter((input) => input.checked)
+      .map((input) => input.value)
+    if (!modules.length) { toast(t('config.settings-system.backup-select-module')); return }
+    const password = passwordInput.value
+    busy(exportButton, true, 'config.settings-system.backup-archive-exporting')
+    try {
+      const result = await api.backupExportArchive({ modules, password })
+      if (result && result.canceled) return
+      if (!result || result.ok !== true) {
+        toast(backupErrorMessage(result, 'config.settings-system.backup-archive-export-failed'))
+        return
+      }
+      toast(t('config.settings-system.backup-archive-exported', { path: result.filePath || '' }))
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-archive-export-failed'))
+    } finally {
+      passwordInput.value = ''
+      busy(exportButton, false, 'config.settings-system.backup-archive-export')
+    }
+  }
+
+  importButton.onclick = async () => {
+    if (!api) { toast(t('config.settings-system.backup-archive-unavailable')); return }
+    if (!confirm(t('config.settings-system.backup-archive-import-confirm'))) return
+    const password = passwordInput.value
+    busy(importButton, true, 'config.settings-system.backup-archive-importing')
+    try {
+      const result = await api.backupImportArchive({ password })
+      if (result && result.canceled) return
+      if (!result || result.ok !== true) {
+        toast(backupErrorMessage(result, 'config.settings-system.backup-archive-import-failed'))
+        return
+      }
+      toast(t('config.settings-system.backup-archive-restored'))
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-archive-import-failed'))
+    } finally {
+      passwordInput.value = ''
+      busy(importButton, false, 'config.settings-system.backup-archive-import')
+    }
+  }
+}
+
 async function renderSystemSettings() {
   const dataRoot = await window.electronAPI.getDataRoot()
   if (currentRoute !== 'settings-system') return
-  const dataSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.data-section')}</h2><div class="card form-card"><div class="form-row"><label class="form-label" for="dataRoot"><b>${t('config.settings-system.data-root')}</b><small>${t('config.settings-system.data-root-hint')}</small></label><div class="action-group field-actions"><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button subtle" id="openDataRoot">${t('config.settings-system.open')}</button><button class="button" id="changeDataRoot">${t('config.settings-system.change')}</button></div></div></div></section>`
-  const backupSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.backup-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-modules')}</b><small>${t('config.settings-system.backup-modules-hint')}</small></div><div class="backup-modules" style="display:flex;flex-wrap:wrap;gap:10px 16px">${systemBackupModuleMarkup()}</div></div><div class="form-row">${settingsFieldLabel('backupTargetDirectory', 'config.settings-system.backup-target', 'config.settings-system.backup-target-hint')}<div class="action-group field-actions"><input id="backupTargetDirectory" type="text" readonly value=""><button class="button" id="chooseBackupTarget">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupSourceDirectory', 'config.settings-system.backup-source', 'config.settings-system.backup-source-hint')}<div class="action-group field-actions"><input id="backupSourceDirectory" type="text" readonly value=""><button class="button" id="chooseBackupSource">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupExternalHistory', 'config.settings-system.backup-external-history', 'config.settings-system.backup-external-history-hint')}<div class="action-group field-actions"><input id="backupExternalHistory" type="text" readonly value=""><button class="button" id="chooseBackupExternalHistory">${t('config.settings-system.choose')}</button><button class="button subtle" id="clearBackupExternalHistory">${t('config.settings-system.backup-clear')}</button></div></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-key-hint')}</b></div><div class="action-group"><button class="button primary" id="createBackup">${t('config.settings-system.backup-create')}</button><button class="button" id="previewBackup">${t('config.settings-system.backup-preview')}</button><button class="button" id="restoreBackup">${t('config.settings-system.backup-restore')}</button><button class="button danger" id="deleteIncompleteBackup" hidden>${t('config.settings-system.backup-delete-incomplete')}</button></div></div><div id="backupSummary" class="backup-summary"></div></div></section>`
-  const diagnosticsSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.diagnostics-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.preview-diagnostics')}</b><small>${t('config.settings-system.preview-diagnostics-hint')}</small></div><button class="button" id="previewDiagnostics">${t('config.settings-system.preview')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.export-diagnostics')}</b><small>${t('config.settings-system.export-diagnostics-hint')}</small></div><button class="button primary" id="exportDiagnostics">${t('config.settings-system.export-zip')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.include-crash-dumps')}</b><small>${t('config.settings-system.include-crash-dumps-hint')}</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
+  const dataSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.data-section')}</h2><div class="card form-card" data-section="data-root"><div class="form-row"><label class="form-label" for="dataRoot"><b>${t('config.settings-system.data-root')}</b><small>${t('config.settings-system.data-root-hint')}</small></label><div class="action-group field-actions"><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button subtle" id="openDataRoot">${t('config.settings-system.open')}</button><button class="button" id="changeDataRoot">${t('config.settings-system.change')}</button></div></div></div></section>`
+  const backupSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.backup-section')}</h2><div class="card form-card" data-section="backup-directory"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-modules')}</b><small>${t('config.settings-system.backup-modules-hint')}</small></div><div class="backup-modules" style="display:flex;flex-wrap:wrap;gap:10px 16px">${systemBackupModuleMarkup()}</div></div><div class="form-row">${settingsFieldLabel('backupTargetDirectory', 'config.settings-system.backup-target', 'config.settings-system.backup-target-hint')}<div class="action-group field-actions"><input id="backupTargetDirectory" type="text" readonly value=""><button class="button" id="chooseBackupTarget">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupSourceDirectory', 'config.settings-system.backup-source', 'config.settings-system.backup-source-hint')}<div class="action-group field-actions"><input id="backupSourceDirectory" type="text" readonly value=""><button class="button" id="chooseBackupSource">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupExternalHistory', 'config.settings-system.backup-external-history', 'config.settings-system.backup-external-history-hint')}<div class="action-group field-actions"><input id="backupExternalHistory" type="text" readonly value=""><button class="button" id="chooseBackupExternalHistory">${t('config.settings-system.choose')}</button><button class="button subtle" id="clearBackupExternalHistory">${t('config.settings-system.backup-clear')}</button></div></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-key-hint')}</b></div><div class="action-group"><button class="button primary" id="createBackup">${t('config.settings-system.backup-create')}</button><button class="button" id="previewBackup">${t('config.settings-system.backup-preview')}</button><button class="button" id="restoreBackup">${t('config.settings-system.backup-restore')}</button><button class="button danger" id="deleteIncompleteBackup" hidden>${t('config.settings-system.backup-delete-incomplete')}</button></div></div><div id="backupSummary" class="backup-summary"></div></div><div class="card form-card backup-archive-card" data-section="backup-archive"><h3 class="section-subtitle">${t('config.settings-system.backup-archive-section')}</h3><p class="section-note">${t('config.settings-system.backup-archive-hint')}</p><div class="form-row">${settingsFieldLabel('backupArchivePassword', 'config.settings-system.backup-archive-password', 'config.settings-system.backup-archive-password-hint')}<div class="action-group field-actions"><input id="backupArchivePassword" type="password" autocomplete="new-password" spellcheck="false"><button class="button subtle" type="button" id="toggleBackupArchivePassword">${t('config.settings-system.backup-archive-show')}</button></div></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-archive-actions')}</b><small>${t('config.settings-system.backup-archive-actions-hint')}</small></div><div class="action-group"><button class="button primary" id="exportBackupArchive">${t('config.settings-system.backup-archive-export')}</button><button class="button" id="importBackupArchive">${t('config.settings-system.backup-archive-import')}</button></div></div></div></section>`
+  const diagnosticsSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.diagnostics-section')}</h2><div class="card form-card" data-section="diagnostics"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.preview-diagnostics')}</b><small>${t('config.settings-system.preview-diagnostics-hint')}</small></div><button class="button" id="previewDiagnostics">${t('config.settings-system.preview')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.export-diagnostics')}</b><small>${t('config.settings-system.export-diagnostics-hint')}</small></div><button class="button primary" id="exportDiagnostics">${t('config.settings-system.export-zip')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.include-crash-dumps')}</b><small>${t('config.settings-system.include-crash-dumps-hint')}</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
   // The proxy bridge card. Every value it writes is a `proxy.*` field, and the
   // patch validator only accepts keys listed in DEFAULT_SETTINGS. The relay runs
   // inside the main process, so there is no interpreter/script path to configure.
-  const proxySettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.proxy-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-status')}</b><small id="proxyStatusDetail">${t('config.settings-system.proxy-status-checking')}</small></div><span id="proxyStatus">${t('config.settings-system.proxy-status-checking')}</span><button class="button" id="toggleProxy">${t('config.settings-system.proxy-start')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-auto-start')}</b></div>${switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-port')}</b><small>${t('config.settings-system.proxy-port-hint')}</small></div><input id="proxyPort" type="number" min="1" max="65535" value="${Number(settings.proxy.port) || 8080}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-host')}</b><small>${t('config.settings-system.proxy-host-hint')}</small></div><select id="proxyHost"><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-api-base')}</b><small>${t('config.settings-system.proxy-api-base-hint')}</small></div><input id="proxyApiBase" type="text" value="${escapeHtml(settings.proxy.apiBase || '')}" placeholder="https://index-translate.bilibili.com/v1"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-copy-config')}</b><small>${t('config.settings-system.proxy-copy-config-hint')}</small></div><button class="button" id="copyProxyConfig">${t('config.settings-system.proxy-copy')}</button></div></div></section>`
-  const dangerSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.danger-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.clear-history')}</b><small>${t('config.settings-system.clear-history-hint')}</small></div><button class="button danger" id="clearData">${t('config.settings-system.clear')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.reset')}</b><small>${t('config.settings-system.reset-hint')}</small></div><button class="button danger" id="resetSettings">${t('config.settings-system.reset')}</button></div></div></section>`
+  const proxySettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.proxy-section')}</h2><div class="card form-card" data-section="proxy"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-status')}</b><small id="proxyStatusDetail">${t('config.settings-system.proxy-status-checking')}</small></div><span id="proxyStatus">${t('config.settings-system.proxy-status-checking')}</span><button class="button" id="toggleProxy">${t('config.settings-system.proxy-start')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-auto-start')}</b></div>${switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-port')}</b><small>${t('config.settings-system.proxy-port-hint')}</small></div><input id="proxyPort" type="number" min="1" max="65535" value="${Number(settings.proxy.port) || 8080}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-host')}</b><small>${t('config.settings-system.proxy-host-hint')}</small></div><select id="proxyHost"><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-api-base')}</b><small>${t('config.settings-system.proxy-api-base-hint')}</small></div><input id="proxyApiBase" type="text" value="${escapeHtml(settings.proxy.apiBase || '')}" placeholder="https://index-translate.bilibili.com/v1"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-copy-config')}</b><small>${t('config.settings-system.proxy-copy-config-hint')}</small></div><button class="button" id="copyProxyConfig">${t('config.settings-system.proxy-copy')}</button></div></div></section>`
+  const dangerSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.danger-section')}</h2><div class="card form-card" data-section="danger"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.clear-history')}</b><small>${t('config.settings-system.clear-history-hint')}</small></div><button class="button danger" id="clearData">${t('config.settings-system.clear')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.reset')}</b><small>${t('config.settings-system.reset-hint')}</small></div><button class="button danger" id="resetSettings">${t('config.settings-system.reset')}</button></div></div></section>`
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-system'), t('config.settings-system.description'))}${dataSettings}${backupSettings}${proxySettings}${diagnosticsSettings}${dangerSettings}</div>`
   bindSwitches()
   bindSystemBackupControls()
+  bindBackupArchiveControls()
   document.getElementById('previewDiagnostics').onclick = async () => {
     const button = document.getElementById('previewDiagnostics')
     button.disabled = true

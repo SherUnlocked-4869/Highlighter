@@ -6,6 +6,21 @@ const path = require('node:path')
 const LOCATOR_NAME = 'Highlighter.location.json'
 const PENDING_NAME = 'Highlighter.location.pending.json'
 
+// H01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 2.1): every path a
+// history entry can carry for an editable capture. The migration used to rewrite only
+// filePath/thumbnailPath, so after moving the data root the editor still looked for the
+// document and the base image under the OLD root. Both the backup restore path and the live
+// data-root migration read this one list so they cannot drift apart again.
+const HISTORY_ENTRY_PATH_KEYS = Object.freeze([
+  'filePath',
+  'thumbnailPath',
+  'docPath',
+  'baseImagePath',
+  'resultImagePath',
+  'documentPath',
+  'originalPath'
+])
+
 function resolvePortableDirectory(env = process.env) {
   return env.PORTABLE_EXECUTABLE_DIR ? path.resolve(env.PORTABLE_EXECUTABLE_DIR) : ''
 }
@@ -183,6 +198,7 @@ async function validateDataRoot(directory, sourceRoot = '') {
 }
 
 module.exports = {
+  HISTORY_ENTRY_PATH_KEYS,
   LOCATOR_NAME,
   PENDING_NAME,
   atomicWriteJson,

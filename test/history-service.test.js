@@ -64,7 +64,7 @@ function createService(directory, history = [], overrides = {}) {
 
 test('normalizes and applies history search filters', () => {
   const filter = normalizeHistoryFilter({ query: ' OCR ', source: 'capture', favoriteOnly: true })
-  assert.deepEqual(filter, { query: 'ocr', source: 'capture', cursor: '', limit: 40 })
+  assert.deepEqual(filter, { query: 'ocr', source: 'capture', tag: '', cursor: '', limit: 40 })
   assert.equal(matchesHistoryFilter({
     source: 'capture',
     action: 'copy',

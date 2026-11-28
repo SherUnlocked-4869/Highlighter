@@ -244,7 +244,11 @@ function createRecordingChoices(state) {
     // R5 (contract §5): a session-only opt-in. It is deliberately NOT read from
     // settings or the workbench state, so every route visit starts with the mouse
     // event track off and only the current recording can turn it on.
-    demoEnhance: false
+    demoEnhance: false,
+    // DEV-04 section 4.1: the global shortcut-capture opt-in is a second,
+    // independent session-only switch. It is never persisted and every visit
+    // starts closed, exactly like demoEnhance.
+    demoKeystrokes: false
   }
 }
 
@@ -266,13 +270,47 @@ function buildRecordingStartPayload(choices) {
     saveDirectory: choices && typeof choices.saveDirectory === 'string' ? choices.saveDirectory : '',
     // R5 §5: sent for every mode; the main process only starts the pointer event
     // track for display/region (window captures have no reliable content bounds).
-    demoEnhance: choices ? choices.demoEnhance === true : false
+    demoEnhance: choices ? choices.demoEnhance === true : false,
+    // DEV-04 section 4.1: the global keyboard channel starts only when this
+    // per-recording opt-in is true; the value is never persisted.
+    demoKeystrokes: choices ? choices.demoKeystrokes === true : false
   }
   const payload = { mode, config }
   if (displayId) payload.displayId = displayId
   // Contract §2.1: the renderer hands the token back verbatim; never a source id.
   if (windowToken) payload.windowToken = windowToken
   return payload
+}
+
+// P2-01: the global shortcut-capture opt-in is a one-shot "this recording only"
+// switch. A start that actually creates a recording consumes it, so the next take
+// from the same page begins opted out; a failed start keeps the user's choice so
+// the retry does not silently lose it. demoEnhance has a different privacy scope
+// and its own tested contract, so it is never part of this decision.
+//
+// P1-01 follow-up: "started" now needs a real receipt. The main process answers
+// {ok:true, focused:true} when the repeat entry only brought the running bar forward, and
+// {ok:true, created:false} when the region overlay was cancelled/replaced. Neither created a
+// new recording, so neither may consume the opt-in.
+//
+// The exact guarantee (corrected after the 2026-11-28 re-review): this predicate consumes the
+// choice for every response EXCEPT the explicit negatives above. Only the region flow carries a
+// `created` field today (created:true on a take, created:false on a cancellation); display and
+// window mode still answer the legacy `{ok:true}` shape, so requiring `created:true` here would
+// silently stop consuming the choice in those modes. A missing/empty result is treated as a
+// started take because the channel resolved without refusing it. The delivery note must describe
+// this predicate, not the stronger "only consumes on an explicit created:true" wording.
+function recordingStartCreatedRecording(result) {
+  if (result && result.ok === false) return false
+  if (result && result.focused === true) return false
+  if (result && result.created === false) return false
+  return true
+}
+
+function choicesAfterRecordingStart(choices, result) {
+  if (!choices || typeof choices !== 'object') return choices
+  if (!recordingStartCreatedRecording(result)) return choices
+  return { ...choices, demoKeystrokes: false }
 }
 
 function recordingStartBlocker(choices, state) {
@@ -935,11 +973,15 @@ function recordingParamsSectionMarkup(choices) {
   // deliberately explicit about scope (mouse events only, no keyboard content) and
   // about it applying to this recording only — the value is never persisted.
   const demoEnhance = `<div class="card form-card" style="margin-top:14px"><div class="form-row"><div class="form-label"><b>${t('recording.workbench.demo-enhance')}</b><small>${t('recording.workbench.demo-enhance-hint')}</small></div>${recordingSwitchMarkup(choices.demoEnhance, 'demoEnhance', 'demo-enhance', t('recording.workbench.demo-enhance'))}</div></div>`
+  // DEV-04 section 2: a separate opt-in for the global shortcut channel. It is
+  // deliberately independent from demoEnhance: mouse events and keyboard chords
+  // have different privacy scopes, so a user may want one without the other.
+  const demoKeystrokes = `<div class="card form-card" style="margin-top:14px"><div class="form-row"><div class="form-label"><b>${t('recording.workbench.demo-keystrokes')}</b><small>${t('recording.workbench.demo-keystrokes-hint')}</small></div>${recordingSwitchMarkup(choices.demoKeystrokes, 'demoKeystrokes', 'demo-keystrokes', t('recording.workbench.demo-keystrokes'))}</div></div>`
   return `<section class="section"><h2 class="section-title">${t('recording.workbench.params-section')}</h2><div class="card form-card rec-params">
     <label class="rec-field"><b>${t('recording.workbench.frame-rate')}</b><select data-recording-frame-rate data-testid="frame-rate-select">${RECORDING_FRAME_RATES.map(frameRateOption).join('')}<optgroup label="${t('recording.workbench.frame-rate-advanced')}">${RECORDING_LEGACY_FRAME_RATES.map(frameRateOption).join('')}</optgroup></select><small>${t('recording.workbench.frame-rate-hint')}</small></label>
     <label class="rec-field"><b>${t('recording.workbench.quality')}</b><select data-recording-quality data-testid="quality-select">${qualityOptions}</select></label>
     <label class="rec-field"><b>${t('recording.workbench.countdown')}</b><select data-recording-countdown data-testid="countdown-select">${countdownOptions}</select><small>${t('recording.workbench.countdown-hint')}</small></label>
-  </div>${demoEnhance}</section>`
+  </div>${demoEnhance}${demoKeystrokes}</section>`
 }
 
 function recordingStorageSectionMarkup(choices) {
@@ -1018,6 +1060,18 @@ function updateRecordingStartButton() {
     : (choices && choices.mode === 'region'
         ? t('recording.workbench.start-region')
         : (choices && choices.mode === 'window' ? t('recording.workbench.start-window') : t('recording.workbench.start-display')))
+}
+
+// Repaint one switch from the current choices without rebuilding the page (a full
+// render would lose the scroll position right after a start). recordingSwitchMarkup
+// only ever emits "switch" or "switch on", so writing the class attribute mirrors a
+// fresh render exactly.
+function syncRecordingSwitch(name) {
+  const on = Boolean(recordingWorkbenchChoices && recordingWorkbenchChoices[name] === true)
+  document.querySelectorAll(`[data-recording-switch="${name}"]`).forEach((button) => {
+    button.setAttribute('aria-checked', on ? 'true' : 'false')
+    button.setAttribute('class', on ? 'switch on' : 'switch')
+  })
 }
 
 function bindRecordingBanner() {
@@ -1207,7 +1261,7 @@ function selectRecordingDisplay(displayId) {
 
 function toggleRecordingSwitch(name) {
   if (!recordingWorkbenchChoices) return
-  if (name !== 'audioSystem' && name !== 'audioMicrophone' && name !== 'demoEnhance') return
+  if (name !== 'audioSystem' && name !== 'audioMicrophone' && name !== 'demoEnhance' && name !== 'demoKeystrokes') return
   recordingWorkbenchChoices[name] = recordingWorkbenchChoices[name] !== true
   if (name === 'audioSystem' || name === 'audioMicrophone') {
     // The summary is what the check was about: drop the stale result and stop a
@@ -1377,8 +1431,17 @@ async function startRecordingFromWorkbench() {
       return
     }
     if (result && result.focused === true) toast(t('recording.workbench.started-focused'))
+    // P1-01 follow-up: a cancelled region selection is not a started take; it must not toast
+    // "recording started" and must not consume the one-shot shortcut opt-in.
+    else if (result && result.created === false) { /* selection cancelled */ }
     else if (choices.mode === 'window') toast(t('recording.workbench.started-window'))
     else toast(choices.mode === 'region' ? t('recording.workbench.started-region') : t('recording.workbench.started-display'))
+    // P2-01: this take really exists, so the one-shot shortcut opt-in it was
+    // started with is consumed for the next one. The payload above was already
+    // built from `choices`, and the helper returns a new object, so the take in
+    // flight is untouched; only the live switch is repainted here.
+    recordingWorkbenchChoices = choicesAfterRecordingStart(recordingWorkbenchChoices, result)
+    syncRecordingSwitch('demoKeystrokes')
     await pollRecordingWorkbench()
   } catch {
     // The main process reports machine-readable codes only; its own message text is
@@ -1512,6 +1575,10 @@ function stopRecordingWorkbenchPolling() {
 // the main process stops with it instead of waking a hidden window every 2s.
 function recordingDeactivate() {
   stopRecordingWorkbenchPolling()
+  // U05: a preflight that is still waiting for microphone/system-audio permission keeps the
+  // capture streams open for seconds after the user left the page. Its own 5 s deadline is the
+  // backstop; this cancels immediately when the route is left.
+  cancelRecordingPreflight()
 }
 
 // D2-2 (S14): register with the shell dispatch table (config.html loads this file

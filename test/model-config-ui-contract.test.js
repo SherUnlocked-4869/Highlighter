@@ -12,6 +12,8 @@ const router = fs.readFileSync(path.join(root, 'main', 'services', 'ai-feature-r
 const ocrIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'ocr-ipc.js'), 'utf8')
 const selectionDomain = fs.readFileSync(path.join(root, 'main', 'domains', 'selection', 'index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+// H05: the app channel facade (AI completion/translation) moved to the aggregated IPC module.
+const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
 
 test('config app exposes the model provider route with provider and feature-model subpages', () => {
   assert.match(html, /data-route="models"/)
@@ -57,8 +59,8 @@ test('main process resolves feature assignments through the AI provider service'
   assert.match(main, /require\('\.\/main\/services\/ai-providers'\)/)
   assert.match(selectionDomain, /createToolbarActionStream/)
   assert.match(router, /resolveToolbarAiProvider\(settings, actionId\)/)
-  assert.match(main, /resolveAiAssignment\(settings, 'chat'\)/)
-  assert.match(main, /resolveAiAssignment\(settings, 'translation'\)/)
+  assert.match(ipcIndex, /resolveAiAssignment\(settings, 'chat'\)/)
+  assert.match(ipcIndex, /resolveAiAssignment\(settings, 'translation'\)/)
   assert.match(ocrIpc, /resolveAiAssignment\(settings, 'ocr-translate'\)/)
   assert.match(selectionDomain, /createMainWindow\('models'\)/)
 })
@@ -96,5 +98,7 @@ test('config exposes the coding plan entry, picker, simplified form, and assignm
   assert.match(script, /目录未验证/)
   assert.match(script, /window\.codingPlanPresets/)
   assert.match(preload, /createCodingPlanProvider: \(input\) => ipcRenderer\.invoke\('coding-plan:create-provider', input\)/)
-  assert.match(main, /registerCodingPlanIpc\(\{/)
+  // H05: registration moved to main/ipc/index.js.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /registerCodingPlanIpc\(\{/)
 })

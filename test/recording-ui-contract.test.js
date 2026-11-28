@@ -28,13 +28,16 @@ test('main process wires protected region recording windows', () => {
   assert.match(recordingIpc, /record:append-chunk/)
   assert.match(recordingIpc, /record:finish-session/)
   assert.match(recordingIpc, /record:save-mp4/)
-  assert.match(main, /registerCaptureIpc\(\{[\s\S]*captureDomain\.createCaptureController\(\)/)
+  // H05: registration lives in main/ipc/index.js now.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /registerCaptureIpc\(\{[\s\S]*captureDomain\.createCaptureController\(\)/)
   // R2/R3 (contracts §9/§10): ONE controller instance from the record domain is registered for all
   // four recording surfaces (control bar, legacy export channels, workbench and editor).
-  assert.match(main, /const recordController = recordDomain\.createRecordingController\(\)/)
-  assert.match(main, /registerRecordingIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
-  assert.match(main, /registerRecordingWorkbenchIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
-  assert.match(main, /registerRecordingEditorIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  // H05: registration moved to main/ipc/index.js.
+  assert.match(ipcIndex, /const recordController = recordDomain\.createRecordingController\(\)/)
+  assert.match(ipcIndex, /registerRecordingIpc\(\{ ipcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /registerRecordingWorkbenchIpc\(\{ ipcMain, controller: recordController \}\)/)
+  assert.match(ipcIndex, /registerRecordingEditorIpc\(\{ ipcMain, controller: recordController \}\)/)
   assert.match(recordPreload, /startSession:/)
   assert.match(recordPreload, /appendChunk:/)
   assert.match(framePreload, /record-frame:state/)

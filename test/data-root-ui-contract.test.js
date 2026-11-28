@@ -5,6 +5,8 @@ const path = require('node:path')
 const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+// H05: channel registration moved to main/ipc/index.js.
+const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
 const dataRootDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'data-root', 'index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = readConfigSource()
@@ -43,7 +45,10 @@ test('portable named paths own history, logs, and service caches', () => {
   assert.match(main, /tempRoot: activePaths\?\.recordingCache \|\| path\.join\(app\.getPath\('userData'\), 'temp', 'recordings'\)/)
   assert.match(main, /getLongCaptureTempRoot: \(\) => activePaths\?\.longCaptureCache \|\| app\.getPath\('temp'\)/)
   assert.doesNotMatch(main, /tempRoot: path\.join\(app\.getPath\('userData'\), 'temp', 'recordings'\)/)
-  assert.match(main, /dataDirectory: activePaths\?\.root \|\| app\.getPath\('userData'\)/)
+  // H05: getInfo (dataDirectory) moved into the aggregated IPC module; the assembly still owns
+  // which root is active and hands the paths getter over.
+  assert.match(ipcIndex, /dataDirectory: getPaths\(\)\?\.root \|\| app\.getPath\('userData'\)/)
+  assert.match(main, /getPaths: \(\) => activePaths/)
   // "Open the data directory" moved into main/services/window-actions.js with the
   // other shell actions (main.js line budget): main.js still owns which root is
   // active, and the module performs the open on it.
@@ -147,7 +152,7 @@ test('main process keeps data-root migration privileged, serialized, and restart
   assert.match(dataRootDomain, /function getInfo\(\)[\s\S]*customized: !!dataRootContext\.paths/)
   assert.match(dataRootDomain, /path: dataRootContext\.paths\?\.root \|\| dataRootContext\.legacyUserData/)
   assert.match(dataRootDomain, /function open\(\)[\s\S]*shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)/)
-  assert.match(main, /registerDataRootIpc\(\{[\s\S]*controller: dataRootDomain\.createController\(\)/)
+  assert.match(ipcIndex, /registerDataRootIpc\(\{[\s\S]*controller: dataRootDomain\.createController\(\)/)
   const change = section(dataRootDomain, 'async function changeDataRoot()', 'async function chooseInitialDataRoot()')
   assert.doesNotMatch(change, /只有便携版/)
   assert.match(change, /isMigrationInProgress\(\) \|\| fs\.existsSync\(dataRootContext\.pendingPath\)/)

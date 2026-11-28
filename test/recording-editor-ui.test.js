@@ -1465,6 +1465,186 @@ test('the export request carries source-time demo data only when active, for mp4
   assert.equal(bareRequests[0].demo, undefined)
 })
 
+// P2-05: the capsule HUD plays the exporter's own plan (never the raw capture list), the export
+// request reproduces that plan through the shared normaliser, and a retained export material cap
+// is disclosed with exact counts and source-time range BEFORE the user confirms.
+test('P2-05: the preview sequence is the export plan and capsule truncation is shown before export', async (t) => {
+  const exportOptions = require('../shared/recording-export-options')
+  const translate = (key, params) => (params ? key + ':' + JSON.stringify(params) : key)
+  const DURATION_MS = 600000
+  const keystrokes = Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const fake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: { schemaVersion: 1, durationMs: DURATION_MS, sampledAtHz: 20, pointer: [], clicks: [], keystrokes, truncated: false }
+    })
+  })
+  const { view, harness } = bootView({ api: fake.api, translate })
+  t.after(() => view.destroy())
+  const project = projectEdit({
+    media: { durationMs: DURATION_MS, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 3, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+  })
+  view.applyInit(initPayload({
+    project,
+    metadata: { durationMs: DURATION_MS, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  await settleEvents()
+  const controller = view.getController()
+  assert.equal(controller.state().keystrokes.plan.items.length, 300)
+  assert.equal(harness.elements.get('keystroke-truncation').hidden, true, '300 repeats truncate nothing')
+
+  // HUD: the 300th capsule is previewed at its media time from the plan (not from a raw item list
+  // that the exporter would silently cut at 240).
+  harness.elements.get('toggle-keystrokes').dispatch('click')
+  const player = harness.elements.get('preview-video')
+  const capsule = harness.elements.get('keystroke-capsule')
+  player.currentTime = 299.95
+  player.dispatch('timeupdate')
+  assert.equal(capsule.classList.contains('visible'), true)
+  assert.equal(capsule.textContent, 'Ctrl+S')
+
+  // Enabling the overlay and submitting carries the source sequence; the shared normaliser the
+  // main process runs derives EXACTLY the preview plan (tail window included).
+  const toggle = harness.elements.get('export-keystrokes')
+  toggle.checked = true
+  toggle.dispatch('change')
+  await view.exportSelection()
+  assert.equal(fake.calls.export.length, 1)
+  const request = fake.calls.export[0].request
+  assert.equal(request.keystrokes.enabled, true)
+  assert.equal(request.keystrokes.items.length, 300)
+  const exported = exportOptions.normalizeExportRequest(request, {
+    durationMs: DURATION_MS,
+    video: { width: 1280, height: 720, frameRate: 30 },
+    audio: { tracks: 0 }
+  })
+  assert.equal(exported.ok, true)
+  assert.deepEqual(exported.value.keystrokes.sourceItems, controller.state().keystrokes.plan.items)
+  assert.deepEqual(exported.value.keystrokes.items.at(-1), { tMs: 299500, endMs: 300600, combo: 'Ctrl+S' })
+
+  // >64 distinct labels: the retained ffmpeg label budget truncates, so the export panel states
+  // the actual capsule/label counts and the first/last dropped source time before confirmation.
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const manyFake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: {
+        schemaVersion: 1, durationMs: 20000, sampledAtHz: 20, pointer: [], clicks: [],
+        keystrokes: combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo })),
+        truncated: false
+      }
+    })
+  })
+  const many = bootView({ api: manyFake.api, translate })
+  t.after(() => many.view.destroy())
+  many.view.applyInit(initPayload({
+    project: projectEdit({
+      id: 'project-many',
+      media: { durationMs: 20000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+      edit: { revision: 3, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+    }),
+    metadata: { durationMs: 20000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  await settleEvents()
+  const notice = many.harness.elements.get('keystroke-truncation')
+  assert.equal(notice.hidden, true, 'the notice stays silent while the overlay switch is off')
+  // Enabling the overlay is what makes the retained label budget relevant, so the disclosure
+  // appears with the switch, before any export attempt.
+  const manyExportToggle = many.harness.elements.get('export-keystrokes')
+  manyExportToggle.checked = true
+  manyExportToggle.dispatch('change')
+  assert.equal(notice.hidden, false, 'the truncation is visible before any export attempt')
+  assert.match(notice.textContent, /^recording\.editor\.keystrokes\.truncated:/)
+  assert.match(notice.textContent, /"count":14/)
+  assert.match(notice.textContent, /"labels":14/)
+  assert.match(notice.textContent, /"maxLabels":64/)
+  assert.match(notice.textContent, /"maxWindows":500/, 'the disclosure also names the render-window cap')
+  assert.match(notice.textContent, /"first":"00:07\.4"/)
+  assert.match(notice.textContent, /"last":"00:08\.7"/)
+  // The preview HUD omits a dropped capsule: the raw track has a capsule at 7.4 s, the plan does
+  // not, so the HUD must stay hidden there (one visible sequence for preview and film).
+  const manyController = many.view.getController()
+  assert.equal(manyController.state().keystrokes.items.some((entry) => entry.tMs === 7400), true)
+  assert.equal(manyController.state().keystrokes.plan.items.some((entry) => entry.tMs === 7400), false)
+  many.harness.elements.get('toggle-keystrokes').dispatch('click')
+  const manyPlayer = many.harness.elements.get('preview-video')
+  manyPlayer.currentTime = 7.45
+  manyPlayer.dispatch('timeupdate')
+  assert.equal(many.harness.elements.get('keystroke-capsule').classList.contains('visible'), false)
+  // Notice disappears when the plan no longer truncates (e.g. the label list fits).
+  many.view.getController().applyEventTrack({ pointer: [], clicks: [], keystrokes: [{ tMs: 1000, combo: 'F5' }] })
+  assert.equal(notice.hidden, true)
+})
+
+// P2-08: a legal project may persist up to 2000 capsule events (recording-project-service
+// KEYSTROKE_LIMIT) but only 500 render windows are composited. The editor must read the whole
+// source track, project the trim selection and only then apply the 500-window budget, disclosing
+// the exact dropped count and source-time range BEFORE the user confirms the export.
+test('P2-08: a 600-capsule full film discloses the 100-window render cap before export', async (t) => {
+  const exportOptions = require('../shared/recording-export-options')
+  const translate = (key, params) => (params ? key + ':' + JSON.stringify(params) : key)
+  const DURATION_MS = 600000
+  const metadata = { durationMs: DURATION_MS, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  const keystrokes = Array.from({ length: 600 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const fake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: { schemaVersion: 1, durationMs: DURATION_MS, sampledAtHz: 20, pointer: [], clicks: [], keystrokes, truncated: false }
+    })
+  })
+  const { view, harness } = bootView({ api: fake.api, translate })
+  t.after(() => view.destroy())
+  const project = projectEdit({
+    id: 'project-keystrokes-600',
+    media: { durationMs: DURATION_MS, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 3, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+  })
+  view.applyInit(initPayload({ project, metadata }))
+  await settleEvents()
+  const controller = view.getController()
+  const full = controller.state().keystrokes
+  assert.equal(full.count, 600, 'the editor reads every capsule the project track can persist')
+  assert.equal(full.plan.items.length, 500)
+  assert.equal(full.plan.truncated, true)
+  const notice = harness.elements.get('keystroke-truncation')
+  assert.equal(notice.hidden, true, 'the disclosure stays silent while the overlay switch is off')
+
+  // Turning the overlay on is what makes the render budget relevant: the export panel now states
+  // the exact dropped capsule/label counts and their source-time range, before any export attempt.
+  const toggle = harness.elements.get('export-keystrokes')
+  toggle.checked = true
+  toggle.dispatch('change')
+  assert.equal(notice.hidden, false, 'the 100-window truncation is disclosed before the user confirms')
+  assert.match(notice.textContent, /^recording\.editor\.keystrokes\.truncated:/)
+  assert.match(notice.textContent, /"count":100/)
+  assert.match(notice.textContent, /"labels":1/)
+  assert.match(notice.textContent, /"maxWindows":500/, 'the 100 dropped capsules come from the window cap, not the label cap')
+  assert.match(notice.textContent, /"first":"08:20\.5"/)
+  assert.match(notice.textContent, /"last":"09:59\.5"/)
+
+  // Trim to the last 100 s: the same source track is re-projected and now fits the render budget, so
+  // the notice disappears and the submitted request derives exactly the preview plan.
+  assert.equal(controller.splitAt(500000), true)
+  assert.equal(controller.deleteSegmentAt(250000), true)
+  const tail = controller.state().keystrokes
+  assert.equal(tail.plan.items.length, 100)
+  assert.equal(tail.plan.truncated, false)
+  assert.equal(notice.hidden, true, 'nothing left to disclose once the selection fits the budget')
+  await view.exportSelection()
+  assert.equal(fake.calls.export.length, 1)
+  const request = fake.calls.export[0].request
+  assert.equal(request.keystrokes.enabled, true)
+  assert.equal(request.keystrokes.items.length, 600, 'the frozen request carries the full source sequence')
+  const exported = exportOptions.normalizeExportRequest(request, metadata)
+  assert.equal(exported.ok, true)
+  assert.equal(exported.value.keystrokes.truncated, false)
+  assert.deepEqual(exported.value.keystrokes.sourceItems, tail.plan.items)
+})
+
 test('the preview frame mirrors the resolved canvas and applies the mapped zoom transform', (t) => {
   const fake = createFakeApi()
   const { view, harness } = bootView({ api: fake.api })

@@ -35,6 +35,16 @@ const previewApi = window.clipboardPreview
 // the renderer only passes it through.
 const PREVIEW_MAX_SCALE = previewApi?.MAX_PREVIEW_SCALE || 2
 let previewGeneration = 0
+// N02 (report section 5.2): one-click image actions. The renderer only submits the
+// record id; OCR / the Excel export / the pin bridge all run in main and return a
+// value. One action at a time keeps a double click (or a preview button plus the
+// context menu) from starting two decodes, and the buttons stay disabled while it
+// runs. IMAGE_ACTION_BUTTONS is the single list both surfaces use.
+const IMAGE_ACTION_BUTTONS = ['previewOcr', 'previewTable', 'previewPin', 'menuOcr', 'menuTable', 'menuPin']
+let imageAction = null
+let ocrText = ''
+let ocrCopyPending = false
+let contextItemId = null
 // Text rows keep only the detail text needed to cut a snippet around a search
 // hit. Bounded and cleared with the filter, because a full entry can be 64 KiB.
 const SNIPPET_CACHE_LIMIT = 24
@@ -73,6 +83,151 @@ function detailMetaText(item) {
 function imageLabel(item) {
   const size = t('clipboard.image-size', { width: item.width, height: item.height })
   return [size, item.sourceDisplayName, formatTime(Math.max(item.lastCopiedAt || 0, item.lastUsedAt || 0)), item.isPinned ? t('clipboard.pinned') : ''].filter(Boolean).join(' · ')
+}
+// ---------- N02: one-click image actions ----------
+//
+// Every action submits exactly one record id. The reply is a value (OCR text, a
+// base file name, or the pin fallback flag); the page never receives pixels, a
+// path or a URL. Failures are stable error codes rendered through the same
+// clipboard.error.* table the copy/paste path uses.
+function imageActionErrorText(error) {
+  const code = String(error?.message || '')
+  const key = `clipboard.error.${code.toLowerCase().replaceAll('_', '-')}`
+  return t(key) === key ? t('clipboard.failed') : t(key)
+}
+// A notice belongs to whichever surface is on top: the preview overlay, the OCR
+// result sheet, or - when the action came from a tile's context menu - the status
+// rail that is still visible behind the list.
+function showNotice(element, text, tone = 'ok') {
+  if (!element) return
+  element.textContent = text || ''
+  element.hidden = !text
+  if (text) element.setAttribute('data-tone', tone)
+  else element.removeAttribute('data-tone')
+}
+function statusNotice(text, tone = 'ok') {
+  if (!text) return
+  $('status').textContent = text
+  $('led').className = `led tone-${tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'ok'}`
+}
+function showImageNotice(origin, text, tone = 'ok') {
+  if (origin === 'preview' && previewOpen()) showNotice($('previewNotice'), text, tone)
+  else if (origin === 'ocr' && !$('ocr').hidden) showNotice($('ocrNotice'), text, tone)
+  else statusNotice(text, tone)
+}
+function setImageActionsBusy(busy) {
+  for (const id of IMAGE_ACTION_BUTTONS) {
+    const button = $(id)
+    if (button) button.disabled = busy
+  }
+  $('preview').setAttribute('aria-busy', String(busy))
+  $('contextMenu').setAttribute('aria-busy', String(busy))
+}
+function openOcrSheet(item, value) {
+  ocrText = String(value?.text || '')
+  $('ocrText').textContent = ocrText || t('clipboard.ocr-empty')
+  $('ocrCopy').disabled = !ocrText
+  const meta = [imageLabel(item)]
+  if (value?.lineCount) meta.push(t('clipboard.ocr-lines', { count: value.lineCount }))
+  if (value?.lowResolution) meta.push(t('clipboard.ocr-low-resolution'))
+  $('ocrMeta').textContent = meta.filter(Boolean).join(' · ')
+  showNotice($('ocrNotice'), '', 'ok')
+  showNotice($('previewNotice'), '', 'ok')
+  $('ocr').hidden = false
+  $('ocrClose').focus()
+}
+function closeOcrSheet(options = {}) {
+  const wasOpen = !$('ocr').hidden
+  $('ocr').hidden = true
+  $('ocrText').textContent = ''
+  $('ocrMeta').textContent = ''
+  showNotice($('ocrNotice'), '', 'ok')
+  ocrText = ''
+  $('ocrCopy').disabled = true
+  if (!wasOpen || options.restoreFocus === false) return
+  if (previewOpen()) $('previewClose').focus()
+  else $('list').focus()
+}
+async function copyOcrText() {
+  if (!ocrText || ocrCopyPending) return
+  ocrCopyPending = true
+  $('ocrCopy').disabled = true
+  try {
+    result(await api.copyText(ocrText))
+    showNotice($('ocrNotice'), t('clipboard.ocr-copied'), 'ok')
+  } catch (error) {
+    showNotice($('ocrNotice'), imageActionErrorText(error), 'danger')
+  } finally {
+    ocrCopyPending = false
+    $('ocrCopy').disabled = !ocrText
+  }
+}
+async function runImageAction(action, item, origin) {
+  if (!item || item.kind !== 'image' || imageAction) return
+  imageAction = action
+  setImageActionsBusy(true)
+  closeContextMenu()
+  if (origin === 'preview') showNotice($('previewNotice'), t('clipboard.image-action-working'), 'warn')
+  try {
+    if (action === 'ocr') {
+      const value = result(await api.imageOcr(item.id))
+      if (!visible) return
+      openOcrSheet(item, value)
+    } else if (action === 'table') {
+      const value = result(await api.imageTable(item.id))
+      if (!visible) return
+      // A cancelled save dialog wrote nothing and needs no message: the panel
+      // simply stays as it was.
+      if (value?.canceled) { if (origin === 'preview') showNotice($('previewNotice'), '', 'ok') }
+      else showImageNotice(origin, t('clipboard.table-saved', { name: String(value?.name || '') }), 'ok')
+    } else if (action === 'pin') {
+      const value = result(await api.imagePin(item.id))
+      if (!visible) return
+      showImageNotice(origin, t(value?.pinned === true ? 'clipboard.pin-done' : 'clipboard.pin-fallback'), value?.pinned === true ? 'ok' : 'warn')
+    }
+  } catch (error) {
+    if (!visible) return
+    const text = imageActionErrorText(error)
+    if (origin === 'preview') showNotice($('previewNotice'), text, 'danger')
+    else statusNotice(text, 'danger')
+  } finally {
+    imageAction = null
+    setImageActionsBusy(false)
+  }
+}
+// The context menu is attached to image tiles only: those are the records these
+// three actions accept, and a text row keeps its existing keyboard/Enter model.
+function openContextMenu(item, event) {
+  if (!item || item.kind !== 'image' || !visible || imageAction) return
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  contextItemId = item.id
+  if (selected !== item.id) select(item.id)
+  const menu = $('contextMenu')
+  const width = 168
+  const height = 100
+  const viewportWidth = Number(window.innerWidth) || 480
+  const viewportHeight = Number(window.innerHeight) || 640
+  const left = Math.max(4, Math.min(Number(event?.clientX) || 0, viewportWidth - width - 4))
+  const top = Math.max(4, Math.min(Number(event?.clientY) || 0, viewportHeight - height - 4))
+  menu.style.left = `${left}px`
+  menu.style.top = `${top}px`
+  menu.hidden = false
+  $('menuOcr').focus?.()
+}
+function closeContextMenu(options = {}) {
+  if ($('contextMenu').hidden) return
+  $('contextMenu').hidden = true
+  contextItemId = null
+  if (options.restoreFocus) $('list').focus()
+}
+function contextAction(action) {
+  const id = contextItemId
+  // Return focus to the grid before the action replaces the menu; the outcome
+  // notice then lands in the status rail without stranding keyboard focus.
+  closeContextMenu({ restoreFocus: true })
+  const item = items.find((entry) => entry.id === id) || selectedItem()
+  if (item) runImageAction(action, item, 'status')
 }
 function pasteMessage(value) {
   const code = value?.error || value?.reason
@@ -237,6 +392,9 @@ function renderImageRow(row) {
     tile.append(image)
     tile.onclick = () => { $('list').focus(); select(item.id) }
     tile.ondblclick = () => perform('copy')
+    // N02: the right-click menu is the second entry point for the three image
+    // actions; the preview overlay's action bar is the first.
+    tile.oncontextmenu = (event) => openContextMenu(item, event)
     wrapper.append(tile)
   }
   return wrapper
@@ -265,6 +423,28 @@ function retryThumbnail(id, image) {
 // be indistinguishable from "not requested yet" and would re-issue the batch on
 // every scroll frame.
 const thumbFailed = new Set()
+// F05 (report report section 3.5): a thumbnail URL is content-addressed per item id and a
+// history event caused by a new record (or a pin toggle) cannot invalidate an
+// existing entry. The old handler cleared `thumbCache`/`thumbFailed` and the
+// in-flight marks on every `history` event, so each copy made the panel re-read
+// every visible thumbnail. Entries are now dropped only when their record is
+// known to be gone (explicit delete, or a refresh that no longer lists them) or
+// when the whole panel history is cleared.
+let historyThumbPrune = false
+function dropThumbnails(ids) {
+  for (const id of ids) { thumbCache.delete(id); thumbFailed.delete(id) }
+}
+function clearThumbnails() {
+  thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration
+}
+// Called after a list reload that followed a history event: only ids the backend
+// no longer returns are evicted, so a new record does not disturb the rest.
+function pruneThumbnails() {
+  historyThumbPrune = false
+  const live = new Set(items.filter((item) => item.kind === 'image').map((item) => item.id))
+  for (const id of thumbCache.keys()) if (!live.has(id)) thumbCache.delete(id)
+  for (const id of thumbFailed) if (!live.has(id)) thumbFailed.delete(id)
+}
 function assignThumbnail(id, image) {
   const tile = image.closest ? image.closest('.tile') : null
   if (thumbFailed.has(id)) { if (tile) markThumbnailFailed(tile, id); return }
@@ -398,8 +578,9 @@ async function refresh(append = false) {
   const ticket = ++queryGeneration
   // A new filter (search text, kind chip, pinned, refresh) retires the preview
   // and the detail text cached for the previous hit set before the IPC starts;
-  // otherwise a slow list response could keep an overlay for the old filter.
-  if (!append) { closePreview({ restoreFocus: false }); resetSnippets() }
+  // otherwise a slow list response could keep an overlay for the old filter. The
+  // OCR sheet and the context menu belong to the same retired selection.
+  if (!append) { closePreview({ restoreFocus: false }); closeOcrSheet({ restoreFocus: false }); closeContextMenu(); resetSnippets() }
   loading = true
   try {
     const page = result(await api.list({ ...filter, cursor: append ? nextPage.cursor : null, limit: 50 }))
@@ -408,6 +589,9 @@ async function refresh(append = false) {
     if (!append) { items = []; $('list').scrollTop = 0 }
     items.push(...page.items)
     if (items.length > 150) trimHistory()
+    // F05: a reload following a history event is where a record that the backend
+    // pruned disappears; evict only those ids instead of clearing the URL cache.
+    if (historyThumbPrune) pruneThumbnails()
     nextPage = page.cursor ? { ...filter, cursor: page.cursor } : null
     $('more').hidden = !nextPage; $('new').hidden = true
     if (!items.some((item) => item.id === selected)) { selected = null; clearDetail() }
@@ -596,6 +780,7 @@ function openPreview() {
   const ticket = ++previewGeneration
   releasePreviewImage()
   $('previewMeta').textContent = previewMetaText(item)
+  showNotice($('previewNotice'), '', 'ok')
   $('preview').hidden = false
   $('previewClose').focus()
   const cached = thumbCache.get(item.id)
@@ -609,9 +794,13 @@ function closePreview(options = {}) {
   // Invalidate first: a previews() response that lands after this point must not
   // mount an image over the restored list.
   ++previewGeneration
+  // The OCR sheet is a child surface of the preview; closing the preview cannot
+  // leave its text (or its focus trap) floating over the list.
+  if (!$('ocr').hidden) closeOcrSheet({ restoreFocus: false })
   releasePreviewImage()
   $('preview').hidden = true
   $('previewMeta').textContent = ''
+  showNotice($('previewNotice'), '', 'ok')
   if (wasOpen && options.restoreFocus !== false) {
     $('list').focus()
     if (selected != null) scrollSelectionIntoView()
@@ -698,6 +887,7 @@ async function select(id) {
   // A preview belongs to the record it was opened for; selecting another record
   // (for example through the accessibility tree) closes it without moving focus.
   if (previewOpen() && id !== selected) closePreview({ restoreFocus: false })
+  if (id !== selected && !$('ocr').hidden) closeOcrSheet({ restoreFocus: false })
   selected = id
   renderRows(); clearDetail()
   renderSelectionActions()
@@ -733,7 +923,7 @@ async function perform(action) {
     if (action === 'copy') { result(await api.copy(item.id, operation)); $('status').textContent = t('clipboard.copied') }
     if (action === 'paste') pasteMessage(result(await api.paste(item.id, operation)))
     if (action === 'pin') result(await api.setPinned(item.id, !item.isPinned, operation))
-    if (action === 'delete') { result(await api.delete([item.id], operation)); selected = null; clearDetail() }
+    if (action === 'delete') { result(await api.delete([item.id], operation)); dropThumbnails([item.id]); selected = null; clearDetail() }
     if (['pin', 'delete'].includes(action)) await refresh()
     if (action === 'pin' && selected && !$('detail').hidden) $('detailMeta').textContent = detailMetaText(selectedItem())
   } catch (error) { if (action === 'paste') pasteMessage({ error: error.message }); else message(error) }
@@ -768,7 +958,9 @@ function moveVertical(direction) {
   const picked = items[target.items[Math.max(0, column)]]
   return picked || items[found.index]
 }
-$('list').onscroll = scheduleRender
+// Scrolling retires the image context menu: it is anchored to viewport pixels,
+// so it would otherwise float over unrelated rows after the grid moved.
+$('list').onscroll = () => { closeContextMenu(); scheduleRender() }
 $('list').addEventListener('scrollend', (event) => {
   if (!nextPage) return
   const list = event.currentTarget
@@ -805,17 +997,68 @@ $('list').onkeydown = (event) => {
 }
 // The preview owns the keyboard while it is open. stopPropagation keeps the
 // document-level Escape handler from closing the whole panel on the same press.
+// Tab cycles the overlay's own controls (three image actions + close) instead of
+// escaping into the covered list behind it.
 $('preview').onkeydown = (event) => {
   if (event.isComposing || composing) return
-  if (event.key === 'Tab') { event.preventDefault(); $('previewClose').focus(); return }
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    const controls = [['previewOcr'], ['previewTable'], ['previewPin'], ['previewClose']]
+      .map(([id]) => $(id)).filter((node) => node && node.disabled !== true)
+    const index = controls.indexOf(document.activeElement)
+    const step = event.shiftKey ? -1 : 1
+    controls[(Math.max(0, index) + step + controls.length) % controls.length].focus()
+    return
+  }
   if (event.key !== ' ' && event.key !== 'Escape') return
   event.preventDefault()
   event.stopPropagation()
   closePreview()
 }
 $('previewClose').onclick = () => closePreview()
+$('previewOcr').onclick = () => runImageAction('ocr', selectedItem(), 'preview')
+$('previewTable').onclick = () => runImageAction('table', selectedItem(), 'preview')
+$('previewPin').onclick = () => runImageAction('pin', selectedItem(), 'preview')
+// The OCR sheet is its own dialog above the preview. Escape closes only the sheet;
+// Tab stays inside its two controls so focus cannot land on a covered layer.
+$('ocr').onkeydown = (event) => {
+  if (event.isComposing || composing) return
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeOcrSheet(); return }
+  if (event.key !== 'Tab') return
+  event.preventDefault()
+  const controls = [$('ocrCopy'), $('ocrClose')].filter((node) => node && node.disabled !== true)
+  const index = controls.indexOf(document.activeElement)
+  const step = event.shiftKey ? -1 : 1
+  controls[(Math.max(0, index) + step + controls.length) % controls.length].focus()
+}
+$('ocrCopy').onclick = () => copyOcrText()
+$('ocrClose').onclick = () => closeOcrSheet()
+// The context menu keeps list-style keyboard control: arrows move the highlight,
+// Escape hands focus back to the grid.
+$('contextMenu').onkeydown = (event) => {
+  if (event.isComposing || composing) return
+  const buttons = ['menuOcr', 'menuTable', 'menuPin'].map((id) => $(id)).filter((node) => node && node.disabled !== true)
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeContextMenu({ restoreFocus: true }); return }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  event.preventDefault()
+  const index = buttons.indexOf(document.activeElement)
+  const step = event.key === 'ArrowDown' ? 1 : -1
+  buttons[(Math.max(0, index) + step + buttons.length) % buttons.length].focus()
+}
+$('menuOcr').onclick = () => contextAction('ocr')
+$('menuTable').onclick = () => contextAction('table')
+$('menuPin').onclick = () => contextAction('pin')
+// A click anywhere outside the menu dismisses it; the menu-item handlers close it
+// themselves first, so the same click cannot reopen anything.
+document.onclick = (event) => {
+  if ($('contextMenu').hidden) return
+  if ($('contextMenu').contains?.(event?.target) === true) return
+  closeContextMenu()
+}
 document.onkeydown = (event) => {
   if (event.key !== 'Escape' || event.isComposing || composing) return
+  if (!$('ocr').hidden) { closeOcrSheet(); return }
+  if (!$('contextMenu').hidden) { closeContextMenu({ restoreFocus: true }); return }
   if (!$('preview').hidden) { closePreview(); return }
   if (!$('detail').hidden) { clearDetail(); return }
   api.close()
@@ -852,7 +1095,7 @@ $('paste').onclick = () => perform('paste')
 $('view').onclick = () => openDetail()
 $('pause').onclick = async () => { try { renderStatus(result(await api.setPaused(!status.userPaused))) } catch (error) { message(error) } }
 $('clear').onclick = async () => {
-  try { const prepared = result(await api.prepareClear('ordinary')); if (prepared.token) { result(await api.commitClear(prepared.token, crypto.randomUUID())); selected = null; clearDetail(); await refresh() } }
+  try { const prepared = result(await api.prepareClear('ordinary')); if (prepared.token) { result(await api.commitClear(prepared.token, crypto.randomUUID())); clearThumbnails(); selected = null; clearDetail(); await refresh() } }
   catch (error) { message(error) }
 }
 // The panel can follow the cursor to a display with a different scale factor;
@@ -898,7 +1141,7 @@ const cleanups = [
     $('feedback').hidden = true; if (data.pasteFeedback) pasteMessage(data.pasteFeedback)
   }),
   api.onStatus((data) => { if (visible) renderStatus(data) }),
-  api.onHistory(() => { if (visible) { thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; $('new').hidden = false } }),
+  api.onHistory(() => { if (visible) { ++thumbGeneration; historyThumbPrune = true; thumbFailed.clear(); $('new').hidden = false } }),
   api.onHidden(clearHistory),
   api.onPasteResult((data) => {
     clearHistory(); document.body.classList.add('feedback-only')
@@ -910,14 +1153,17 @@ const cleanups = [
 function clearHistory() {
   visible = false; ++queryGeneration; clearTimeout(debounce); items = []; nextPage = null; selected = null; loading = false
   composing = false
-  thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
-  clearDetail(); closePreview({ restoreFocus: false }); resetSnippets()
+  clearThumbnails(); metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
+  clearDetail(); closePreview({ restoreFocus: false }); closeOcrSheet({ restoreFocus: false }); closeContextMenu(); resetSnippets()
   $('rows').replaceChildren(); $('rows').style.height = '0px'
   renderSelectionActions()
   $('search').value = ''; $('feedback').hidden = true
   $('empty').hidden = true; $('more').hidden = true; $('new').hidden = true
   pinnedJump.hidden = true
 }
+// Both action overlays ship hidden in the markup; setting the state explicitly
+// keeps the renderer deterministic for harnesses whose stub elements start shown.
+$('ocr').hidden = true; $('contextMenu').hidden = true
 applyTranslations()
 window.addEventListener('unload', () => {
   for (const cleanup of cleanups) cleanup()

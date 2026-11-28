@@ -40,43 +40,30 @@ const {
 } = require('./main/services/diagnostics-bootstrap')
 const { SettingsService } = require('./main/services/settings-service')
 const { DEFAULT_SETTINGS } = require('./main/services/settings-defaults')
-const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
-const { createCodingPlanIpcController, registerCodingPlanIpc } = require('./main/ipc/coding-plan-ipc')
 const { HistoryService } = require('./main/services/history-service')
 const { createCaptureDocumentService } = require('./main/services/capture-document-service')
 const { ensureDirectory: ensureDirectorySync } = require('./main/services/fs-utils')
 const imageBufferUtils = require('./main/services/image-buffer')
 const captureNaming = require('./main/services/capture-naming')
 const { CAPTURE_PREFIX } = captureNaming
-const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { createShortcutDomain } = require('./main/domains/shortcuts')
-const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
-const { createTrayIconImage } = require('./main/services/tray-icon')
 const { createProxyBridgeController } = require('./main/services/proxy-bridge-controller')
-const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
-const { registerAppIpc } = require('./main/ipc/app-ipc')
-const { createDiagnosticsIpcController, registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
-const { registerUpdateIpc, createUpdateIpcController } = require('./main/ipc/update-ipc')
-const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
-const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 // Feature A (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §4): every produced file
 // is registered once and afterwards addressed by resultId, so "open / copy address / reveal" never
 // becomes a generic open-any-path primitive. Feature B (§5): the region/preset channels; the
 // remembered-region *write* stays a domain-internal action, so there is no channel for it.
-const { registerExportIpc } = require('./main/ipc/export-ipc')
-const { createExportActionResultController } = require('./main/ipc/export-action-controller')
-const { registerRegionIpc } = require('./main/ipc/region-ipc')
-const { createRegionController } = require('./main/ipc/region-ipc-controller')
-const { createExportResultForApp, createRecordingExportRef, createRecordingMediaProbe, createRegionPreferencesForApp, registerExportFeatureIpc, registerRecordingExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
-const regionPresets = require('./shared/region-presets')
-const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
-const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
+const {
+  createExportResultForApp,
+  createRecordingExportRef,
+  createRecordingMediaProbe,
+  createRegionPreferencesForApp
+} = require('./main/services/feature-services-bootstrap')
+const { registerAllIpc } = require('./main/ipc')
+const { createTrayController } = require('./main/domains/tray')
+const { createOcrIpcController } = require('./main/ipc/ocr-ipc')
 // R2/R3 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9): the workbench/records channels
 // (main role) and the standalone editor channels (record-editor role).
-const { registerRecordingWorkbenchIpc, registerRecordingEditorIpc } = require('./main/ipc/recording-workbench-ipc')
-const { registerSearchIpc } = require('./main/ipc/search-ipc')
-const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { createUpdateDomain } = require('./main/domains/update')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createLocalWindowFactory } = require('./main/services/window-security')
@@ -92,6 +79,7 @@ const crypto = require('node:crypto')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { EverythingService } = require('./main/services/everything-service')
+const { createEverythingServiceGetter } = require('./main/services/everything-service-getter')
 const { createFakeEverythingQuery } = require('./main/services/e2e-fake-everything')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
@@ -208,9 +196,7 @@ function initializeStore() {
 
 let mainWindow = null
 let firstMainWindowReady = true
-let tray = null
 let ocrService = null
-let everythingService = null
 let recordingService = null
 const getSearchFileIcon = createFileIconLookup({ app, log })
 const managedRecordingWriters = new ManagedWriterCoordinator()
@@ -301,7 +287,13 @@ function getRecordingService() {
 }
 
 // Feature E (plan §8.1/§8.3): lazy export queue handle; both collaborators are created later.
-const recordingExportRef = createRecordingExportRef({ getRecordingService: () => getRecordingService(), getFfmpegPath: resolveFfmpegPath, writerCoordinator: managedRecordingWriters, getExportResultService: () => exportResultService, log })
+const recordingExportRef = createRecordingExportRef({
+  getRecordingService: () => getRecordingService(),
+  getFfmpegPath: resolveFfmpegPath,
+  writerCoordinator: managedRecordingWriters,
+  getExportResultService: () => exportResultService,
+  log
+})
 // R1 (contracts §6/§7): lazy handle for the persistent recording-project service. Its root is the
 // managed `recordings/` directory (never a cache); the domain degrades to a code if it is unavailable.
 const recordingProjectRef = createRecordingProjectRef({ root: activePaths?.recordings || path.join(app.getPath('userData'), 'recordings'), log })
@@ -331,10 +323,10 @@ function assertManagedDataWritable() {
 
 const writeAppLog = createAppLogger({
   filePath: logFile,
-  // Reads the store rather than getSettings(): this predicate also runs while the
-  // settings service is still being constructed (a stored-value migration logs),
-  // and getSettings() would dereference the not-yet-assigned service.
-  isEnabled: () => !dataRootMigrationInProgress && !!store && store.get('settings', {}).system?.runLog !== false,
+  // F01: reads the cached settings snapshot instead of the store. This predicate runs for EVERY
+  // log line and a raw store.get() re-reads and re-parses config.json each time. It is only the
+  // startup migration window (before the service is assigned) that has no snapshot yet.
+  isEnabled: () => !dataRootMigrationInProgress && !!store && settingsService?.getSettings().system?.runLog !== false,
   sessionId: applicationSessionId,
   version: app.getVersion(),
   consoleLike: app.isPackaged ? null : console
@@ -492,8 +484,28 @@ const secureIpcMain = createSecureIpcMain({
   }
 })
 
-const mainWindowReclaim = createMainWindowReclaim({ ipcMain: secureIpcMain, getWindow: () => mainWindow, log, isBusy: () => dataRootMigrationInProgress === true || recordDomain?.isTaskActive?.() === true || captureDomain?.isTaskActive?.() === true || longCaptureDomain?.isTaskActive?.() === true })
-const deviceBattery = require('./main/services/device-battery-feature').install({ ipcMain: secureIpcMain, app, powerMonitor, windowState: mainWindowReclaim.getState(), getMainWindow: () => mainWindow, stateDirectory: dataRootContext.locatorDirectory, appRoot: __dirname, log, e2eContext })
+const mainWindowReclaim = createMainWindowReclaim({
+  ipcMain: secureIpcMain,
+  getWindow: () => mainWindow,
+  log,
+  // A migration, a recording, a capture and a long capture all count as work the reclaimer
+  // must not throw away by hiding the main window.
+  isBusy: () => dataRootMigrationInProgress === true ||
+    recordDomain?.isTaskActive?.() === true ||
+    captureDomain?.isTaskActive?.() === true ||
+    longCaptureDomain?.isTaskActive?.() === true
+})
+const deviceBattery = require('./main/services/device-battery-feature').install({
+  ipcMain: secureIpcMain,
+  app,
+  powerMonitor,
+  windowState: mainWindowReclaim.getState(),
+  getMainWindow: () => mainWindow,
+  stateDirectory: dataRootContext.locatorDirectory,
+  appRoot: __dirname,
+  log,
+  e2eContext
+})
 
 const shortcutService = new ShortcutService({
   globalShortcut,
@@ -665,7 +677,15 @@ recordDomain = createRecordDomain({
   getRecordingProjectService: () => recordingProjectRef.get(),
   // R2/R3 (contracts §10): the few assembly-side collaborators the workbench/editor need. One
   // resolver keeps main.js under its line ceiling; every member is optional in the domain.
-  getRecordingWorkbench: () => ({ shell, updateSettings: (patch) => settingsService.updateSettings(patch), createMainWindow: (route) => createMainWindow(route), backdropColor: () => windowBackdropColor(getSettings(), nativeTheme), createRegionSelection: (...args) => captureDomain.createCaptureWindow(...args), positionAutomationWindow, refreshTray: () => createTrayIcon() }),
+  getRecordingWorkbench: () => ({
+    shell,
+    updateSettings: (patch) => settingsService.updateSettings(patch),
+    createMainWindow: (route) => createMainWindow(route),
+    backdropColor: () => windowBackdropColor(getSettings(), nativeTheme),
+    createRegionSelection: (...args) => captureDomain.createCaptureWindow(...args),
+    positionAutomationWindow,
+    refreshTray: () => createTrayIcon()
+  }),
   utilityProcess // R5 §2.1: the event-track hook runs in its own utility process (like the selection hook)
 })
 
@@ -731,7 +751,9 @@ clipboardDomain = createClipboardDomain({
   getSettings, updateSettings: (patch) => settingsService.updateSettings(patch),
   getHook: () => selectionDomain.hookService(), createLocalWindow,
   positionAutomationWindow, isGameModeEnabled,
-  isMigrationInProgress: () => dataRootMigrationState.get(), automation: e2eContext.enabled
+  isMigrationInProgress: () => dataRootMigrationState.get(), automation: e2eContext.enabled,
+  // N02b: clipboard image actions reuse the pin domain and the shared OCR service.
+  getPinDomain: () => pinDomain, getOcrService: () => getOcrService()
 })
 
 settingsEffects = createSettingsEffects({
@@ -829,6 +851,8 @@ function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const startedAt = performance.now()
     deviceBattery.beforeNavigate(route)
+    // U05: showing the window cancels a pending idle reclaim armed while it was hidden.
+    mainWindowReclaim.disarm()
     mainWindow.show()
     mainWindow.focus()
     mainWindow.webContents.send('app:navigate', route)
@@ -862,6 +886,8 @@ function createMainWindow(route = 'home') {
   win.once('ready-to-show', () => {
     if (mainWindow !== win || win.isDestroyed()) return
     positionAutomationWindow(win)
+    // U05: the first show goes through ready-to-show, so disarm here too.
+    mainWindowReclaim.disarm()
     win.show()
     performanceMonitor.finish(readyToken, {
       moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100
@@ -876,57 +902,33 @@ function createMainWindow(route = 'home') {
   return win
 }
 
+// H05 (section 2.5): the tray singleton, asset swap and menu live in main/domains/tray. The
+// historical name stays as a delegation because the startup sequence and several contract tests
+// call it; every collaborator is a resolver, so the construction order is free.
+const trayController = createTrayController({
+  Tray,
+  Menu,
+  app,
+  path,
+  rootDirectory: __dirname,
+  nativeImage,
+  nativeTheme,
+  t,
+  log,
+  getSettings,
+  isGameModeEnabled,
+  createMainWindow,
+  executeFunction: (name) => functionRouter.executeFunction(name),
+  getProxyBridge: () => proxyBridgeController,
+  getPinDomain: () => pinDomain,
+  getRecordDomain: () => recordDomain,
+  getSelectionDomain: () => selectionDomain,
+  getExportResultService: () => exportResultService,
+  setGameModeEnabled
+})
+
 function createTrayIcon() {
-  const settings = getSettings()
-  if (!settings.system.enableTray) {
-    if (tray) { tray.destroy(); tray = null }
-    return
-  }
-  // P1 (2026-10-18 snow migration §12.2): a dark taskbar needs the lighter asset;
-  // the choice (including "system" -> nativeTheme) lives in services/tray-icon.js.
-  const trayIcon = createTrayIconImage({ nativeImage, directory: path.join(__dirname, 'assets'), theme: settings.theme, systemPrefersDark: nativeTheme.shouldUseDarkColors })
-  if (!tray) {
-    tray = new Tray(trayIcon.image)
-    tray.on('click', () => { if (!isGameModeEnabled()) functionRouter.executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message)) })
-    tray.on('double-click', () => createMainWindow('home'))
-  } else if (trayIcon.file !== tray._trayIconFile) tray.setImage(trayIcon.image)
-  tray._trayIconFile = trayIcon.file
-  const gameMode = isGameModeEnabled(settings)
-  const proxyState = proxyBridgeController ? proxyBridgeController.menuState(settings) : null
-  // A01: the tooltip mirrors the live capture (rebuilt only on a status transition).
-  const liveRecording = recordDomain?.getActiveState?.()
-  const recordingTooltip = liveRecording?.status === 'recording' || liveRecording?.status === 'paused'
-    ? t(liveRecording.status === 'paused' ? 'main.tray.tooltip-recording-paused' : 'main.tray.tooltip-recording')
-    : ''
-  tray.setToolTip([gameMode ? t('main.tray.tooltip-game-mode') : 'Highlighter', recordingTooltip, proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
-  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
-    gameMode,
-    screenshotAccelerator: settings.shortcuts.screenshot, clipboardEnabled: settings.clipboard.enabled,
-    translationProxy: proxyState,
-    setTranslationProxyEnabled: (enabled) => proxyBridgeController.setEnabled(enabled),
-    executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
-    // P0-6-T4: a click-through pin swallows clicks, and game mode suspends both the router and the
-    // global shortcuts, so this entry calls the domain directly - the only recovery path that
-    // survives game mode.
-    exitClickThrough: () => { const exited = pinDomain.exitAllClickThrough(); log('Click-through exit:', exited); return exited },
-    setGameModeEnabled: (enabled) => { try { setGameModeEnabled(enabled) } catch (error) { log('Game mode update failed:', error.message); createTrayIcon() } },
-    openHistory: () => createMainWindow('history'),
-    // A06: the disabled clipboard entry explains where to enable it and this entry opens that
-    // settings route in one step, so a fresh install needs no scavenger hunt.
-    openClipboardSettings: () => createMainWindow('clipboard-history'),
-    openMainWindow: () => createMainWindow('home'),
-    hasConversation: selectionDomain.hasConversation(),
-    showConversation: () => selectionDomain.showOrRestoreConversation(),
-    // Feature A (plan §4.1): the newest live export, so a file whose window is gone (a plain
-    // screenshot closes on save) is still reachable. The plan caps the tray at one entry; the
-    // service returns exactly that (latestFor() with no owner = newest live receipt).
-    recentExport: exportResultService ? exportResultService.latestFor() : null,
-    // R2 (contracts §4.1/§4.2): the workbench entry and the live pause/finish entries.
-    recording: { active: recordDomain.getActiveState(), openWorkbench: () => recordDomain.openRecordingWorkbench(), pauseResume: () => recordDomain.pauseResumeActive(), finish: () => recordDomain.finishActive() },
-    pinnedDisplays: pinDomain.listPinsByDisplay(), recoverablePins: pinDomain.trayRecoveryMenu(),
-    openRecentExport: (receipt) => { if (!receipt?.resultId) return; Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' })).then((result) => { if (result?.status === 'failed') log('Tray recent export failed:', result.code); createTrayIcon() }).catch((error) => log('Tray recent export failed:', error.message)) },
-    quit: () => app.quit()
-  })))
+  return trayController.refresh()
 }
 
 // The save flow lives in main/services/image-file-save.js, which owns the
@@ -941,28 +943,22 @@ const saveImageBuffer = createImageFileSaver({
 
 async function saveDataUrl(dataUrl, options = {}) { return saveImageBuffer(dataUrlToBuffer(dataUrl), options) }
 
-function getEverythingService() {
-  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
-  if (everythingService) return everythingService
-  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
-  const sidecarPath = app.isPackaged
-    ? path.join(resourceRoot, 'native', 'everything-search', 'HighlighterEverything.exe')
-    : path.join(resourceRoot, 'native', 'everything-search', 'bin', 'HighlighterEverything.exe')
-  const bundledEverythingPath = path.join(resourceRoot, 'native', 'everything', 'Everything.exe')
-  everythingService = new EverythingService({
-    sidecarPath,
-    bundledEverythingPath,
-    runtimeEverythingDir: path.join(activePaths?.runtime || path.join(app.getPath('userData'), 'runtime'), 'everything'),
-    getUseBundledEverything: () => getSettings().search.useBundledEverything !== false,
-    onStatusChange: (status) => {
-      searchDomain?.notifyStatusChanged(status)
-    },
-    ...(e2eContext.fakeEverything ? { e2eQuery: createFakeEverythingQuery() } : {}),
-    log
-  })
-  return everythingService
-}
-
+// The lazy singleton moved to main/services/everything-service-getter.js; main.js keeps the
+// one-line wrapper so the search domain deps and the quit path read the same instance.
+const everythingRef = createEverythingServiceGetter({
+  app,
+  path,
+  rootDirectory: __dirname,
+  getActivePaths: () => activePaths,
+  getSettings,
+  getSearchDomain: () => searchDomain,
+  e2eContext,
+  log,
+  EverythingService,
+  createFakeEverythingQuery,
+  isMigrationInProgress: () => dataRootMigrationInProgress
+})
+function getEverythingService() { return everythingRef.get() }
 
 // A03: the rebind transaction (trial before persist) lives in main/domains/shortcuts.
 const shortcutDomain = createShortcutDomain({ shortcutService, getSettings, isGameModeEnabled, t })
@@ -988,194 +984,61 @@ function setGameModeEnabled(enabled, reason = 'tray') {
   }
   return applyGameModeState(nextEnabled, reason)
 }
-registerSettingsIpc({
+// H05 (section 2.5): every channel registration is aggregated in main/ipc/index.js. main.js hands
+// over the live collaborators only; anything created during startApplication (settings,
+// history, export results) is passed as a resolver so registration stays order-independent.
+registerAllIpc({
   ipcMain: secureIpcMain,
-  settingsService: {
-    getSettings: () => getSettings(),
-    getPublicSettings: (settings) => settingsService.getPublicSettings(settings),
-    updateSettings: (patch) => settingsService.updateSettings(patch),
-    resetSettings: () => settingsService.resetSettings(),
-    prepareProviderConnection: (provider) => settingsService.prepareProviderConnection(provider)
-  },
+  app,
+  path,
+  fs,
+  shell,
+  clipboard,
+  nativeImage,
+  dialog,
+  BrowserWindow,
+  log,
+  performanceMonitor,
+  windowActions,
+  getSettings,
+  getSettingsService: () => settingsService,
+  getHistoryService: () => historyService,
+  getDiagnosticsService: () => diagnosticsService,
+  getMainWindow: () => mainWindow,
+  getPaths: () => activePaths,
+  getExportResultService: () => exportResultService,
+  getRegionPreferences: () => regionPreferences,
+  getProxyBridge: () => proxyBridgeController,
+  getInstallType,
+  resolveAiAssignment,
+  aiClient,
+  settingsEffects,
+  preparePatch: prepareShortcutPatch,
   assertWritable: assertManagedDataWritable,
-  // A03: trial-register a shortcut change before it is persisted.
-  preparePatch: (patch) => prepareShortcutPatch(patch),
-  onSettingsUpdated: (patch, settings) => {
-    settingsEffects.applyUpdate(patch, settings)
-  },
-  onSettingsReset: (settings) => {
-    settingsEffects.applyReset(settings)
-  },
-  validateApiKey: async (input) => {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      return aiClient.validateApiKey(input)
-    }
-    const provider = input.provider || input
-    if (input.fetchModels === true) return aiClient.discoverProviderModels(provider)
-    return aiClient.testProviderConnection(provider)
-  },
-  log
-})
-registerCodingPlanIpc({
-  ipcMain: secureIpcMain,
-  controller: createCodingPlanIpcController({
-    settingsService,
-    assertWritable: assertManagedDataWritable,
-    testProviderConnection: (provider, options) => aiClient.testProviderConnection(provider, options),
-    appVersion: app.getVersion()
-  })
-})
-registerShortcutIpc({
-  ipcMain: secureIpcMain,
-  shortcutService
+  shortcutService,
+  dataRootDomain,
+  captureDomain,
+  longCaptureDomain,
+  recognitionDomain,
+  recordDomain,
+  searchDomain,
+  selectionDomain,
+  ocrController,
+  functionRouter,
+  resolveUpdateService
 })
 
-function openExternal(value) {
-  return windowActions.openExternal(value)
-}
-
-const { getDisplayDiagnostics, chooseDirectory, pickDirectory } = windowActions
-
-registerAppIpc({
-  ipcMain: secureIpcMain,
-  controller: {
-    openExternal,
-    executeFunction: (name, payload) => functionRouter.executeFunction(name, payload),
-    getInfo: () => ({
-      version: app.getVersion(),
-      platform: process.platform,
-      installType: getInstallType(),
-      dataDirectory: activePaths?.root || app.getPath('userData')
-    }),
-    getDisplayDiagnostics,
-    chooseDirectory,
-    openDataDirectory: windowActions.openDataDirectory,
-    openSaveDirectory: windowActions.openSaveDirectory,
-    getProxyStatus: () => proxyBridgeController.getStatus(),
-    completeAi: (messages, options) => {
-      const settings = getSettings()
-      return aiClient.completeChat(
-        resolveAiAssignment(settings, 'chat'),
-        messages,
-        { maxTokens: settings.ai.maxTokens, temperature: settings.ai.temperature, ...(options || {}) }
-      )
-    },
-    translateText: (text, sourceLanguage, targetLanguage) => {
-      const settings = getSettings()
-      return aiClient.translateText(
-        resolveAiAssignment(settings, 'translation'),
-        text,
-        sourceLanguage,
-        targetLanguage || settings.ai.targetLanguage
-      )
-    }
-  }
-})
-
-registerDiagnosticsIpc({
-  ipcMain: secureIpcMain,
-  controller: createDiagnosticsIpcController({
-    getDiagnosticsService: () => diagnosticsService,
-    getMainWindow: () => mainWindow,
-    dialog,
-    app,
-    path
-  })
-})
-
-registerUpdateIpc({
-  ipcMain: secureIpcMain,
-  updateService: createUpdateIpcController({
-    getUpdateService: () => resolveUpdateService()
-  })
-})
-
-registerDataRootIpc({
-  ipcMain: secureIpcMain,
-  controller: dataRootDomain.createController()
-})
-
-registerHistoryIpc({
-  ipcMain: secureIpcMain,
-  historyService: {
-    list: (filter) => performanceMonitor.measure('history.list', () => historyService.list(filter), {
-      limit: Math.max(0, Number(filter?.limit) || 0),
-      filtered: !!(filter?.query || filter?.source)
-    }),
-    getThumbnail: (id) => historyService.getThumbnail(id),
-    listSources: () => performanceMonitor.measure('history.sources', () => historyService.listSources()),
-    stats: () => performanceMonitor.measure('history.stats', () => historyService.stats()),
-    getItem: (id) => historyService.getItem(id),
-    delete: (id) => historyService.delete(id),
-    deleteMany: (ids) => historyService.deleteMany(ids),
-    exportMany: (ids, directory) => historyService.exportMany(ids, directory),
-    cleanup: () => historyService.cleanup(),
-    clear: () => historyService.clear()
-  },
-  copyItem: (item) => {
-    if (!fs.existsSync(item.filePath)) return false
-    if (Math.max(Number(item.width) || 0, Number(item.height) || 0) > 65535 || (Number(item.width) || 0) * (Number(item.height) || 0) > 80000000) return false
-    clipboard.writeImage(nativeImage.createFromPath(item.filePath))
-    return true
-  },
-  editItem: (item) => captureDomain.editHistoryDocument(item),
-  openItem: async (item) => {
-    if (!fs.existsSync(item.filePath)) return false
-    const error = await shell.openPath(item.filePath)
-    if (error) throw new Error(`无法使用默认应用打开截图：${error}`)
-    return true
-  },
-  copyPathItem: (item) => {
-    if (!fs.existsSync(item.filePath)) return false
-    clipboard.writeText(path.resolve(item.filePath))
-    return true
-  },
-  chooseExportDirectory: () => pickDirectory({ title: '选择截图导出目录' })
-})
-
-registerCaptureIpc({
-  ipcMain: secureIpcMain,
-  controller: {
-    ...captureDomain.createCaptureController(),
-    ...longCaptureDomain.createLongCaptureController(),
-    ...recognitionDomain.createRecognitionController()
-  }
-})
-
-// Feature A/B IPC (plan §4.2/A2, §5.2/B2). Both wiring bodies live in
-// main/services/feature-services-bootstrap.js: main.js is at a hard line ceiling, and this is
-// assembly-only code (the ownership rules and the display mapping are in the modules themselves).
-registerExportFeatureIpc({ ipcMain: secureIpcMain, getExportResultService: () => exportResultService, BrowserWindow, log })
-registerRegionFeatureIpc({ ipcMain: secureIpcMain, getRegionPreferences: () => regionPreferences, limits: regionPresets.LIMITS, log })
-
-registerOcrIpc({
-  ipcMain: secureIpcMain,
-  controller: ocrController
-})
-
-registerSearchIpc({
-  ipcMain: secureIpcMain,
-  controller: searchDomain.createSearchController()
-})
-
-const recordController = recordDomain.createRecordingController()
-registerRecordingIpc({ ipcMain: secureIpcMain, controller: recordController })
-registerRecordingExportFeatureIpc({ ipcMain: secureIpcMain, controller: recordController })
-registerRecordingWorkbenchIpc({ ipcMain: secureIpcMain, controller: recordController })
-registerRecordingEditorIpc({ ipcMain: secureIpcMain, controller: recordController }); secureIpcMain.handle('record:pin-frame', recordController.editorPinFrame) // B08
-
-registerSelectionIpc({
-  ipcMain: secureIpcMain,
-  controller: selectionDomain.createIpcController()
-})
+// D26: window:minimize / window:close are the two channels the main page preload owns directly,
+// and the close path has to arm the reclaimer, so they stay in the assembly file by design.
 secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 secureIpcMain.on('window:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   selectionDomain.cancelStreamForWindow(win, 'window-hidden')
-  win?.hide(); if (win) mainWindowReclaim.arm()
+  win?.hide()
+  if (win) mainWindowReclaim.arm()
 })
-require('./main/services/usage-feature').install({ ipcMain: secureIpcMain, app, getPaths: () => activePaths, getMainWindow: () => mainWindow, getSettings, log })
 secureIpcMain.assertComplete()
+
 async function startApplication() {
   if (dataRootContext.needsSelection) {
     if (dataRootContext.startupError || !dataRootContext.portable) await dataRootDomain.recoverUnavailableDataRoot()
@@ -1286,7 +1149,11 @@ else {
     if (store) clipboardDomain?.notifyAppearance()
     // The tray bitmap does not follow the OS on its own (Windows never recolours
     // tray images), so a system appearance flip has to repaint it as well.
-    if (store && getSettings().theme === 'system') { selectionDomain.broadcastActionAppearance(); applyWindowBackdropToTracked(getSettings(), nativeTheme); createTrayIcon() }
+    if (store && getSettings().theme === 'system') {
+      selectionDomain.broadcastActionAppearance()
+      applyWindowBackdropToTracked(getSettings(), nativeTheme)
+      createTrayIcon()
+    }
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {
@@ -1316,14 +1183,21 @@ else {
     if (!recordingShutdownComplete) {
       event.preventDefault()
       recordingShutdownComplete = true
-      recordDomain.shutdown({ timeoutMs: 3000 }).catch((error) => log('Recording shutdown failed:', error.message)).finally(() => { recordingService = null; app.quit() })
+      recordDomain.shutdown({ timeoutMs: 3000 })
+        .catch((error) => log('Recording shutdown failed:', error.message))
+        .finally(() => {
+          recordingService = null
+          app.quit()
+        })
       return
     }
     longCaptureDomain.closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
-    if (everythingService) { everythingService.stop(); everythingService = null }
+    everythingRef.stop()
     selectionDomain.disposeSelectionHook()
     if (proxyBridgeController) { proxyBridgeController.dispose(); proxyBridgeController = null }
-    if (tray) { tray.destroy(); tray = null }
+    // H05 fixed the stale reference: the tray value lives in the tray controller now. A
+    // ReferenceError here aborted before-quit, so the app never actually exited.
+    trayController.destroy()
   })
 }

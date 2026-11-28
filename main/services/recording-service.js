@@ -43,7 +43,13 @@ const { spawn } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { buildFfmpegArgs } = require('../../record/recording-utils')
+const {
+  VIDEO_ENCODER_HARDWARE,
+  VIDEO_ENCODER_SOFTWARE,
+  buildFfmpegArgs,
+  normalizeVideoEncoder,
+  parseFfmpegEncoders
+} = require('../../record/recording-utils')
 const { sessionTransition } = require('../../shared/recording-export-options')
 
 // States in which the source may still be read by an export.
@@ -56,6 +62,12 @@ const MAX_APPEND_BYTES = 32 * 1024 * 1024
 // is 30 s; the main process applies its own deadline so a wedged disk cannot hold both
 // ends of the IPC and the window forever).
 const FINALIZE_TIMEOUT_MS = 30_000
+// F03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §3.3): the encoder
+// probe is bounded so a hung ffmpeg can never delay the first export indefinitely. The
+// listing is cheap; the smoke encode is bounded more generously because a QSV/AMF
+// initialisation can take a couple of seconds on a cold driver.
+const ENCODER_LIST_TIMEOUT_MS = 5_000
+const ENCODER_SMOKE_TIMEOUT_MS = 10_000
 
 // True when `child` is the same path as `parent` or lies below it. Used to keep a
 // registerPersistedSession() inputPath inside its own directory - the service never
@@ -73,7 +85,23 @@ function sequenceError(code, message, detail = {}) {
 }
 
 class RecordingService {
-  constructor({ tempRoot, ffmpegPath, spawnProcess = spawn, log = () => {}, probe = null, fs: fsImpl = fs, finalizeTimeoutMs = FINALIZE_TIMEOUT_MS }) {
+  constructor({
+    tempRoot,
+    ffmpegPath,
+    spawnProcess = spawn,
+    log = () => {},
+    probe = null,
+    fs: fsImpl = fs,
+    finalizeTimeoutMs = FINALIZE_TIMEOUT_MS,
+    // F03: separate process seam for the encoder probe (defaults to the real spawn) so a unit
+    // test can answer `-encoders`/smoke commands with a fake ffmpeg without touching the
+    // spawnProcess seam the transcode tests already drive. `encoderProbe` overrides the whole
+    // probe with an injected function and is the escape hatch for hosts that ship a custom
+    // capability probe.
+    encoderSpawn = spawn,
+    encoderProbe = null,
+    encoderTimeouts = {}
+  }) {
     if (!tempRoot) throw new Error('录制临时目录不能为空')
     if (!ffmpegPath) throw new Error('FFmpeg 路径不能为空')
     this.tempRoot = path.resolve(tempRoot)
@@ -83,6 +111,13 @@ class RecordingService {
     // The filesystem seam exists so the disk-full and wedged-write paths can be exercised
     // without a full volume: production always uses node:fs/promises.
     this.fs = fsImpl || fs
+    // F03 (§3.3): one persistent FileHandle per capture instead of fs.appendFile(path) per
+    // fragment. Each appendFile() opens, writes and closes the file; on Windows every close
+    // raises IRP_MJ_CLEANUP, so the filter driver rescans the whole capture once per second.
+    // An injected fs that overrides appendFile is a fault-injection seam (test C01 ENOSPC and
+    // wedge simulations write through it); such a fake, and any fs without open(), keeps the
+    // legacy appendFile path so those failure semantics are unchanged.
+    this.persistentWrites = typeof this.fs.open === 'function' && this.fs.appendFile === fs.appendFile
     // How long a finish may wait for one in-flight append. Beyond this the capture is
     // declared interrupted and the original file is kept for recovery instead of being
     // truncated under a write that may still complete.
@@ -91,6 +126,14 @@ class RecordingService {
     // so a unit test can construct the service without spawning anything; every probe call
     // then reports `probe-unavailable` instead of inventing a duration.
     this.probe = probe
+    // F03 hardware-encoder probe: injected process seam plus the result cache. The first
+    // export resolves it, and every later export reuses the same answer for this service.
+    this.encoderSpawn = typeof encoderSpawn === 'function' ? encoderSpawn : spawn
+    this.encoderProbe = typeof encoderProbe === 'function' ? encoderProbe : null
+    this.encoderListTimeoutMs = Math.max(0, Number(encoderTimeouts.list) || ENCODER_LIST_TIMEOUT_MS)
+    this.encoderSmokeTimeoutMs = Math.max(0, Number(encoderTimeouts.smoke) || ENCODER_SMOKE_TIMEOUT_MS)
+    this.videoEncoderProbe = null
+    this.videoEncoderResult = null
     this.sessions = new Map()
   }
 
@@ -133,11 +176,23 @@ class RecordingService {
       await fs.mkdir(sessionDirectory, { recursive: true })
     }
     const inputPath = path.join(sessionDirectory, 'capture.webm')
-    await fs.writeFile(inputPath, Buffer.alloc(0))
+    // F03: the persistent handle IS the file creation for the production path ('w' truncates
+    // or creates eagerly, exactly like the previous empty writeFile). Fakes that cannot open
+    // keep the historical create-then-append sequence.
+    let fileHandle = null
+    if (this.persistentWrites) {
+      fileHandle = await this.fs.open(inputPath, 'w')
+    } else {
+      await fs.writeFile(inputPath, Buffer.alloc(0))
+    }
     const session = {
       id,
       directory: sessionDirectory,
       inputPath,
+      // F03: live write handle for this capture. Only one exists at a time and it is closed
+      // by finishSession / cleanup / dispose; `null` means the legacy appendFile path.
+      fileHandle,
+      persistentWrites: Boolean(fileHandle),
       // Set for workbench sessions: the persistent project this capture belongs to.
       projectId: projectId ? String(projectId) : null,
       // false when the directory belongs to a recording project (or another owner).
@@ -207,6 +262,9 @@ class RecordingService {
       id: sessionId,
       directory: sessionDirectory,
       inputPath: sourcePath,
+      // A re-attached project source is read-only: no capture handle is ever opened on it.
+      fileHandle: null,
+      persistentWrites: false,
       projectId: projectId ? String(projectId) : null,
       ownedDirectory: false,
       state: 'ready',
@@ -235,8 +293,17 @@ class RecordingService {
   // the source file (the project service then owns lifetime and deletion).
   detachSession(sessionId) {
     const id = String(sessionId || '')
-    if (!this.sessions.has(id)) return false
+    const session = this.sessions.get(id)
+    if (!session) return false
     this.sessions.delete(id)
+    // F03: a capture detached without going through finish would otherwise keep its write
+    // handle until process exit. The close is best-effort and chained behind the write queue
+    // so a still-running append is not cut off mid-way.
+    if (session.fileHandle) {
+      session.writeQueue
+        .then(() => this.closeSessionHandle(session))
+        .catch((error) => this.log('Recording file handle close failed:', id, error?.message || error))
+    }
     return true
   }
 
@@ -315,7 +382,30 @@ class RecordingService {
       return this.appendAck(session, chunkSequence)
     }
     const write = session.writeQueue.then(async () => {
-      await this.fs.appendFile(session.inputPath, buffer)
+      if (session.persistentWrites) {
+        // F03: sequential writes against ONE handle (open in startSession). The serialised
+        // queue is what keeps the on-disk order identical to the sequence order; the handle's
+        // file position advances with every write, so no offset bookkeeping is needed here.
+        const handle = session.fileHandle
+        if (!handle) {
+          throw sequenceError('append-closed', 'Recording chunk handle is already closed', {
+            sequence: chunkSequence,
+            committedBytes: session.committedBytes
+          })
+        }
+        const result = await handle.write(buffer)
+        if (!result || result.bytesWritten !== buffer.length) {
+          // A short write means the tail is torn: report it like any other failed append, so
+          // the confirmed prefix is what the ACKs describe and the finish path truncates the
+          // torn tail (C01/02).
+          throw sequenceError('write-incomplete', 'Recording chunk was not written completely', {
+            expected: buffer.length,
+            written: Number(result?.bytesWritten) || 0
+          })
+        }
+      } else {
+        await this.fs.appendFile(session.inputPath, buffer)
+      }
       // C01/02: the offset and the sequence move TOGETHER, after the append resolved.
       session.bytesWritten += buffer.length
       session.committedBytes = session.bytesWritten
@@ -358,6 +448,22 @@ class RecordingService {
       sequence: sequence === null || sequence === undefined ? null : sequence,
       lastChunkSequence: session.lastChunkSequence
     }
+  }
+
+  // F03: the single close entry for a capture's write handle. Idempotent (the field is
+  // cleared before awaiting, so a concurrent finish/cleanup/dispose cannot close twice) and
+  // never throws: a close failure must not turn a finished recording into a failed one, the
+  // bytes are already on disk.
+  async closeSessionHandle(session) {
+    const handle = session?.fileHandle || null
+    if (!handle) return false
+    session.fileHandle = null
+    try {
+      await handle.close()
+    } catch (error) {
+      this.log('Recording file handle close failed:', session?.id, error?.message || error)
+    }
+    return true
   }
 
   // capturing -> finalizing -> ready. Returns the preview descriptor the renderer needs.
@@ -403,6 +509,17 @@ class RecordingService {
         })
       ])
       timedOut = outcome === 'timeout'
+    }
+    // F03: the descriptor must be closed before the tail is stat'ed/truncated (on Windows a
+    // truncate of a file we still hold open can fail with a sharing violation). When the last
+    // append never returned, the handle must stay usable for the recovery path: chaining the
+    // close behind the queue keeps the late bytes writable and still releases the descriptor.
+    if (timedOut) {
+      session.writeQueue
+        .then(() => this.closeSessionHandle(session))
+        .catch((error) => this.log('Recording file handle close failed:', session.id, error?.message || error))
+    } else {
+      await this.closeSessionHandle(session)
     }
     let size = 0
     // Both numbers are captured before a truncation rewinds the accepted sequence: the
@@ -498,6 +615,149 @@ class RecordingService {
     return this.probe || null
   }
 
+  // ---------------------------------------------------------------------------
+  // F03 (review 2026-11-26 §3.3): hardware H.264 encoder detection for `transcode()`.
+  // ---------------------------------------------------------------------------
+  // `ffmpeg -encoders` only proves an encoder is COMPILED INTO the binary, not that the
+  // machine can initialise it (a full ffmpeg build lists h264_nvenc even without an NVIDIA
+  // GPU). The probe therefore runs a one-frame smoke encode per candidate in priority order
+  // and only reports the first one that exits 0. The result is cached per service: the first
+  // export pays the probe cost, every later export reuses it.
+  //
+  // `{ force: true }` re-probes (a driver update mid-run is unlikely, but tests need it).
+  // The resolved object is always `{ ok, encoder, hardwareEncoder, candidates, error }` and
+  // `encoder` is a name safe for buildFfmpegArgs; failures/cached results both degrade to
+  // libx264 instead of throwing.
+  async probeVideoEncoders({ force = false } = {}) {
+    if (!force) {
+      if (this.videoEncoderResult) return { ...this.videoEncoderResult, cached: true }
+      if (this.videoEncoderProbe) return this.videoEncoderProbe
+    }
+    this.videoEncoderResult = null
+    const probe = this.runVideoEncoderProbe()
+      .then((result) => {
+        this.videoEncoderResult = result
+        return result
+      })
+      .finally(() => {
+        if (this.videoEncoderProbe === probe) this.videoEncoderProbe = null
+      })
+    this.videoEncoderProbe = probe
+    return probe
+  }
+
+  // Synchronous last-known answer (libx264 until the probe resolves) for callers that cannot
+  // await, such as an argv builder.
+  getVideoEncoder() {
+    return normalizeVideoEncoder(this.videoEncoderResult?.encoder)
+  }
+
+  // Awaits the cached probe, never rejects: every failure path returns libx264.
+  async resolveVideoEncoder() {
+    try {
+      const result = await this.probeVideoEncoders()
+      return normalizeVideoEncoder(result?.encoder)
+    } catch (error) {
+      this.log('Recording encoder probe failed:', error?.message || error)
+      return VIDEO_ENCODER_SOFTWARE
+    }
+  }
+
+  // Runs one ffmpeg capability probe command and resolves `{ ok, output, error }`. Never
+  // rejects and always settles: a spawn that throws, an `error` event, a non-zero exit and a
+  // timeout all answer `ok:false`, so a broken/injected ffmpeg degrades to software encoding
+  // instead of hiding behind a hung first export.
+  runEncoderProcess(args, timeoutMs) {
+    return new Promise((resolve) => {
+      let settled = false
+      let output = ''
+      let child = null
+      let timer = null
+      const finish = (result) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        resolve(result)
+      }
+      timer = setTimeout(() => {
+        try { child?.kill?.() } catch {}
+        finish({ ok: false, output, error: 'encoder-probe-timeout' })
+      }, Math.max(1, Number(timeoutMs) || 1))
+      timer.unref?.()
+      try {
+        child = this.encoderSpawn(this.ffmpegPath, args, {
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      } catch (error) {
+        finish({ ok: false, output: error?.message || String(error), error: 'encoder-probe-spawn-failed' })
+        return
+      }
+      if (!child) {
+        finish({ ok: false, output, error: 'encoder-probe-spawn-failed' })
+        return
+      }
+      child.stdout?.on?.('data', (chunk) => { output += String(chunk) })
+      child.stderr?.on?.('data', (chunk) => { output += String(chunk) })
+      child.on?.('error', (error) => finish({
+        ok: false,
+        output: `${output}${error?.message || error}`,
+        error: 'encoder-probe-spawn-failed'
+      }))
+      child.on?.('close', (code) => finish({
+        ok: code === 0,
+        output,
+        error: code === 0 ? '' : `encoder-probe-exit-${code}`
+      }))
+    })
+  }
+
+  async runVideoEncoderProbe() {
+    const fallback = { ok: false, encoder: VIDEO_ENCODER_SOFTWARE, hardwareEncoder: '', candidates: [], error: '' }
+    try {
+      if (this.encoderProbe) {
+        // Injected capability probe: `{ encoder }` (preferred name) or an encoders array.
+        const injected = await this.encoderProbe({ ffmpegPath: this.ffmpegPath })
+        const chosen = normalizeVideoEncoder(
+          Array.isArray(injected) || injected instanceof Set ? '' : (injected?.encoder ?? injected)
+        )
+        return {
+          ok: true,
+          encoder: chosen,
+          hardwareEncoder: chosen === VIDEO_ENCODER_SOFTWARE ? '' : chosen,
+          candidates: Array.isArray(injected?.candidates) ? injected.candidates.slice() : [],
+          error: ''
+        }
+      }
+      const listing = await this.runEncoderProcess(
+        ['-hide_banner', '-nostdin', '-encoders'],
+        this.encoderListTimeoutMs
+      )
+      if (!listing.ok) return { ...fallback, error: listing.error || 'encoder-list-failed' }
+      const compiled = parseFfmpegEncoders(listing.output)
+      const candidates = VIDEO_ENCODER_HARDWARE.filter((name) => compiled.has(name))
+      for (const candidate of candidates) {
+        // 1 frame at 64x64 into the null muxer: long enough to initialise the driver stack,
+        // far too short to affect the first export's latency budget.
+        const smoke = await this.runEncoderProcess([
+          '-hide_banner', '-nostdin', '-loglevel', 'error',
+          '-f', 'lavfi', '-i', 'color=c=black:s=64x64:r=1',
+          '-frames:v', '1',
+          '-c:v', candidate,
+          '-f', 'null', '-'
+        ], this.encoderSmokeTimeoutMs)
+        if (smoke.ok) {
+          return { ok: true, encoder: candidate, hardwareEncoder: candidate, candidates, error: '' }
+        }
+      }
+      // Compiled in but none initialises here (no GPU / driver): software is the safe answer.
+      return { ok: true, encoder: VIDEO_ENCODER_SOFTWARE, hardwareEncoder: '', candidates, error: '' }
+    } catch (error) {
+      this.log('Recording encoder probe failed:', error?.message || error)
+      return { ...fallback, error: error?.message || String(error) }
+    }
+  }
+
   // E0 integration: probe the sealed source. `crossCheckMs` is the renderer's own duration
   // estimate (a UI initial value only); the probe result is what every range is validated
   // against. Resolves `{ ok: true, metadata }` or `{ ok: false, code }`.
@@ -558,6 +818,9 @@ class RecordingService {
       return false
     }
     this.sessions.delete(session.id)
+    // F03: release the capture handle before the directory goes away; an open handle would
+    // turn the recursive rm into a sharing-violation on Windows.
+    await this.closeSessionHandle(session)
     if (session.process && typeof session.process.kill === 'function') {
       try { session.process.kill() } catch {}
       session.process = null
@@ -612,6 +875,12 @@ class RecordingService {
   //
   // `options` is forwarded to buildFfmpegArgs; `{ audio: true }` muxes the recorded audio
   // track as AAC and `{ audio: false }` (also the legacy three-argument call) keeps `-an`.
+  //
+  // F03: the first export resolves the cached hardware-encoder probe. If a hardware encoder
+  // was selected but the encode fails (driver glitch, GPU busy), it is retried ONCE with
+  // libx264 against the same target; the output extension, muxer and audio mapping are
+  // produced by the same builder, so the fallback is invisible to the caller apart from the
+  // extra latency.
   async transcode(sessionId, outputPath, onProgress = () => {}, options = {}) {
     const session = this.getSession(sessionId)
     if (!READABLE_STATES.includes(session.state)) throw new Error('录制会话尚未完成')
@@ -619,8 +888,23 @@ class RecordingService {
     const target = path.resolve(String(outputPath || ''))
     if (!target.toLowerCase().endsWith('.mp4')) throw new Error('输出文件必须为 MP4')
     await fs.mkdir(path.dirname(target), { recursive: true })
-    const args = buildFfmpegArgs(session.inputPath, target, options)
+    const transcodeOptions = options && typeof options === 'object' ? options : {}
+    const argsFor = (encoder) => buildFfmpegArgs(session.inputPath, target, {
+      ...transcodeOptions,
+      videoEncoder: encoder
+    })
+    const encoder = await this.resolveVideoEncoder()
+    try {
+      return await this.runTranscode(session, target, argsFor(encoder), onProgress)
+    } catch (error) {
+      if (encoder === VIDEO_ENCODER_SOFTWARE) throw error
+      this.log('Hardware encoding failed, retrying with libx264:', encoder, error?.message || error)
+      return this.runTranscode(session, target, argsFor(VIDEO_ENCODER_SOFTWARE), onProgress)
+    }
+  }
 
+  // One ffmpeg run for transcode(). The caller owns retry/fallback decisions.
+  runTranscode(session, target, args, onProgress) {
     return new Promise((resolve, reject) => {
       let stderr = ''
       let settled = false

@@ -15,6 +15,9 @@ const {
   sanitizeAnnotationSnapshot
 } = require('../../../record/annotation-utils')
 const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
+// N03: audio-track presence decides whether a pause analysis is even attempted (a silent
+// recording has nothing to detect; the editor must be told why instead of offering a no-op).
+const { projectHasAudio } = require('../../../shared/recording-project-schema')
 const { readPngSize } = require('../../services/capture-geometry')
 const { createRecordingSalvage, salvageAssetName } = require('../../services/recording-salvage')
 
@@ -146,6 +149,443 @@ function pinRecordFrame(pinDomain, projectId, payload = {}) {
   }
 }
 
+// ---------------------------------------------------------------- N03 HUD / pause analysis (pure)
+//
+// docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3. Two additive features,
+// both built on the R5 event track and kept pure here so node tests can drive them without
+// Electron, ffmpeg or a renderer:
+//   * keystroke capsules: a bounded, validated subset of wall-clock shortcut events that the
+//     control bar reports on its state channel; mapped to media time with the same pause-aware
+//     clock the pointer track uses;
+//   * pause suggestions: silence ranges detected by ffmpeg are merged with pointer-idle ranges
+//     from the event track before anything is offered to the editor.
+const KEYSTROKE_LIMIT = 2000
+const KEYSTROKE_BATCH_LIMIT = 500
+const KEYSTROKE_COMBO_MAX_LENGTH = 48
+const KEYSTROKE_NAMED_KEY = 'Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|(?:F(?:[1-9]|1[0-2]))'
+const KEYSTROKE_CHORD_PATTERN = new RegExp(`^(?:(?:Ctrl|Alt|Shift|Win)\\+){1,4}(?:[A-Z0-9]|${KEYSTROKE_NAMED_KEY})$`)
+const KEYSTROKE_SINGLE_PATTERN = new RegExp(`^(?:${KEYSTROKE_NAMED_KEY})$`)
+
+// Silencedetect + merge defaults. Exported so the editor contract and tests share one table.
+const SILENCE_LIMITS = Object.freeze({
+  // ffmpeg `silencedetect=noise=<db>dB:d=<seconds>`: -35 dB catches room tone without
+  // clipping quiet speech onsets, and 0.7 s is the shortest "dead air" a viewer notices.
+  noiseDb: -35,
+  minSilenceMs: 700,
+  // Keep this much audio on each side of a suggested cut so a cut can never clip a word.
+  keepPaddingMs: 180,
+  // Adjacent silent spans separated by less than this are one pause for the user.
+  mergeGapMs: 250,
+  minCutMs: 300,
+  // Pointer-idle evidence (R5 dwell rule uses 1.2 s / 0.04; pause cuts are stricter so a
+  // deliberate on-screen demo is never classified as dead air).
+  minIdleMs: 1200,
+  idleDrift: 0.02,
+  idleOverlap: 0.6,
+  analysisTimeoutMs: 20000,
+  maxStderrBytes: 4 * 1024 * 1024,
+  maxCuts: 60
+})
+
+function isValidKeystrokeCombo(value) {
+  // Deliberately NOT trimmed: surrounding whitespace means the combo was not produced by the
+  // capture policy, so it is rejected as invalid rather than silently normalised.
+  const combo = typeof value === 'string' ? value : ''
+  if (!combo || combo.length > KEYSTROKE_COMBO_MAX_LENGTH || combo !== combo.trim()) return false
+  return KEYSTROKE_CHORD_PATTERN.test(combo) || KEYSTROKE_SINGLE_PATTERN.test(combo)
+}
+
+// Raw renderer batches are `[{ at, combo }]`; only valid combos and finite times survive and
+// the batch itself is bounded so one buggy state report cannot grow the main-process buffer.
+function sanitizeKeystrokeBatch(value) {
+  if (!Array.isArray(value)) return []
+  const entries = []
+  for (const entry of value.slice(0, KEYSTROKE_BATCH_LIMIT)) {
+    if (!entry || typeof entry !== 'object') continue
+    if (!isValidKeystrokeCombo(entry.combo)) continue
+    const at = Number(entry.at)
+    if (!Number.isFinite(at) || at < 0) continue
+    entries.push({ at, combo: String(entry.combo).trim() })
+  }
+  return entries
+}
+
+function sanitizePausedIntervals(value) {
+  if (!Array.isArray(value)) return []
+  const intervals = []
+  for (const entry of value.slice(0, 1000)) {
+    const startWall = Number(entry?.startWall)
+    const endWall = Number(entry?.endWall)
+    if (!Number.isFinite(startWall) || !Number.isFinite(endWall) || endWall < startWall) continue
+    intervals.push({ startWall, endWall })
+  }
+  intervals.sort((left, right) => left.startWall - right.startWall)
+  return intervals
+}
+
+// Total pause duration that had ELAPSED at `at` (contract §2.2). Overlapping renderer
+// intervals are clamped so a buggy payload cannot over-subtract.
+function pausedMsElapsed(intervals, at) {
+  let total = 0
+  let coveredUntil = -Infinity
+  for (const interval of intervals) {
+    if (interval.startWall > at) break
+    const start = Math.max(interval.startWall, coveredUntil)
+    if (start >= at) break
+    total += Math.min(interval.endWall, at) - start
+    coveredUntil = Math.max(coveredUntil, interval.endWall)
+  }
+  return total
+}
+
+// DEV-04: an event whose wall time falls inside a paused interval happened while the media clock
+// was stopped. The control bar never reports such events (it only captures in 'recording'), but
+// the global channel can see the keyboard during a pause, so the mapping drops them explicitly.
+function isWallInPausedInterval(intervals, at) {
+  for (const interval of intervals) {
+    if (at >= interval.startWall && at < interval.endWall) return true
+  }
+  return false
+}
+
+// Wall-clock shortcut events -> media-time capsules. Same rules as the pointer track: negative
+// and beyond-duration entries are dropped, output is time-ascending and bounded.
+function buildKeystrokeTrack(entries, timing = {}) {
+  const durationMs = Math.max(0, Math.round(Number(timing.durationMs) || 0))
+  const mediaStartedAtWall = Number(timing.mediaStartedAtWall)
+  if (!Number.isFinite(mediaStartedAtWall) || durationMs <= 0) return []
+  const pausedIntervals = sanitizePausedIntervals(timing.pausedIntervals)
+  const capsules = []
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!isValidKeystrokeCombo(entry?.combo)) continue
+    const at = Number(entry?.at)
+    if (!Number.isFinite(at)) continue
+    if (isWallInPausedInterval(pausedIntervals, at)) continue
+    const tMs = Math.round(at - mediaStartedAtWall - pausedMsElapsed(pausedIntervals, at))
+    if (!Number.isFinite(tMs) || tMs < 0 || tMs > durationMs) continue
+    capsules.push({ tMs, combo: String(entry.combo).trim() })
+  }
+  capsules.sort((left, right) => left.tMs - right.tMs)
+  const deduped = []
+  for (const entry of capsules) {
+    const previous = deduped[deduped.length - 1]
+    if (previous && previous.tMs === entry.tMs && previous.combo === entry.combo) continue
+    deduped.push(entry)
+  }
+  return deduped.slice(0, KEYSTROKE_LIMIT)
+}
+
+// DEV-04: the control bar (keydown in this window) and the global native keyboard channel are
+// two sources for the same physical press while the bar has focus. Both stamp `Date.now()`-based
+// wall times within a few ms of each other. Only a control-bar report and a global report of the
+// SAME physical press may collapse into one event, so the merge keeps the source identity:
+//   * same-source consecutive presses are never deduped (two deliberate Ctrl+Z presses 90 ms
+//     apart must stay two events);
+//   * a cross-source pair needs the same combo and an absolute time distance within the window,
+//     and each entry can be paired at most once (one-to-one).
+// 120 ms is comfortably below a deliberate double-press and far above hook latency.
+const KEYSTROKE_SOURCE_DEDUPE_MS = 120
+const KEYSTROKE_SOURCE_CONTROL_BAR = 0
+const KEYSTROKE_SOURCE_GLOBAL = 1
+
+function mergeKeystrokeSources(primary, global, { dedupeMs = KEYSTROKE_SOURCE_DEDUPE_MS } = {}) {
+  const window = Math.max(0, Math.round(Number(dedupeMs) || 0))
+  const byCombo = new Map()
+  const collect = (source, sourceId) => {
+    for (const entry of Array.isArray(source) ? source : []) {
+      if (!isValidKeystrokeCombo(entry?.combo)) continue
+      const at = Number(entry?.at)
+      if (!Number.isFinite(at) || at < 0) continue
+      const combo = String(entry.combo).trim()
+      const group = byCombo.get(combo) || []
+      group.push({ at, combo, source: sourceId })
+      byCombo.set(combo, group)
+    }
+  }
+  collect(primary, KEYSTROKE_SOURCE_CONTROL_BAR)
+  collect(global, KEYSTROKE_SOURCE_GLOBAL)
+
+  const merged = []
+  for (const [combo, entries] of byCombo) {
+    // P2-06 follow-up: pair the two sources in PHYSICAL-PRESS ORDER, not by nearest distance.
+    // The same physical press is reported by both sources in the same order, so a monotone
+    // one-to-one match maximises the number of paired presses. Nearest-first can cross two
+    // complete double reports (control bar 110 ms late: global 1000/1090, control 1110/1200)
+    // and turn two presses into three capsules. Different combos can never pair, so grouping by
+    // combo keeps the order constraint local to a same-label sequence.
+    const controlBar = entries.filter((entry) => entry.source === KEYSTROKE_SOURCE_CONTROL_BAR)
+      .sort((left, right) => left.at - right.at)
+    const globalEntries = entries.filter((entry) => entry.source === KEYSTROKE_SOURCE_GLOBAL)
+      .sort((left, right) => left.at - right.at)
+    let controlIndex = 0
+    let globalIndex = 0
+    while (controlIndex < controlBar.length && globalIndex < globalEntries.length) {
+      const controlEntry = controlBar[controlIndex]
+      const globalEntry = globalEntries[globalIndex]
+      if (Math.abs(controlEntry.at - globalEntry.at) <= window) {
+        // One event for one physical press: keep the earlier wall time (the global hook samples
+        // at key-down, before the renderer's keydown batch), never two events for the same press.
+        merged.push({ at: Math.min(controlEntry.at, globalEntry.at), combo })
+        controlIndex += 1
+        globalIndex += 1
+      } else if (controlEntry.at < globalEntry.at) {
+        // Too early to pair with this (or any later) global report: the press is unpaired.
+        merged.push({ at: controlEntry.at, combo })
+        controlIndex += 1
+      } else {
+        merged.push({ at: globalEntry.at, combo })
+        globalIndex += 1
+      }
+    }
+    for (; controlIndex < controlBar.length; controlIndex += 1) merged.push({ at: controlBar[controlIndex].at, combo })
+    for (; globalIndex < globalEntries.length; globalIndex += 1) merged.push({ at: globalEntries[globalIndex].at, combo })
+  }
+  merged.sort((left, right) => left.at - right.at || (left.combo < right.combo ? -1 : left.combo > right.combo ? 1 : 0))
+  // The per-source caps are already bounded; this keeps the merged list inside the same budget.
+  return merged.slice(0, KEYSTROKE_LIMIT)
+}
+
+function emptyEventTrack(durationMs) {
+  return {
+    schemaVersion: 1,
+    durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+    sampledAtHz: EVENT_TRACK_SAMPLED_HZ,
+    pointer: [],
+    clicks: [],
+    truncated: false
+  }
+}
+
+// ffmpeg `silencedetect` writes its findings to stderr as:
+//   [silencedetect @ ...] silence_start: 12.345
+//   [silencedetect @ ...] silence_end: 15.678 | silence_duration: 3.333
+// A dangling start at EOF is closed at the recording duration (a take that ends in silence).
+function parseSilenceDetectOutput(text, { durationMs = 0 } = {}) {
+  const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+  const clampMs = (seconds) => {
+    const ms = Math.round(Number(seconds) * 1000)
+    if (!Number.isFinite(ms)) return null
+    return Math.max(0, limit > 0 ? Math.min(ms, limit) : ms)
+  }
+  const starts = []
+  const ranges = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const startMatch = /silence_start:\s*(-?\d+(?:\.\d+)?)/.exec(line)
+    if (startMatch) {
+      const startMs = clampMs(startMatch[1])
+      if (startMs !== null) starts.push(startMs)
+      continue
+    }
+    const endMatch = /silence_end:\s*(-?\d+(?:\.\d+)?)/.exec(line)
+    if (endMatch && starts.length > 0) {
+      const endMs = clampMs(endMatch[1])
+      const startMs = starts.pop()
+      if (endMs !== null && endMs > startMs) ranges.push({ startMs, endMs })
+    }
+  }
+  if (starts.length > 0 && limit > 0) {
+    const startMs = starts[starts.length - 1]
+    if (limit > startMs) ranges.push({ startMs, endMs: limit })
+  }
+  ranges.sort((left, right) => left.startMs - right.startMs)
+  const merged = []
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1]
+    if (previous && range.startMs <= previous.endMs) previous.endMs = Math.max(previous.endMs, range.endMs)
+    else merged.push({ ...range })
+  }
+  return merged
+}
+
+// Consecutive pointer samples that stay within `idleDrift` of the run anchor for at least
+// `minIdleMs` are a pointer-idle range. A sampling gap longer than a pause-sized hole ends the
+// run instead of bridging two unrelated stays.
+function computePointerIdleRanges(pointer, options = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(options || {}) }
+  const samples = []
+  for (const entry of Array.isArray(pointer) ? pointer : []) {
+    const tMs = Number(entry?.tMs)
+    const x = Number(entry?.x)
+    const y = Number(entry?.y)
+    if (!Number.isFinite(tMs) || !Number.isFinite(x) || !Number.isFinite(y)) continue
+    samples.push({ tMs, x, y })
+  }
+  samples.sort((left, right) => left.tMs - right.tMs)
+  const maxGapMs = Math.max(1000, settings.minIdleMs)
+  const ranges = []
+  let anchor = null
+  let last = null
+  const flush = () => {
+    if (anchor && last && last.tMs - anchor.tMs >= settings.minIdleMs) {
+      ranges.push({ startMs: anchor.tMs, endMs: last.tMs })
+    }
+    anchor = null
+    last = null
+  }
+  for (const sample of samples) {
+    if (anchor && last) {
+      const gap = sample.tMs - last.tMs
+      const drift = Math.hypot(sample.x - anchor.x, sample.y - anchor.y)
+      if (gap > maxGapMs || drift > settings.idleDrift) {
+        flush()
+      }
+    }
+    if (!anchor) anchor = sample
+    last = sample
+  }
+  flush()
+  ranges.sort((left, right) => left.startMs - right.startMs)
+  return ranges
+}
+
+function overlapMs(range, covers) {
+  let total = 0
+  for (const cover of covers) {
+    const start = Math.max(range.startMs, cover.startMs)
+    const end = Math.min(range.endMs, cover.endMs)
+    if (end > start) total += end - start
+  }
+  return total
+}
+
+// The user-facing "one click remove dead air" suggestion list. Audio silence is the trigger;
+// pointer-idle ranges are corroborating evidence (a silent span where the mouse keeps moving is
+// someone demonstrating something, not dead air). Padding is trimmed from both sides, short
+// suggestions are dropped, close ones are merged and the list is capped.
+function derivePauseCuts({
+  silenceRanges,
+  pointer = [],
+  durationMs = 0,
+  hasEventTrack = false,
+  options = {}
+} = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(options || {}) }
+  const duration = Math.max(0, Math.round(Number(durationMs) || 0))
+  if (!(duration > 0)) return { ok: false, code: 'duration-unavailable' }
+  const idleRanges = hasEventTrack ? computePointerIdleRanges(pointer, settings) : []
+  const silence = []
+  let silenceCandidates = 0
+  for (const range of Array.isArray(silenceRanges) ? silenceRanges : []) {
+    const startMs = Math.max(0, Math.min(duration, Math.round(Number(range?.startMs) || 0)))
+    const endMs = Math.max(0, Math.min(duration, Math.round(Number(range?.endMs) || 0)))
+    if (endMs - startMs < settings.minSilenceMs) continue
+    silenceCandidates += 1
+    if (hasEventTrack && overlapMs({ startMs, endMs }, idleRanges) < (endMs - startMs) * settings.idleOverlap) continue
+    silence.push({ startMs, endMs })
+  }
+  const cuts = []
+  // Merge first, while the ranges are still raw: two silent spans separated by a short blip are
+  // one pause for the user, and padding them separately would keep (and export) that blip.
+  const mergedSilence = []
+  for (const range of silence) {
+    const previous = mergedSilence[mergedSilence.length - 1]
+    if (previous && range.startMs - previous.endMs <= settings.mergeGapMs) {
+      previous.endMs = Math.max(previous.endMs, range.endMs)
+      continue
+    }
+    mergedSilence.push({ ...range })
+  }
+  for (const range of mergedSilence) {
+    const startMs = range.startMs + settings.keepPaddingMs
+    const endMs = range.endMs - settings.keepPaddingMs
+    if (endMs - startMs < settings.minCutMs) continue
+    cuts.push({ startMs, endMs })
+  }
+  if (cuts.length === 0) {
+    return {
+      ok: false,
+      code: hasEventTrack && idleRanges.length === 0 && silenceCandidates > 0 ? 'no-idle' : 'nothing-to-cut'
+    }
+  }
+  const capped = cuts.slice(0, settings.maxCuts)
+  const removedMs = capped.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+  return {
+    ok: true,
+    cuts: capped,
+    removedMs,
+    silenceMs: capped.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0),
+    pointerIdleRanges: idleRanges.length
+  }
+}
+
+// Runs `ffmpeg -af silencedetect ... -f null -` and resolves a stable result. It never rejects:
+// the caller only needs "ok/code" so the editor can explain why one-click cutting is offered or
+// not. `spawnProcess` is injected, which is how the test drives a fake ffmpeg stderr stream.
+function runSilenceDetect({
+  ffmpegPath,
+  sourcePath,
+  durationMs = 0,
+  spawnProcess = null,
+  limits = {},
+  setTimeout: setTimeoutImpl = setTimeout,
+  clearTimeout: clearTimeoutImpl = clearTimeout
+} = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(limits || {}) }
+  if (typeof ffmpegPath !== 'string' || !ffmpegPath) return Promise.resolve({ ok: false, code: 'analysis-unavailable' })
+  if (typeof sourcePath !== 'string' || !sourcePath) return Promise.resolve({ ok: false, code: 'source-unavailable' })
+  if (typeof spawnProcess !== 'function') return Promise.resolve({ ok: false, code: 'analysis-unavailable' })
+  const seconds = Math.max(0.1, settings.minSilenceMs / 1000)
+  const args = [
+    '-hide_banner',
+    '-nostdin',
+    '-i', sourcePath,
+    '-map', '0:a:0',
+    '-vn',
+    '-af', `silencedetect=noise=${settings.noiseDb}dB:d=${seconds}`,
+    '-f', 'null',
+    '-'
+  ]
+  return new Promise((resolve) => {
+    let settled = false
+    let stderr = ''
+    let timer = 0
+    let child = null
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeoutImpl(timer)
+      resolve(value)
+    }
+    const capture = (chunk) => {
+      if (stderr.length >= settings.maxStderrBytes) return
+      stderr += String(chunk)
+      if (stderr.length > settings.maxStderrBytes) stderr = stderr.slice(-settings.maxStderrBytes)
+    }
+    try {
+      child = spawnProcess(ffmpegPath, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    } catch (error) {
+      finish({ ok: false, code: 'analysis-failed' })
+      return
+    }
+    if (!child || typeof child.on !== 'function') {
+      finish({ ok: false, code: 'analysis-failed' })
+      return
+    }
+    if (child.stderr && typeof child.stderr.on === 'function') child.stderr.on('data', capture)
+    child.on('error', () => finish({ ok: false, code: 'analysis-failed' }))
+    child.on('close', (code) => {
+      if (Number(code) === 0) {
+        finish({ ok: true, ranges: parseSilenceDetectOutput(stderr, { durationMs }) })
+        return
+      }
+      if (/matches no streams|does not contain any stream/i.test(stderr)) {
+        finish({ ok: false, code: 'no-audio' })
+        return
+      }
+      if (/No such file or directory|Error opening input/i.test(stderr)) {
+        finish({ ok: false, code: 'source-unavailable' })
+        return
+      }
+      finish({ ok: false, code: 'analysis-failed' })
+    })
+    timer = setTimeoutImpl(() => {
+      try { child.kill?.() } catch {}
+      finish({ ok: false, code: 'analysis-timeout' })
+    }, settings.analysisTimeoutMs)
+    if (timer && typeof timer.unref === 'function') timer.unref()
+  })
+}
+
 function createRecordDomain(deps) {
   const {
     app,
@@ -211,10 +651,168 @@ function createRecordDomain(deps) {
   const editorWindows = new Map()
   // Capture configuration chosen by the workbench for the region flow, plus the mode that selection
   // implies. The capture overlay returns only a rectangle, so the workbench's just-picked parameters
-  // travel through this one-shot slot that createRecordWindow() consumes. The timestamp bounds how
-  // long a cancelled overlay can leak its config into an unrelated later capture.
+  // travel through this one-shot slot that createRecordWindow() consumes.
+  //
+  // P1-01 follow-up: the slot is BOUND to the overlay request that opened it. createRecordWindow()
+  // only consumes it when the rectangle comes from that same request id (the quick entry never
+  // carries one), and cancellation/close/supersede revokes it. The workbench start waits for the
+  // outcome receipt, so the one-shot shortcut opt-in is consumed only after a control window was
+  // really created — never when the selection overlay merely opened, was cancelled or was replaced.
+  //
+  // P1-01/P1-02 re-review: the binding lasts until the request is confirmed or revoked; there is NO
+  // wall-clock expiry. A selection that stays open longer than a few minutes is still the same
+  // request, so its audio/quality/mode/shortcut choices must still be the ones that start the take
+  // (the old 5-minute TTL silently restarted from the persisted preferences, re-enabling audio the
+  // user had just switched off). Creation re-checks this registry after every await and aborts
+  // without creating a window when the request was revoked meanwhile.
   let pendingRegionCapture = null
-  const REGION_PENDING_TTL_MS = 5 * 60 * 1000
+  const regionCaptureRequests = new Map() // requestId -> { settle }
+
+  // d4993a2 delivery re-review (P1-01/P1-02): creating a recording window is a TRANSACTION, not a
+  // series of side effects. The frame/control windows are created hidden and registered below as
+  // `stagedCreations`; they become THE active take (recordWindow/recordFrameWindow) only after BOTH
+  // pages finished loading while their request was still live. Until then they are invisible to
+  // every ownership check (isTaskActive/requireRecordSender/focusActive), so a cancelled request
+  // or a failed page load can never leave a bar that still starts a project with the old
+  // authorization.
+  const stagedCreations = new Map() // controlWindow -> creation record
+  // requestId -> shared in-flight creation promise. The overlay's record button is not
+  // single-flight (the renderer can invoke it again before the first IPC returns), so a second
+  // confirm of the SAME overlay request must JOIN the first creation instead of building a second
+  // frame/control pair and revoking its own request.
+  const regionCreations = new Map()
+  // getDisplayMedia is a handler on the SHARED default session, so only the PUBLISHED take installs
+  // it and only its close path unregisters it: a losing/aborted creation must never overwrite, or
+  // later null, the winner's handler.
+  let displayMediaHandlerOwner = null
+  // The ready IPC that normally asks for `record:init` is only authorized once the take is
+  // published, so the publish path pushes init itself. This guard keeps exactly one init push.
+  function sendRecordInitOnce(win) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return false
+    if (!win._recordInit || win._recordInitSent === true) return false
+    win._recordInitSent = true
+    win.webContents.send('record:init', win._recordInit)
+    return true
+  }
+
+  // Releases the hidden windows of ONE unpublished creation attempt. It deliberately leaves the
+  // published take alone: a loser only removes its own windows and, only while it STILL owns the
+  // shared-session display-media handler, unregisters that handler.
+  function disposeStagedCreation(creation) {
+    if (!creation || creation.disposed === true) return false
+    creation.disposed = true
+    const control = creation.controlWindow
+    const frame = creation.frameWindow
+    // Close the annotation frame first: the control's close path must not be reached while the
+    // frame still believes it has an owner.
+    if (frame && typeof frame.isDestroyed === 'function' && !frame.isDestroyed()) frame.close()
+    if (control && typeof control.isDestroyed === 'function' && !control.isDestroyed()) control.close()
+    if (control && stagedCreations.get(control) === creation) stagedCreations.delete(control)
+    if (displayMediaHandlerOwner && displayMediaHandlerOwner === control) {
+      displayMediaHandlerOwner = null
+      try {
+        if (creation.session && typeof creation.session.setDisplayMediaRequestHandler === 'function') {
+          creation.session.setDisplayMediaRequestHandler(null)
+        }
+      } catch (error) {
+        log('Display media handler cleanup failed:', error?.message || error)
+      }
+    }
+    return true
+  }
+
+  function cancelStagedCreationsForRequest(requestId) {
+    const id = text(requestId)
+    if (!id) return 0
+    let cancelled = 0
+    for (const creation of [...stagedCreations.values()]) {
+      if (creation.requestId !== id) continue
+      creation.cancelled = true
+      if (disposeStagedCreation(creation)) cancelled += 1
+    }
+    return cancelled
+  }
+
+  function disposeAllStagedCreations() {
+    for (const creation of [...stagedCreations.values()]) disposeStagedCreation(creation)
+  }
+
+  // Emergency teardown for a creation that already published but could not finish its post-publish
+  // setup (show/init push). It clears the active ownership first, then reuses the staged teardown.
+  function teardownPublishedCreation(creation) {
+    const control = creation?.controlWindow
+    if (recordWindow === control) recordWindow = null
+    if (recordFrameWindow && recordFrameWindow === creation?.frameWindow) recordFrameWindow = null
+    return disposeStagedCreation(creation)
+  }
+
+  // Publishes a fully loaded creation as THE active take. Every check runs synchronously, so no
+  // other entry can interleave between the ownership proof and the publish.
+  //
+  // The only ownership rule is "a LIVE take wins": a take that was published and already closed
+  // while this creation was loading no longer owns the write route, so this creation may publish
+  // (the independent verifier's S6 scenario: dropping it silently would lose a confirmed region
+  // request in a narrow race). Racing entries are still serialised by the same check - only the
+  // first publisher is active when the loser reaches this point, and the loser takes the
+  // focus/abort branch instead.
+  function publishStagedCreation(creation) {
+    if (!creation || creation.disposed === true || creation.closedEarly === true || creation.cancelled === true) return false
+    const control = creation.controlWindow
+    const frame = creation.frameWindow
+    if (!control || (typeof control.isDestroyed === 'function' && control.isDestroyed())) return false
+    if (frame && typeof frame.isDestroyed === 'function' && frame.isDestroyed()) return false
+    if (recordWindow && !recordWindow.isDestroyed()) return false
+    // A published frame whose control bar is gone would be orphaned by this publish: refuse instead
+    // of overwriting the module-level frame reference (the closed-control handler normally clears
+    // both, this is the defensive belt for a destroyed-without-close window).
+    if (recordFrameWindow && !recordFrameWindow.isDestroyed() && recordFrameWindow !== frame) return false
+    stagedCreations.delete(control)
+    recordFrameWindow = frame
+    recordWindow = control
+    return true
+  }
+
+  // Resolves the waiting workbenchStart() for one region request. created=true is sent by
+  // createRecordWindow() after the control window exists; anything else (closed, replaced,
+  // superseded) is a cancellation and drops the pending slot it owns.
+  function settleRegionCaptureRequest(requestId, created) {
+    const request = regionCaptureRequests.get(requestId)
+    // A duplicate/late settle must never leave a slot bound to an already-settled request: an id
+    // is unique for the app lifetime, so a matching slot without a registered request is stale.
+    if (pendingRegionCapture && pendingRegionCapture.requestId === requestId) pendingRegionCapture = null
+    // A cancelled/superseded request must also tear down whatever its in-flight creation already
+    // staged (a hidden control/frame pair and its shared-session media handler). Teardown happens
+    // before the workbench receipt settles so the receipt never observably precedes the cleanup.
+    if (created !== true) cancelStagedCreationsForRequest(requestId)
+    if (!request) return false
+    regionCaptureRequests.delete(requestId)
+    request.settle(created === true)
+    return true
+  }
+
+  // A region request is live only while BOTH halves exist: the registered overlay request (its
+  // workbench receipt is still waiting) and the one-shot capture slot that request created. A
+  // cancelled/replaced overlay removes the registration; a supersede removes/replaces the slot.
+  function liveRegionCapture(requestId) {
+    if (!requestId) return null
+    const request = regionCaptureRequests.get(requestId)
+    if (!request) return null
+    const pending = pendingRegionCapture
+    if (!pending || pending.requestId !== requestId) return null
+    return { request, pending }
+  }
+
+  // Revoke a region request without claiming a take. Safe for an already-settled request (a late
+  // duplicate) and for a slot whose registration is already gone.
+  function revokeRegionCapture(requestId) {
+    return settleRegionCaptureRequest(requestId, false)
+  }
+
+  // Quit/shutdown path: never leave a workbench start awaiting an overlay that will not close.
+  function abandonRegionCaptureRequests() {
+    for (const requestId of [...regionCaptureRequests.keys()]) settleRegionCaptureRequest(requestId, false)
+    pendingRegionCapture = null
+  }
   // token -> { sourceId, title, appName, width, height, expiresAt, used }. The source id is the
   // secret this registry protects: it never appears in a channel payload.
   const windowSourceTokens = new Map()
@@ -231,6 +829,10 @@ function createRecordDomain(deps) {
   // process-wide instance (one hook), used only while a demo-enhanced capture runs.
   let pointerTrackService = null
   let activeEventTrack = null
+  // N03: projectId -> one pause-suggestion answer per editor lifetime. Silence detection decodes
+  // the whole audio track, so re-running it on every event-track read would be wasteful; the cache
+  // is dropped when the source is re-derived (reload/salvage) because the old answer may not apply.
+  const pauseAnalysisCache = new Map()
 
   let workbench = {}
   try {
@@ -791,7 +1393,29 @@ function createRecordDomain(deps) {
     const wasLive = previous.status === 'recording' || previous.status === 'paused'
     const isLive = next.status === 'recording' || next.status === 'paused'
     if ((wasLive || isLive) && previous.status !== next.status) refreshTray()
+    // DEV-04: global shortcut capture is only live while the take is actually RECORDING. The
+    // control bar's authoritative status is the only signal the main process gets for
+    // pause/resume, so enable exactly on pause <-> record transitions (countdown/finalizing are
+    // off). The native side stops delivering as soon as the disable returns, and the finish-time
+    // media mapping also drops anything whose wall time falls inside a paused interval.
+    if (previous.status !== next.status) syncEventTrackKeyboard(next.status === 'recording')
     return next
+  }
+
+  // DEV-04: forwards the recording/paused state to the event-track host when the take opted into
+  // global shortcut capture. A no-op for pointer-only takes (the R5 gate is unchanged).
+  function syncEventTrackKeyboard(recording) {
+    const active = activeEventTrack
+    if (!active || !active.keystrokes) return false
+    active.keyboardEnabled = recording === true
+    try {
+      return typeof active.service.setKeystrokesEnabled === 'function'
+        ? active.service.setKeystrokesEnabled(recording === true)
+        : false
+    } catch (error) {
+      log('Pointer track keyboard toggle failed:', error?.message || error)
+      return false
+    }
   }
 
   function activeRecordingState() {
@@ -992,6 +1616,10 @@ function createRecordDomain(deps) {
       // R5 §2.2/§5: session-only "demo enhance" switch (never persisted to settings). It travels on
       // the frozen workbench config object; the domain gates event collection on it.
       demoEnhance: value.demoEnhance === true,
+      // DEV-04: session-only "record shortcuts from other applications" switch. Same transport as
+      // demoEnhance (no new channel); the domain starts the keyboard channel only when it and the
+      // take are both live. Kept independent so a user can capture shortcuts without pointer events.
+      demoKeystrokes: value.demoKeystrokes === true,
       audio: nested
         ? {
             system: nested.system,
@@ -1033,6 +1661,8 @@ function createRecordDomain(deps) {
       // R5 §2.2: default off; the workbench switch is session-only, so there is no settings
       // fallback to consult.
       demoEnhance: provided.demoEnhance === true,
+      // DEV-04: default off; opt-in global shortcut capture for this take only.
+      demoKeystrokes: provided.demoKeystrokes === true,
       audio: {
         system: pickValue(audio.system, stored.audioSystem) !== false,
         microphone: pickValue(audio.microphone, stored.audioMicrophone) === true,
@@ -1179,32 +1809,83 @@ function createRecordDomain(deps) {
     }
   }
 
-  function sanitizePausedIntervals(value) {
-    if (!Array.isArray(value)) return []
-    const intervals = []
-    for (const entry of value.slice(0, 1000)) {
-      const startWall = Number(entry?.startWall)
-      const endWall = Number(entry?.endWall)
-      if (!Number.isFinite(startWall) || !Number.isFinite(endWall) || endWall < startWall) continue
-      intervals.push({ startWall, endWall })
-    }
-    intervals.sort((left, right) => left.startWall - right.startWall)
-    return intervals
-  }
-
   // Total pause duration that had ELAPSED at `at` (contract §2.2: mediaMs = at - start - paused so
   // far). Overlapping renderer intervals are clamped so a buggy payload cannot over-subtract.
   function pausedMsAt(intervals, at) {
-    let total = 0
-    let coveredUntil = -Infinity
-    for (const interval of intervals) {
-      if (interval.startWall > at) break
-      const start = Math.max(interval.startWall, coveredUntil)
-      if (start >= at) break
-      total += Math.min(interval.endWall, at) - start
-      coveredUntil = Math.max(coveredUntil, interval.endWall)
+    return pausedMsElapsed(intervals, at)
+  }
+
+  // N03: accumulates the shortcut batches the control bar piggybacks on its authoritative state
+  // report (`record:state` already carries an object; an array field is additive and needs no new
+  // channel, no preload change and no sender-policy change). The buffer is per-window and reset
+  // when a take starts, so a restarted take never inherits the previous one's shortcuts.
+  function captureKeystrokeBatch(win, value) {
+    if (!win || !Array.isArray(value)) return
+    const batch = sanitizeKeystrokeBatch(value)
+    if (batch.length === 0) return
+    const list = Array.isArray(win._recordKeystrokes) ? win._recordKeystrokes : (win._recordKeystrokes = [])
+    for (const entry of batch) list.push(entry)
+    if (list.length > KEYSTROKE_LIMIT) list.splice(0, list.length - KEYSTROKE_LIMIT)
+  }
+
+  // Wraps the keystroke half of the events.json payload; `null` keeps the R5 shape untouched when
+  // the take contained no shortcut worth showing.
+  function attachKeystrokeTrack(track, entries, timing) {
+    const keystrokes = buildKeystrokeTrack(entries, timing)
+    if (keystrokes.length === 0) return track
+    if (track) {
+      track.keystrokes = keystrokes
+      return track
     }
-    return total
+    return { ...emptyEventTrack(timing?.durationMs), keystrokes }
+  }
+
+  // Silence detection decodes the recording's audio track. The result is cached per project for
+  // this process (a re-read of the event track must not run ffmpeg twice) and only attached to the
+  // IPC answer when the analysis was actually ATTEMPTED - an unavailable service keeps the frozen
+  // `{ ok, track }` answer shape so a pre-N03 bridge cannot start receiving a new field.
+  async function analyzeProjectPauseCandidates(project, track) {
+    const projectId = text(project?.id)
+    if (!projectId) return null
+    if (pauseAnalysisCache.has(projectId)) return pauseAnalysisCache.get(projectId)
+    let recordingService = null
+    try {
+      recordingService = getRecordingService()
+    } catch (error) {
+      log('Recording pause analysis service unavailable:', error?.message || error)
+    }
+    const ffmpegPath = text(recordingService?.ffmpegPath)
+    if (!ffmpegPath || typeof recordingService?.spawnProcess !== 'function') return null
+    const service = projectServiceOrNull()
+    if (!service || typeof service.sourcePathOf !== 'function') return null
+    const sourcePath = await service.sourcePathOf(projectId).catch(() => '')
+    if (!sourcePath) return null
+    const durationMs = Math.max(0, Math.round(Number(project?.media?.durationMs) || 0))
+    let analysis
+    if (!projectHasAudio(project)) {
+      analysis = { ok: false, code: 'no-audio' }
+    } else if (!(durationMs > 0)) {
+      analysis = { ok: false, code: 'duration-unavailable' }
+    } else {
+      const detected = await runSilenceDetect({
+        ffmpegPath,
+        sourcePath,
+        durationMs,
+        spawnProcess: recordingService.spawnProcess
+      })
+      if (!detected.ok) {
+        analysis = detected
+      } else {
+        analysis = derivePauseCuts({
+          silenceRanges: detected.ranges,
+          pointer: Array.isArray(track?.pointer) ? track.pointer : [],
+          durationMs,
+          hasEventTrack: !!track
+        })
+      }
+    }
+    pauseAnalysisCache.set(projectId, analysis)
+    return analysis
   }
 
   // Builds the frozen events.json v1 payload (contract §2.3) from raw wall-clock buffers. Returns
@@ -1256,30 +1937,44 @@ function createRecordDomain(deps) {
     }
   }
 
-  // Contract §2.2: the switch is opt-in and display/region only. Window recordings have no stable
-  // screen bounds for their content, so they never collect (contract §2.2/§7.1).
-  function shouldCollectEventTrack(win) {
+  // Contract §2.2: the switches are opt-in and display/region only. Window recordings have no
+  // stable screen bounds for their content, so they never collect (contract §2.2/§7.1).
+  // DEV-04: pointer (demo enhance) and global shortcut capture are independent opt-ins; either one
+  // needs the same host, and the finish path only persists the parts that were actually enabled.
+  function eventTrackGate(win) {
     const config = win?._recordCaptureConfig || {}
-    if (config.demoEnhance !== true) return false
     const mode = config.target?.mode || win?._recordMode
-    return mode === 'display' || mode === 'region'
+    const collectable = mode === 'display' || mode === 'region'
+    return {
+      pointer: collectable && config.demoEnhance === true,
+      keystrokes: collectable && config.demoKeystrokes === true
+    }
+  }
+
+  function shouldCollectEventTrack(win) {
+    const gate = eventTrackGate(win)
+    return gate.pointer || gate.keystrokes
   }
 
   function startEventTrack(win) {
     stopEventTrack().catch(() => {})
-    if (!shouldCollectEventTrack(win)) return false
+    const gate = eventTrackGate(win)
+    if (!gate.pointer && !gate.keystrokes) return false
     const service = pointerTrackServiceOrNull()
     if (!service) {
       log('Pointer track service unavailable; recording continues without an event track')
       return false
     }
     try {
-      if (service.start() !== true) return false
+      if (service.start({ keystrokes: gate.keystrokes }) !== true) return false
     } catch (error) {
       log('Pointer track start failed:', error?.message || error)
       return false
     }
-    activeEventTrack = { service }
+    activeEventTrack = { service, pointer: gate.pointer, keystrokes: gate.keystrokes, keyboardEnabled: false }
+    // DEV-04: the take has not started recording yet (notification/countdown first). Capture is
+    // enabled by the authoritative 'recording' status in updateRecordState().
+    if (gate.keystrokes) syncEventTrackKeyboard(false)
     return true
   }
 
@@ -1294,7 +1989,8 @@ function createRecordDomain(deps) {
       log('Pointer track stop failed:', error?.message || error)
       return null
     }
-    return discard ? null : { results }
+    if (discard) return null
+    return { results, pointer: active.pointer === true, keystrokes: active.keystrokes === true }
   }
 
   function writeEventTrack(projectId, track) {
@@ -1344,20 +2040,39 @@ function createRecordDomain(deps) {
   }
 
   // The highlighter's own windows must never be offered as recording targets (a window recording its
-  // own workbench/editor is a feedback loop). Exact title match, as frozen in §2.1.
-  function ownWindowTitles() {
-    const titles = new Set()
+  // own workbench/editor is a feedback loop). §2.1 froze an exact title match; U03 adds the exact
+  // native handle when Electron exposes it (`BrowserWindow.getMediaSourceId()` returns the same
+  // `window:<pid>:<id>` id desktopCapturer uses), so a target whose title changed or collides with
+  // one of ours is still classified correctly, and a foreign window that merely shares our title is
+  // no longer dropped.
+  function ownWindowIdentity() {
+    const identity = { titles: new Set(), mediaSourceIds: new Set() }
     try {
       const all = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []
       for (const win of Array.isArray(all) ? all : []) {
         if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) continue
         const title = typeof win.getTitle === 'function' ? win.getTitle() : ''
-        if (typeof title === 'string' && title.trim()) titles.add(title.trim())
+        if (typeof title === 'string' && title.trim()) identity.titles.add(title.trim())
+        if (typeof win.getMediaSourceId === 'function') {
+          try {
+            const mediaSourceId = win.getMediaSourceId()
+            if (typeof mediaSourceId === 'string' && mediaSourceId.trim()) {
+              identity.mediaSourceIds.add(mediaSourceId.trim())
+            }
+          } catch {}
+        }
       }
     } catch (error) {
-      log('Own window title enumeration failed:', error?.message || error)
+      log('Own window enumeration failed:', error?.message || error)
     }
-    return titles
+    return identity
+  }
+
+  // The native handle is authoritative when available; the frozen title match stays as the fallback
+  // for a runtime that cannot report it (older Electron, or a test double that only knows titles).
+  function isOwnWindowSource(identity, sourceId, title) {
+    if (identity.mediaSourceIds.size > 0) return identity.mediaSourceIds.has(sourceId)
+    return identity.titles.has(title)
   }
 
   function pruneWindowSourceTokens(now = Date.now()) {
@@ -1395,7 +2110,7 @@ function createRecordDomain(deps) {
     for (const [token, entry] of windowSourceTokens) {
       if (!entry.used) windowSourceTokens.delete(token)
     }
-    const ownTitles = ownWindowTitles()
+    const ownWindows = ownWindowIdentity()
     const seenSources = new Set()
     const windows = []
     for (const source of Array.isArray(sources) ? sources : []) {
@@ -1404,7 +2119,7 @@ function createRecordDomain(deps) {
       const title = text(source?.name)
       if (!sourceId || !title) continue
       if (seenSources.has(sourceId)) continue
-      if (ownTitles.has(title)) continue
+      if (isOwnWindowSource(ownWindows, sourceId, title)) continue
       const pixels = measureWindowPixels(source)
       // A measured window smaller than the frozen minimum is not a useful target. An UNMEASURED one
       // (0x0) is kept: "measurement failed" is not "too small" (§2.1).
@@ -1485,6 +2200,39 @@ function createRecordDomain(deps) {
     if (entry) entry.used = true
   }
 
+  // U03 re-record: a persisted window project keeps only the frozen target descriptor (the opaque
+  // source-token registry never leaves the process and does not survive a restart), so "record again"
+  // re-resolves the window by its saved exact title and registers a fresh one-shot token for it. An
+  // empty answer means the target is gone; the caller then falls back to the workbench instead of
+  // silently starting a full-display take.
+  async function registerWindowRerecordToken(title) {
+    const wanted = text(title)
+    if (!wanted) return ''
+    const sources = await enumerateWindowSources()
+    if (!sources) return ''
+    const ownWindows = ownWindowIdentity()
+    for (const source of Array.isArray(sources) ? sources : []) {
+      const sourceId = typeof source?.id === 'string' ? source.id : ''
+      const name = text(source?.name)
+      if (!sourceId || !name || name !== wanted) continue
+      if (isOwnWindowSource(ownWindows, sourceId, name)) continue
+      const pixels = measureWindowPixels(source)
+      if (pixels.width > 0 && pixels.height > 0 && (pixels.width < WINDOW_MIN_SIZE_PX || pixels.height < WINDOW_MIN_SIZE_PX)) continue
+      const token = crypto.randomUUID()
+      windowSourceTokens.set(token, {
+        sourceId,
+        title: name,
+        appName: text(source?.appName),
+        width: pixels.width,
+        height: pixels.height,
+        expiresAt: Date.now() + Math.max(1, Number(windowTokenTtlMs) || WINDOW_TOKEN_TTL_MS),
+        used: false
+      })
+      return token
+    }
+    return ''
+  }
+
   function describeWindowCaptureTarget(binding) {
     const width = Math.max(0, Math.round(Number(binding.pixelSize?.width) || 0))
     const height = Math.max(0, Math.round(Number(binding.pixelSize?.height) || 0))
@@ -1542,24 +2290,66 @@ function createRecordDomain(deps) {
 
   // ---------------------------------------------------------------- control bar window
 
+  // P1-01/P1-02 re-review: the single entry point. A workbench region request that fails or aborts
+  // must never leave its waiting workbenchStart() unresolved, so the wrapper revokes the request on
+  // any thrown error (a cancelled request is idempotent) and rethrows for the caller's error path.
+  //
+  // d4993a2 delivery re-review (P1-02 reentry): the same request can confirm twice before the first
+  // IPC returns. The in-flight map is filled synchronously, before the creation's first await, so
+  // the second confirm joins the SAME creation (same windows, same result) instead of focusing the
+  // half-created bar and revoking its own request.
   async function createRecordWindow(options = {}) {
     assertGameModeDisabled()
+    const requestedRegionId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
+    if (requestedRegionId) {
+      const inFlight = regionCreations.get(requestedRegionId)
+      if (inFlight) return inFlight
+    }
+    let tracked
+    const run = (async () => {
+      try {
+        return await createRecordWindowInternal(options, requestedRegionId)
+      } catch (error) {
+        if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+        throw error
+      }
+    })()
+    if (!requestedRegionId) return run
+    tracked = run.finally(() => {
+      if (regionCreations.get(requestedRegionId) === tracked) regionCreations.delete(requestedRegionId)
+    })
+    regionCreations.set(requestedRegionId, tracked)
+    return tracked
+  }
+
+  // `requestedRegionId` is the workbench region-request identity; it is EMPTY for quick entries and
+  // for the display/window entries. A non-empty id is authoritative: the request must be live when
+  // it is consumed, and it is re-checked at every async boundary before a window is created or
+  // shown, so a cancellation/replacement during enumeration creates zero windows.
+  async function createRecordWindowInternal(options, requestedRegionId) {
     // Repeat-entry arbitration (contract §10.1): a second "start recording" while a control window
     // is alive focuses that window instead of silently destroying the capture in progress.
     if (recordWindow && !recordWindow.isDestroyed()) {
       focusActive()
+      // No new take was created for a region request that confirmed into this branch.
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
       return recordWindow
     }
+    // P1-01/P1-02: only the overlay request that opened the workbench region flow may consume its
+    // one-shot capture configuration, and only while that request is still LIVE. A stale confirm
+    // IPC (queued before the overlay closed), an unrelated/forged id and a superseded request all
+    // fail closed: no window is created and the persisted preferences are never used as a silent
+    // fallback (that fallback re-enabled audio the user had explicitly switched off).
+    const region = requestedRegionId ? liveRegionCapture(requestedRegionId) : null
+    if (requestedRegionId && !region) {
+      revokeRegionCapture(requestedRegionId)
+      return null
+    }
     await closeRecordFlow()
-    const pending = pendingRegionCapture
-    pendingRegionCapture = null
-    // A stale slot (the user cancelled the region overlay) must not turn a later capture into the
-    // workbench's last region configuration.
-    const pendingRegion = pending && Date.now() - pending.at < REGION_PENDING_TTL_MS ? pending : null
-    const providedCapture = options.capture || pendingRegion?.capture || null
+    const providedCapture = options.capture || (region ? (region.pending.capture ?? null) : null)
     const config = resolveCaptureConfig({
       ...options,
-      mode: options.mode || pendingRegion?.mode,
+      mode: options.mode || (region ? region.pending.mode : undefined),
       capture: providedCapture
     })
     const requestedBounds = options.selectionBounds && {
@@ -1587,6 +2377,27 @@ function createRecordDomain(deps) {
         }
       : normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
     const source = windowMode ? null : await getDesktopSource(display)
+    // P1-01 re-review: the overlay can be cancelled — or replaced by a new capture window, which
+    // closes it — while getDesktopSource() awaits. Re-check the request identity at the LAST async
+    // boundary before the first window is created: a revoked request creates zero frame/control
+    // windows instead of one that still carries its shortcut/audio authorization.
+    if (requestedRegionId && !liveRegionCapture(requestedRegionId)) {
+      revokeRegionCapture(requestedRegionId)
+      return null
+    }
+    // d4993a2 delivery re-review (P1-02 concurrency): another entry may have published a take while
+    // this creation awaited the desktop source. An existing take wins: this creation must not build
+    // a second window pair and later steal ownership. A region request reports a cancellation so
+    // the workbench keeps the user's one-shot selection unconsumed; a quick entry behaves like the
+    // synchronous repeat-entry branch and focuses the running bar.
+    if (recordWindow && !recordWindow.isDestroyed()) {
+      if (requestedRegionId) {
+        revokeRegionCapture(requestedRegionId)
+        return null
+      }
+      focusActive()
+      return recordWindow
+    }
     const target = windowMode
       ? describeWindowCaptureTarget(windowBinding)
       : describeCaptureTarget(display, config.mode, selectionBounds)
@@ -1631,8 +2442,9 @@ function createRecordDomain(deps) {
         backgroundThrottling: false
       }
     })
-    recordFrameWindow = frameWindow
-    recordWindow = controlWindow
+    // d4993a2 delivery re-review (P1-01): the windows stay STAGED here — hidden, unpublished and
+    // invisible to every ownership check — until both pages finished loading while the request is
+    // still live. Only publishStagedCreation() below promotes them to recordWindow/recordFrameWindow.
     if (frameWindow) frameWindow._recordOwner = controlWindow
     controlWindow._recordControlBounds = controlBounds
     controlWindow._recordFrameState = 'idle'
@@ -1643,6 +2455,7 @@ function createRecordDomain(deps) {
     controlWindow._recordSessionId = ''
     controlWindow._recordState = { ...DEFAULT_STATE }
     controlWindow._recordCommands = new Map()
+    controlWindow._recordInitSent = false
     controlWindow._recordCaptureConfig = {
       target,
       frameRate,
@@ -1651,7 +2464,9 @@ function createRecordDomain(deps) {
       audio: { ...config.audio },
       // R5 §2.2: the session-only demo switch (never written to the manifest/settings). Consumed by
       // the record:start-session gate that starts the pointer track.
-      demoEnhance: config.demoEnhance === true
+      demoEnhance: config.demoEnhance === true,
+      // DEV-04: session-only global shortcut capture switch, independent of demoEnhance.
+      demoKeystrokes: config.demoKeystrokes === true
     }
     controlWindow._recordInit = {
       // R2 contract shape (contracts §9.2). `sessionId`/`projectId` are filled in later: the
@@ -1703,28 +2518,35 @@ function createRecordDomain(deps) {
     // region mode keep pinning the display with pickDesktopSource. The system-audio track is offered
     // only when the renderer actually asked for audio, which is what keeps the "system sound off"
     // contract (settings-defaults.js:71) honest. System audio is the system MIX, also for windows.
+    //
+    // d4993a2 delivery re-review (P1-02 concurrency): this handler lives on the SHARED default
+    // session, so it is installed only when this creation actually becomes the active take. A
+    // staged loser must never overwrite - and its teardown must never null - the winner's handler.
     const recordSession = controlWindow.webContents.session
-    recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
-      try {
-        // 只服务录制窗自己的主帧：该 handler 注册在**共享默认 session** 上，若不校验来源，
-        // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
-        if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
-        if (!request.videoRequested) return callback({})
-        let video = null
-        if (windowMode) {
-          video = windowBinding.source
-        } else {
-          const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
-          video = pickDesktopSource(sources, display.id)
+    const installDisplayMediaHandler = () => {
+      recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        try {
+          // 只服务录制窗自己的主帧：该 handler 注册在**共享默认 session** 上，若不校验来源，
+          // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
+          if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
+          if (!request.videoRequested) return callback({})
+          let video = null
+          if (windowMode) {
+            video = windowBinding.source
+          } else {
+            const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+            video = pickDesktopSource(sources, display.id)
+          }
+          if (!video) return callback({})
+          const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
+          callback(audio ? { video, audio } : { video })
+        } catch (error) {
+          log('Display media request failed:', error.message)
+          callback({})
         }
-        if (!video) return callback({})
-        const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
-        callback(audio ? { video, audio } : { video })
-      } catch (error) {
-        log('Display media request failed:', error.message)
-        callback({})
-      }
-    })
+      })
+      displayMediaHandlerOwner = controlWindow
+    }
 
     for (const win of [frameWindow, controlWindow]) {
       if (!win) continue
@@ -1732,9 +2554,30 @@ function createRecordDomain(deps) {
       win.setContentProtection(true)
     }
     if (frameWindow) restoreRecordFramePassthrough(frameWindow)
+    const creation = {
+      controlWindow,
+      frameWindow,
+      requestId: requestedRegionId,
+      session: recordSession,
+      disposed: false,
+      closedEarly: false,
+      cancelled: false
+    }
+    stagedCreations.set(controlWindow, creation)
     controlWindow.on('closed', () => {
+      // A staged window that closes early (load failure, user close, OS teardown, cancellation)
+      // aborts its own creation; nothing of it may be published or shown afterwards.
+      if (stagedCreations.get(controlWindow) === creation) {
+        creation.closedEarly = true
+        disposeStagedCreation(creation)
+        return
+      }
       // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
-      try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
+      // Only while this window still OWNS the handler: a newer take may have installed its own.
+      if (displayMediaHandlerOwner === controlWindow) {
+        displayMediaHandlerOwner = null
+        try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
+      }
       stopWindowSourceWatch(controlWindow)
       // R5 §2.2: a closed control bar can never finish, so its event track host must not outlive it.
       stopEventTrack().catch((error) => log('Pointer track stop failed:', error?.message || error))
@@ -1749,19 +2592,73 @@ function createRecordDomain(deps) {
     })
     if (frameWindow) {
       frameWindow.on('closed', () => {
+        if (stagedCreations.get(controlWindow) === creation) {
+          creation.closedEarly = true
+          disposeStagedCreation(creation)
+          return
+        }
         if (recordFrameWindow === frameWindow) recordFrameWindow = null
       })
     }
-    await Promise.all([
+    // allSettled (not Promise.all): when one page fails, the other load must still settle before we
+    // tear the windows down, otherwise closing them on the error path leaves an unhandled rejection.
+    const loads = await Promise.allSettled([
       frameWindow ? frameWindow.loadFile(framePagePath) : Promise.resolve(),
       controlWindow.loadFile(controlPagePath)
     ])
-    if (frameWindow) frameWindow.showInactive()
-    controlWindow.show()
-    if (windowMode) {
-      // The window source token is single-use from here on: the recording window exists (§2.1).
-      markWindowTokenUsed(windowBinding.token)
-      startWindowSourceWatch(controlWindow, windowBinding)
+    const failedLoad = loads.find((result) => result.status === 'rejected')
+    const cancelledDuringLoad = creation.cancelled === true || creation.disposed === true ||
+      creation.closedEarly === true ||
+      (requestedRegionId !== '' && !liveRegionCapture(requestedRegionId))
+    if (failedLoad || cancelledDuringLoad) {
+      // Every failure/cancellation tears down exactly this creation's windows and handler. The
+      // published take (if any) is never touched: these windows were never published.
+      disposeStagedCreation(creation)
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+      if (cancelledDuringLoad) return null
+      throw failedLoad.reason instanceof Error ? failedLoad.reason : new Error(String(failedLoad.reason))
+    }
+    if (requestedRegionId && !liveRegionCapture(requestedRegionId)) {
+      // The overlay was cancelled while the pages loaded: a cancelled receipt, no take, no leftover
+      // windows. (Its own branch: the request registry is the receipt contract, not an error.)
+      revokeRegionCapture(requestedRegionId)
+      disposeStagedCreation(creation)
+      return null
+    }
+    if (!publishStagedCreation(creation)) {
+      // Another entry published a take while this creation loaded. The existing take wins: clean up
+      // exactly this attempt's hidden windows and report no take for a region request so the
+      // workbench keeps its one-shot selection unconsumed.
+      disposeStagedCreation(creation)
+      if (requestedRegionId) {
+        revokeRegionCapture(requestedRegionId)
+        return null
+      }
+      if (recordWindow && !recordWindow.isDestroyed()) {
+        focusActive()
+        return recordWindow
+      }
+      return null
+    }
+    // Published: from here on the windows ARE the take. Install the shared-session handler, push the
+    // init payload (the renderer's ready IPC is only authorized now) and only then show the bars.
+    try {
+      installDisplayMediaHandler()
+      if (frameWindow) frameWindow.showInactive()
+      sendRecordInitOnce(controlWindow)
+      if (frameWindow) sendRecordAnnotationCommand(controlWindow)
+      controlWindow.show()
+      if (windowMode) {
+        // The window source token is single-use from here on: the recording window exists (§2.1).
+        markWindowTokenUsed(windowBinding.token)
+        startWindowSourceWatch(controlWindow, windowBinding)
+      }
+    } catch (error) {
+      // A published take that cannot finish its setup must never stay half-active: clear ownership,
+      // release the windows/handler and surface the failure to the caller like a start error.
+      teardownPublishedCreation(creation)
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+      throw error
     }
     log('Recording window created:', {
       mode: config.mode,
@@ -1771,6 +2668,13 @@ function createRecordDomain(deps) {
       quality: config.quality,
       countdown: config.countdown
     })
+    // P1-01 follow-up: the workbench's receipt is "a control window now exists". Consuming the
+    // one-shot config earlier would let a failed/aborted creation eat the user's opt-in. Nothing
+    // awaits between the liveness re-check above and this settle, so the request is still live.
+    if (requestedRegionId) {
+      if (pendingRegionCapture && pendingRegionCapture.requestId === requestedRegionId) pendingRegionCapture = null
+      settleRegionCaptureRequest(requestedRegionId, true)
+    }
     return controlWindow
   }
 
@@ -1945,9 +2849,11 @@ function createRecordDomain(deps) {
     const sourcePath = await service.sourcePathOf(project.id)
     if (!sourcePath) return null
     const media = project.media || {}
-    // R4 §6: the editor needs the source frame rate to offer fps options. The manifest does not keep
-    // it (R1 schema unchanged), so the in-process probe stash is the only source; 0 means unknown and
-    // the editor offers `source` only.
+    // R4 §6 / U03: the editor needs the source frame rate to offer fps options. The manifest does not
+    // keep a frame rate in `media` (R1 schema unchanged), but the frozen capture configuration does
+    // (`captureConfig.frameRate`), so a project opened after a restart still offers its fps choices.
+    // The in-process probe stash wins when it exists (it is the measured value); the capture config is
+    // the durable fallback, and 0 is only reported when both are absent/unknown.
     const probed = probedMetadataByProject.get(project.id) || null
     return {
       project: service.publicProject(project),
@@ -1958,7 +2864,7 @@ function createRecordDomain(deps) {
         video: {
           width: Math.max(0, Math.round(Number(media.video?.width) || 0)),
           height: Math.max(0, Math.round(Number(media.video?.height) || 0)),
-          frameRate: Math.max(0, Math.round(Number(probed?.video?.frameRate) || 0))
+          frameRate: Math.max(0, Math.round(Number(probed?.video?.frameRate) || Number(project?.captureConfig?.frameRate) || 0))
         },
         audio: {
           tracks: Math.max(0, Math.round(Number(media.audio?.tracks) || 0)),
@@ -2157,7 +3063,9 @@ function createRecordDomain(deps) {
     const control = {
       ready: (event) => {
         const win = BrowserWindow.fromWebContents(event.sender)
-        if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
+        // The publish path already pushed init; this repairs the race where the renderer's ready
+        // IPC is only authorized (and therefore processed) after the take became active.
+        if (win === recordWindow && win?._recordInit) sendRecordInitOnce(win)
       },
       frameReady: (event) => {
         const frame = requireRecordFrameSender(event)
@@ -2223,6 +3131,9 @@ function createRecordDomain(deps) {
         }
         win._recordSessionId = session.id
         win._recordProjectId = created.project.id
+        // N03: every take starts with an empty shortcut buffer; the capsules of a restarted take
+        // must never be attributed to the previous one.
+        win._recordKeystrokes = []
         // Plan §5.1: the record-mode last region is updated when a recording successfully STARTS, so
         // a cancelled selection never overwrites it. `selectionBounds` on the window's init payload is
         // Electron DIP; recordFromDisplaySelection owns the DIP->pixel conversion.
@@ -2341,6 +3252,7 @@ function createRecordDomain(deps) {
         if (!projectId || !projectService) {
           // Legacy/no-persistence fallback: the sealed session stays readable for the legacy
           // channels, but there is no project to hand to an editor.
+          win._recordKeystrokes = []
           await stopEventTrack()
           return { ok: true, projectId: '', legacy: true, bytesWritten: Number(descriptor?.bytesWritten) || 0 }
         }
@@ -2383,12 +3295,23 @@ function createRecordDomain(deps) {
           pausedIntervals,
           durationMs: probed?.ok ? Number(probed.metadata?.durationMs) || 0 : 0
         }
+        // N03: shortcut capsules are independent of the demo-enhancement switch. They use the same
+        // pause-aware wall-clock mapping as the pointer track, and a take with no pointer track can
+        // still persist an events.json that contains only keystrokes.
+        const keystrokeEntries = Array.isArray(win._recordKeystrokes) ? win._recordKeystrokes.splice(0) : []
         const collected = await stopEventTrack({ discard: false })
-        if (collected) {
-          const track = buildEventTrack(win, collected.results, trackTiming)
-          if (track) await writeEventTrack(projectId, track)
-          else log('Recording event track skipped: unusable timing or content region')
-        }
+        // DEV-04: merge the control bar's keydown batches with the global native channel. Both are
+        // wall-clock `{ at, combo }`; a press seen by both sources is deduped inside 120 ms.
+        const globalKeystrokes = collected && collected.keystrokes && collected.results
+          ? (Array.isArray(collected.results.keystrokes) ? collected.results.keystrokes : [])
+          : []
+        const mergedKeystrokes = mergeKeystrokeSources(keystrokeEntries, globalKeystrokes)
+        const pointerTrack = collected && collected.pointer
+          ? buildEventTrack(win, collected.results, trackTiming)
+          : null
+        if (collected && collected.pointer && !pointerTrack) log('Recording event track skipped: unusable timing or content region')
+        const eventTrack = attachKeystrokeTrack(pointerTrack, mergedKeystrokes, trackTiming)
+        if (eventTrack) await writeEventTrack(projectId, eventTrack)
         const opened = await openEditor(projectId).catch((error) => {
           log('Recording editor open failed:', projectId, error?.message || error)
           return { ok: false, code: 'editor-failed' }
@@ -2650,6 +3573,9 @@ function createRecordDomain(deps) {
         const win = requireRecordSender(event)
         const sessionId = text(payload.sessionId)
         if (sessionId && win._recordSessionId && sessionId !== win._recordSessionId) return win._recordState || DEFAULT_STATE
+        // N03: the control bar reports shortcut batches on this authoritative channel, so no new
+        // IPC surface is needed for the keystroke capsules.
+        captureKeystrokeBatch(win, payload.keystrokes)
         return updateRecordState(win, payload) || DEFAULT_STATE
       },
       // R2 (contracts §9.2): closes the loop for a tray/shortcut command. A failed command is
@@ -2725,15 +3651,36 @@ function createRecordDomain(deps) {
           // The overlay returns only a rectangle; the workbench's just-picked parameters travel
           // through the one-shot slot createRecordWindow() consumes, together with the region mode
           // (the overlay itself calls createRecordWindow without a mode).
-          pendingRegionCapture = { capture: payloadCapture, mode: 'region', at: Date.now() }
+          //
+          // P1-01 follow-up: the slot is addressed by a request id and the answer is the overlay's
+          // RECEIPT (a control window was created for this request, or it was cancelled/closed/
+          // replaced). The renderer only consumes the one-shot shortcut opt-in for a created take.
+          const requestId = crypto.randomUUID()
+          let settleOutcome = null
+          const outcome = new Promise((resolve) => { settleOutcome = resolve })
+          regionCaptureRequests.set(requestId, { settle: settleOutcome })
+          // P1-02 re-review: the slot has no wall-clock expiry; it stays bound to this request
+          // until the overlay confirms (created receipt) or closes/is replaced (cancellation).
+          pendingRegionCapture = { requestId, capture: payloadCapture, mode: 'region' }
           try {
-            await openSelection({ mode: 'region', source: 'recording-workbench' })
+            const overlay = await openSelection({ mode: 'region', source: 'recording-workbench', regionRequestId: requestId })
+            if (overlay && typeof overlay.once === 'function') {
+              // Cancel / close / replacement: the slot this request owns is revoked here.
+              overlay.once('closed', () => settleRegionCaptureRequest(requestId, false))
+              // A window that was already closed while openSelection resolved never emits again.
+              if (typeof overlay.isDestroyed === 'function' && overlay.isDestroyed()) {
+                settleRegionCaptureRequest(requestId, false)
+              }
+            } else {
+              settleRegionCaptureRequest(requestId, false)
+            }
+            const created = await outcome
+            return { ok: true, created }
           } catch (error) {
-            pendingRegionCapture = null
+            settleRegionCaptureRequest(requestId, false)
             log('Recording region selection failed:', error?.message || error)
             return { ok: false, code: 'selection-failed' }
           }
-          return { ok: true }
         }
         try {
           await createRecordWindow({ display: resolveDisplay(payload?.displayId), mode, capture: payloadCapture })
@@ -2930,6 +3877,12 @@ function createRecordDomain(deps) {
         if (request.video && typeof request.video === 'object' && !Array.isArray(request.video)) forwardedRequest.video = request.video
         // R5 §3.2: the demo look/camera plan (style + source-time zooms + clicks for ripples).
         if (request.demo && typeof request.demo === 'object' && !Array.isArray(request.demo)) forwardedRequest.demo = request.demo
+        // N03/DEV-05: the capsule overlay choice + source-time capsules. The export service
+        // normalises/projects them and validates every label; the domain forwards the payload
+        // verbatim like the demo plan (dropping it here would silently export without capsules).
+        if (request.keystrokes && typeof request.keystrokes === 'object' && !Array.isArray(request.keystrokes)) {
+          forwardedRequest.keystrokes = request.keystrokes
+        }
         const submitted = await exportService.submit({
           sessionId: attached.session.id,
           requestId,
@@ -2986,7 +3939,10 @@ function createRecordDomain(deps) {
         return { ok: true, project: service.summaryOf(result.project) }
       },
       // Contract §9.3: create a NEW take with the same capture configuration; the old project is
-      // untouched (its source stays in the records).
+      // untouched (its source stays in the records). U03: a WINDOW take must re-bind to its saved
+      // target window instead of silently degrading to a full-display take; when that window no
+      // longer exists the workbench opens with an explicit fallback result so the user can pick a
+      // window again instead of finding out after a full-screen recording.
       editorRerecord: async (event, { projectId } = {}) => {
         assertGameModeDisabled()
         const win = requireEditorSender(event)
@@ -2995,15 +3951,31 @@ function createRecordDomain(deps) {
         if (!project) return { ok: false, code: 'not-found' }
         const capture = project.captureConfig || {}
         const target = capture.target || {}
+        const mode = RECORD_MODES.includes(project.mode)
+          ? project.mode
+          : (RECORD_MODES.includes(target.mode) ? target.mode : DEFAULT_RECORD_MODE)
         closeEditorWindow(id)
         try {
-          if (project.mode === 'region' && Number(target.boundsDip?.width) > 0) {
+          if (mode === 'region' && Number(target.boundsDip?.width) > 0) {
             await createRecordWindow({
               display: resolveDisplay(target.displayId),
               mode: 'region',
               selectionBounds: target.boundsDip,
               capture
             })
+          } else if (mode === 'window') {
+            const windowToken = await registerWindowRerecordToken(target.displayName)
+            if (!windowToken) {
+              openRecordingWorkbench()
+              return { ok: true, mode: 'workbench', fallback: 'window-unavailable' }
+            }
+            await createRecordWindow({
+              display: resolveDisplay(target.displayId),
+              mode: 'window',
+              windowToken,
+              capture
+            })
+            return { ok: true, mode: 'window' }
           } else {
             await createRecordWindow({ display: resolveDisplay(target.displayId), mode: 'display', capture })
           }
@@ -3037,6 +4009,9 @@ function createRecordDomain(deps) {
       editorReload: async (event, { projectId } = {}) => {
         const win = requireEditorSender(event)
         const id = requireEditorProject(win, projectId)
+        // N03: a reload can swap the source (recovery retry), so a cached pause analysis for the
+        // previous bytes must not be reused.
+        pauseAnalysisCache.delete(id)
         const service = requireProjectService()
         let project = await getProject(id)
         if (!project) return { ok: false, code: 'not-found' }
@@ -3068,7 +4043,13 @@ function createRecordDomain(deps) {
           log('Recording event track read failed:', id, error?.message || error)
           return null
         })
-        return { ok: true, track: track && typeof track === 'object' ? track : null }
+        const answer = { ok: true, track: track && typeof track === 'object' ? track : null }
+        // N03: one-click dead-air removal needs the audio analysis to happen where ffmpeg lives.
+        // The result is attached as `pauseAnalysis` ONLY when the analysis was attempted; an
+        // install without an ffmpeg path keeps the frozen `{ ok, track }` shape.
+        const pauseAnalysis = await analyzeProjectPauseCandidates(project, answer.track)
+        if (pauseAnalysis) answer.pauseAnalysis = pauseAnalysis
+        return answer
       },
       // D03: the recovery banner's salvage action. Ownership is checked like every other editor
       // channel; a success answers the same payload shape as reload so the window can swap the
@@ -3077,6 +4058,8 @@ function createRecordDomain(deps) {
         assertManagedDataWritable()
         const win = requireEditorSender(event)
         const id = requireEditorProject(win, projectId)
+        // N03: the salvaged asset becomes a NEW source; discard the old audio analysis.
+        pauseAnalysisCache.delete(id)
         const result = await salvageProject(id)
         if (!result.ok) return publicSalvageFailure(result)
         const payload = await editorInitPayload(result.project).catch((error) => {
@@ -3206,6 +4189,10 @@ function createRecordDomain(deps) {
       try { pointerTrackService.dispose() } catch (error) { log('Pointer track dispose failed:', error?.message || error) }
     }
     pointerTrackService = null
+    abandonRegionCaptureRequests()
+    // Non-region creations (quick fullscreen entries) stage windows without a region request; the
+    // quit path must reap those too. Region ones were already cancelled above.
+    disposeAllStagedCreations()
     const activeService = typeof peekRecordingService === 'function'
       ? peekRecordingService()
       : null
@@ -3266,5 +4253,19 @@ module.exports = {
   // test/recording-pin-frame.test.js.
   sanitizeRecordFramePin,
   pinRecordFrame,
-  PIN_FRAME_MAX_BYTES
+  PIN_FRAME_MAX_BYTES,
+  // N03 (review 2026-11-26 section 5.3) pure helpers, shared with test/n03-recording-hud.test.js:
+  // keystroke capture/normalisation and the silencedetect + pointer-idle pause suggestion maths.
+  KEYSTROKE_LIMIT,
+  KEYSTROKE_SOURCE_DEDUPE_MS,
+  SILENCE_LIMITS,
+  buildKeystrokeTrack,
+  computePointerIdleRanges,
+  derivePauseCuts,
+  isWallInPausedInterval,
+  isValidKeystrokeCombo,
+  mergeKeystrokeSources,
+  parseSilenceDetectOutput,
+  runSilenceDetect,
+  sanitizeKeystrokeBatch
 }

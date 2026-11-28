@@ -38,6 +38,72 @@ const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
 const ACTION_WINDOW_SIZE_SAVE_DELAY_MS = 180
 
+// U04 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §4.4): the
+// C++ clipboard fallback injects Ctrl+C. A terminal resolves that shortcut as
+// SIGINT, so highlighting text there used to interrupt the running command. These
+// program names are always sent to the native clipboard filter (EXCLUDE_LIST);
+// engine.cc keeps the same list compiled in as a hard safety net. Keep the two
+// lists in sync. Integrated terminals inside an editor share the editor's process
+// name and are intentionally not listed (protecting them would disable the whole
+// editor's fallback).
+const TERMINAL_CLIPBOARD_COPY_PROTECTION = Object.freeze([
+  'windowsterminal.exe',
+  'openconsole.exe',
+  'conhost.exe',
+  'cmd.exe',
+  'powershell.exe',
+  'pwsh.exe',
+  'mintty.exe',
+  'wezterm-gui.exe',
+  'alacritty.exe',
+  'kitty.exe',
+  'hyper.exe',
+  'tabby.exe',
+  'fluentterminal.exe',
+  'terminus.exe',
+  'conemu.exe',
+  'conemu64.exe'
+])
+
+// main.js shouldFilterApp() drops Highlighter's own selection events after the C++
+// fallback already injected a copy. Mirror its ASCII program-name substrings into
+// the native protection list so our own surfaces never receive that shortcut.
+// (The CJK display name cannot reach the native list as an unchanged matching rule
+// without breaking the i18n gate on this file; the executable name is ASCII.)
+const SELF_CLIPBOARD_COPY_PROTECTION = Object.freeze(['highlighter', 'huacizhushou'])
+
+// The always-on part of the native clipboard-copy protection list.
+const DEFAULT_CLIPBOARD_COPY_PROTECTION = Object.freeze([
+  ...TERMINAL_CLIPBOARD_COPY_PROTECTION,
+  ...SELF_CLIPBOARD_COPY_PROTECTION
+])
+
+// Mirrors the native ProcessStringArrayToList normalization: bounded, lowercase,
+// deduplicated UTF-8 program names.
+function normalizeProgramNameList(value, limit = 128) {
+  if (!Array.isArray(value)) return []
+  const names = []
+  const seen = new Set()
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue
+    const name = entry.trim().toLowerCase().slice(0, 128)
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    names.push(name)
+    if (names.length >= limit) break
+  }
+  return names
+}
+
+// The application blacklist that must reach the native clipboard fallback: the
+// always-on terminal/self protection plus the user's clipboard exclusion list (the
+// only user-facing app blacklist the product has). Serialized to the hook host
+// through the existing start/update-options channel; no new native ABI is involved.
+function resolveClipboardCopyProtection(settings) {
+  const userBlacklist = normalizeProgramNameList(settings?.clipboard?.excludedApps)
+  return [...new Set([...DEFAULT_CLIPBOARD_COPY_PROTECTION, ...userBlacklist])]
+}
+
 // The selection surface: the toolbar window, the action (answer) window, the
 // selection hook that feeds them, and the stream/conversation plumbing between
 // the action renderer and the AI service. Windows, settings and logging arrive
@@ -79,17 +145,28 @@ function createSelectionDomain(deps) {
 
   let windowManager = null
   let hookService = null
+  let unbindHookLifecycle = null
   let hookSuspendedForSettings = false
   const powerListeners = []
-  let currentStreamController = null
+  // U04 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §4.4): a
+  // round belongs to the window that owns it, not to the domain. The old single
+  // `processing` lock made a pinned result window that thinks for a long time block
+  // every new selection/local action, and a second window could not even cancel the
+  // first. One live controller per window keeps the per-window serialization while
+  // two windows stream independently.
+  const streamControllers = new Map()
+  let lastStreamController = null
   let streamSeq = 0
+  // U04: last protection list handed to the hook host. A runtime blacklist change
+  // has no settings effect of its own (settings-effects is outside this domain), so
+  // the next selection re-sends the list when it actually changed.
+  let lastClipboardCopyProtection = null
   const actionConversations = new Map()
   // M2/W7: the snapshot of a conversation whose unpinned window was reclaimed
   // while hidden. Keyed by the window it came from so two hidden windows cannot
   // overwrite each other; the tray restores the newest one.
   const reclaimedConversations = new Map()
   let conversationStore = null
-  let processing = false
   const selectionEventDiagnostics = new Set()
   const displayListeners = []
   // Set while game mode keeps the toolbar hidden; applied on the next show.
@@ -144,16 +221,22 @@ function createSelectionDomain(deps) {
   }
 
   function isActionWindowReclaimable(win) {
-    // An in-flight round owns the surface even though blur already cancelled the
-    // stream: do not race the destroyed window against that cancellation.
-    if (currentStreamController?.win === win) return false
+    // An in-flight round owns the surface even though blur already hid the window:
+    // the round now finishes in the background and writes the conversation store,
+    // so the window must not be destroyed underneath it.
+    if (liveStreamController(win)) return false
     return true
   }
 
   function hasConversation() {
     return !!windowManager?.getActionWindow()
       || reclaimedConversations.size > 0
-      || !!conversationStore?.latest()
+      // F07: the tray rebuild asks this on every blur; the store answers from its memory index
+      // instead of parsing the whole conversation directory. Stores without the fast path (test
+      // fakes) still answer through latest().
+      || (typeof conversationStore?.hasSaved === 'function'
+        ? conversationStore.hasSaved()
+        : !!conversationStore?.latest())
   }
 
   // Brings back the newest saved conversation. Nothing streams, so the transcript
@@ -224,13 +307,18 @@ function createSelectionDomain(deps) {
     onActionWindowClosed: (win, { wasPinned }) => {
       if (wasPinned) getPinDomain().releasePinnedSlot()
       actionConversations.delete(win)
-      if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
+      cancelStreamForWindow(win, 'window-closed')
       createTrayIcon()
     },
     onActionWindowBlur: (win) => {
-      if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
+      // U04: hiding an unpinned result window (blur) no longer aborts its round.
+      // The stream keeps writing into the hidden renderer and commits to the
+      // ConversationStore when it finishes; only a destroyed window or game mode
+      // interrupts a round now. The tray entry below is what lets the user bring
+      // the conversation back.
       createTrayIcon()
     },
+    onToolbarVisibilityChange: (visible) => postToolbarVisibility(visible),
     log
   })
 
@@ -275,9 +363,63 @@ function createSelectionDomain(deps) {
     return settings.selectionToolbar.enabled !== false || settings.clipboard?.enabled === true || deps.clipboardNeedsSelectionHook?.() === true
   }
 
+  // F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §3.2):
+  // the hook host stops forwarding key/wheel/click events while the toolbar is off
+  // screen. This private, volatile channel mirrors the window state into it; the
+  // native ObserveInput counter (clipboard guardrail/lease logic) is untouched and
+  // keeps counting in the C++ hook thread either way. A lost message degrades to
+  // "host still suppresses" - never to the old storm - and host lifecycle events
+  // re-send the current state below.
+  function postToolbarVisibility(visible) {
+    const host = hookService?.host
+    if (!host || typeof host.postMessage !== 'function') return false
+    try {
+      host.postMessage({ type: 'toolbar-visibility', visible: visible === true })
+      return true
+    } catch (error) {
+      log('Selection toolbar visibility sync failed:', error?.message || String(error))
+      return false
+    }
+  }
+
+  function resyncToolbarVisibility() {
+    return postToolbarVisibility(windowManager ? windowManager.isToolbarVisible() : false)
+  }
+
+  function sameProgramList(left, right) {
+    return Array.isArray(left) && Array.isArray(right)
+      && left.length === right.length
+      && left.every((entry, index) => entry === right[index])
+  }
+
+  // The hook host owns the native clipboard filter. The start options below carry
+  // the initial list; a selection arriving after the user edited the blacklist
+  // refreshes it, so the native fallback never keeps injecting Ctrl+C for an app the
+  // user just excluded (or vice versa). One comparison per selection, no IPC unless
+  // the list changed.
+  function syncClipboardCopyProtection() {
+    const next = resolveClipboardCopyProtection(getSettings())
+    if (sameProgramList(next, lastClipboardCopyProtection)) return false
+    if (!hookService || typeof hookService.updateStartOptions !== 'function') {
+      // No host yet: initSelectionHook() will pick the current list up from settings.
+      lastClipboardCopyProtection = next
+      return false
+    }
+    try {
+      hookService.updateStartOptions({ clipboardExcludedApps: next }, 'clipboard-protection-change')
+    } catch (error) {
+      log('Selection clipboard protection sync failed:', error?.message || String(error))
+      return false
+    }
+    lastClipboardCopyProtection = next
+    return true
+  }
+
   function initSelectionHook(reason = 'startup') {
     if (!needsSelectionHook()) return false
     if (!hookService) {
+      const clipboardCopyProtection = resolveClipboardCopyProtection(getSettings())
+      lastClipboardCopyProtection = clipboardCopyProtection
       hookService = createHookService({
         createHost: SelectionHookService.createUtilityProcessHostFactory({
           utilityProcess,
@@ -301,10 +443,18 @@ function createSelectionDomain(deps) {
         startOptions: {
           debug: false,
           enableClipboard: getSettings().selectionToolbar.clipboardFallback,
-          clipboardCoordinationRequired: getSettings().clipboard?.enabled === true
+          clipboardCoordinationRequired: getSettings().clipboard?.enabled === true,
+          // U04: the host mirrors this list into the native clipboard filter so a
+          // blacklisted application / terminal never gets a synthesized Ctrl+C.
+          clipboardExcludedApps: clipboardCopyProtection
         },
         log
       })
+      // A replacement host starts with the toolbar hidden; re-send the real state
+      // whenever one becomes ready so a restart cannot silently freeze the input gate.
+      if (typeof hookService.onLifecycle === 'function') {
+        unbindHookLifecycle = hookService.onLifecycle(() => resyncToolbarVisibility())
+      }
     }
     hookSuspendedForSettings = false
     if (getSettings().selectionToolbar.enabled !== false) registerSelectionDisplayEvents()
@@ -353,6 +503,8 @@ function createSelectionDomain(deps) {
     }
     disposeSelectionDisplayEvents()
     windowManager.recycleToolbarWindow('dispose')
+    if (typeof unbindHookLifecycle === 'function') unbindHookLifecycle()
+    unbindHookLifecycle = null
     hookService?.dispose()
     hookService = null
   }
@@ -436,7 +588,7 @@ function createSelectionDomain(deps) {
 
   function handleTextSelection(data) {
     if (isGameModeEnabled()) { logSelectionDiagnosticOnce('game-mode', data); return }
-    if (processing) { logSelectionDiagnosticOnce('busy', data); return }
+    syncClipboardCopyProtection()
     if (!data?.text) { logSelectionDiagnosticOnce('missing-text', data); return }
     if (shouldFilterApp(data.programName)) { logSelectionDiagnosticOnce('filtered-app', data); return }
     const text = data.text.trim()
@@ -487,20 +639,50 @@ function createSelectionDomain(deps) {
     controller?.armTimeout()
   }
 
+  // The single per-window registration point: a controller leaves the map exactly
+  // once (ToolbarStreamSession.finish is idempotent), which is the per-window
+  // serialization the old global `processing` flag used to provide for the domain.
+  function finishStreamController(controller) {
+    if (!controller || streamControllers.get(controller.win) !== controller) return false
+    streamControllers.delete(controller.win)
+    if (lastStreamController === controller) {
+      lastStreamController = [...streamControllers.values()].at(-1) || null
+    }
+    // A hidden window whose round outlived its idle timer was skipped by the
+    // reclaimer (a skipped fire is not retried). Finishing the round is the moment
+    // it becomes reclaimable again, so re-arm the timer for the hidden window.
+    const win = controller.win
+    try {
+      if (win && typeof win.isDestroyed === 'function' && !win.isDestroyed()
+        && win._isPinned !== true && typeof win.isVisible === 'function' && !win.isVisible()) {
+        windowManager.armActionWindowReclaim(win)
+      }
+    } catch (error) {
+      log('Selection action window reclaim re-arm failed:', error?.message || String(error))
+    }
+    return true
+  }
+
+  function liveStreamController(win) {
+    const controller = streamControllers.get(win)
+    return controller && controller.finished !== true ? controller : null
+  }
+
   function createToolbarStreamController(win, streamId) {
+    // One live round per window: a second create for the same window replaces and
+    // cancels the previous one instead of orphaning a controller outside the map
+    // (the old global slot could not even cancel the replaced stream).
+    const previous = liveStreamController(win)
+    if (previous) cancelToolbarStream(previous, 'replaced')
     const controller = new ToolbarStreamSession({
       win,
       timeoutMs: TOOLBAR_STREAM_IDLE_TIMEOUT_MS,
-      onFinish: (finishedController) => {
-        if (currentStreamController !== finishedController) return
-        currentStreamController = null
-        processing = false
-      }
+      onFinish: (finishedController) => finishStreamController(finishedController)
     })
     if (streamId === undefined) controller.streamId = nextToolbarStreamId()
     else controller.streamId = streamId
-    currentStreamController = controller
-    processing = true
+    streamControllers.set(win, controller)
+    lastStreamController = controller
     armToolbarStreamTimeout(controller)
     return controller
   }
@@ -512,13 +694,26 @@ function createSelectionDomain(deps) {
     return streamSeq
   }
 
+  // Signals arrive from a renderer; route them to the round of THAT window instead
+  // of the single historically-current one.
+  function controllerForSender(sender) {
+    for (const controller of streamControllers.values()) {
+      if (controller.matchesSender(sender)) return controller
+    }
+    return null
+  }
+
   function isCurrentToolbarStreamSender(event) {
-    return !!currentStreamController?.matchesSender(event.sender)
+    return !!controllerForSender(event?.sender)
   }
 
   function isStaleToolbarStreamSignal(event, streamId) {
     if (streamId === undefined || streamId === null) return false
-    return currentStreamController?.streamId !== streamId
+    return controllerForSender(event?.sender)?.streamId !== streamId
+  }
+
+  function isWindowStreaming(win) {
+    return !!liveStreamController(win)
   }
 
   function saveConversation(conversation) {
@@ -560,6 +755,15 @@ function createSelectionDomain(deps) {
     }
   }
 
+  // A streaming (usually pinned) window cannot host a second round: start the new
+  // Q&A in a fresh result window, which is what "a pinned window can think while a
+  // new selection is answered" means. Otherwise reuse the warm window as before.
+  function getOrCreateRoundWindow() {
+    const win = windowManager.getOrCreateActionWindow()
+    if (!isWindowStreaming(win)) return win
+    return windowManager.createActionWindow()
+  }
+
   async function openToolbarAiAction(action, text) {
     const toolbarConfig = getSettings().selectionToolbar
     const actionDefinition = getToolbarActionDefinition(toolbarConfig, action)
@@ -572,7 +776,7 @@ function createSelectionDomain(deps) {
     // A new round starts a new thread: a snapshot left by a reclaimed window must
     // never be offered afterwards as if it were this round's history.
     clearReclaimedConversations('new-round')
-    const win = getOrCreateActionWindow()
+    const win = getOrCreateRoundWindow()
     const controller = createToolbarStreamController(win)
     const conversation = new ActionConversation({
       streamId: controller.streamId,
@@ -602,22 +806,28 @@ function createSelectionDomain(deps) {
   }
 
   function cancelActiveStream(reason) {
-    return currentStreamController ? cancelToolbarStream(currentStreamController, reason) : false
+    let cancelled = false
+    for (const controller of [...streamControllers.values()]) {
+      cancelled = cancelToolbarStream(controller, reason) || cancelled
+    }
+    return cancelled
   }
 
+  // Preserved semantics: cancel only the round that belongs to this window. Two
+  // windows can stream at once, so "the" current controller no longer exists.
   function cancelStreamForWindow(win, reason) {
-    if (currentStreamController?.win !== win) return false
-    return cancelToolbarStream(currentStreamController, reason)
+    const controller = liveStreamController(win)
+    return controller ? cancelToolbarStream(controller, reason) : false
   }
 
   // Mirrors applyGameModeState's selection half: game mode suspends the hook,
-  // drops the toolbar and cancels an in-flight round; leaving it restarts the
+  // drops the toolbar and cancels every in-flight round; leaving it restarts the
   // hook only when it had been started.
   function applyGameMode(gameMode) {
     if (gameMode) {
       hookService?.suspend('game-mode')
       hideToolbar()
-      if (currentStreamController) cancelToolbarStream(currentStreamController, 'game-mode')
+      cancelActiveStream('game-mode')
       return
     }
     if (hookService && needsSelectionHook()) hookService.start('game-mode-disabled')
@@ -630,15 +840,22 @@ function createSelectionDomain(deps) {
       shell,
       log,
       getSettings,
-      isProcessing: () => processing,
+      isProcessing: () => isProcessing(),
       hideToolbar,
       openToolbarAiAction,
       getPinDomain,
       streams: {
-        getCurrent: () => currentStreamController,
+        // Kept for the pinned contract tests and the tray paths: the most recently
+        // started live round, not the only one any more.
+        getCurrent: () => lastStreamController,
         isCurrentSender: isCurrentToolbarStreamSender,
         isStaleSignal: isStaleToolbarStreamSignal,
         cancel: (controller, reason) => cancelToolbarStream(controller, reason),
+        cancelForSender: (event, reason) => {
+          const controller = controllerForSender(event?.sender)
+          return controller ? cancelToolbarStream(controller, reason) : false
+        },
+        isWindowStreaming,
         create: (win, streamId) => createToolbarStreamController(win, streamId)
       },
       conversations: {
@@ -647,6 +864,10 @@ function createSelectionDomain(deps) {
         save: saveConversation
       }
     }
+  }
+
+  function isProcessing() {
+    return streamControllers.size > 0
   }
 
   return {
@@ -678,7 +899,7 @@ function createSelectionDomain(deps) {
     getToolbarPresentationReport,
     disposeSelectionHook,
     hookService: () => hookService,
-    isProcessing: () => processing,
+    isProcessing,
     cancelActiveStream,
     cancelStreamForWindow,
     applyGameMode,
@@ -688,5 +909,10 @@ function createSelectionDomain(deps) {
 }
 
 module.exports = {
-  createSelectionDomain
+  createSelectionDomain,
+  TERMINAL_CLIPBOARD_COPY_PROTECTION,
+  SELF_CLIPBOARD_COPY_PROTECTION,
+  DEFAULT_CLIPBOARD_COPY_PROTECTION,
+  normalizeProgramNameList,
+  resolveClipboardCopyProtection
 }

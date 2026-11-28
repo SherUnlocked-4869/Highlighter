@@ -292,6 +292,130 @@ test('buildExportArgs stays path/branch safe and keeps the legacy range form wor
   assert.equal(legacy.args.every((value) => typeof value === 'string'), true)
 })
 
+// ---------------------------------------------------------------------------
+// N03/DEV-05 + P2-05: the capsule overlay plan shared by the editor preview and the exporter.
+// The editor preview and the exported film must be ONE visible sequence; a retained export
+// material cap must report exactly what it drops instead of hiding it.
+// ---------------------------------------------------------------------------
+
+function keystrokeOverlay(items, durationMs = 600000) {
+  return options.normalizeExportRequest({
+    format: 'mp4',
+    keystrokes: { enabled: true, items }
+  }, { durationMs, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } })
+}
+
+test('P2-05: 300 repeated capsules keep the whole preview sequence, tail included', () => {
+  const items = Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const normalized = keystrokeOverlay(items)
+  assert.equal(normalized.ok, true)
+  const plan = normalized.value.keystrokes
+  assert.equal(plan.truncated, false)
+  assert.deepEqual(plan.total, { windows: 300, labels: 1 })
+  assert.deepEqual(plan.dropped, null)
+  assert.equal(plan.items.length, 300, 'the export plan keeps every capsule the editor previews')
+  assert.equal(plan.sourceItems.length, 300)
+  // The plan is the same sequence in both coordinate spaces: output time for the ffmpeg graph,
+  // source time for the editor HUD (a full-range selection maps 1:1).
+  assert.deepEqual(plan.items.at(-1), { tMs: 299500, endMs: 300600, combo: 'Ctrl+S' })
+  assert.deepEqual(plan.sourceItems.at(-1), { tMs: 299500, durationMs: 1100, combo: 'Ctrl+S' })
+  // The 240-window cap that silently hid the tail is gone: the window budget equals the editor's
+  // own 500-capsule cap, and only the label budget may still truncate (with exact metadata).
+  assert.equal(options.KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS, options.KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS)
+})
+
+test('P2-05: more than 64 distinct labels report the exact dropped capsules and range', () => {
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const items = combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo }))
+  const plan = keystrokeOverlay(items, 20000).value.keystrokes
+  assert.equal(plan.truncated, true, 'a retained material cap must never be silent')
+  assert.deepEqual(plan.total, { windows: 78, labels: 78 })
+  assert.equal(plan.items.length, 64)
+  assert.deepEqual(plan.dropped, { items: 14, labels: 14, firstSourceMs: 7400, lastSourceMs: 8700 })
+  // The kept windows are exactly the labels whose FIRST appearance is inside the label budget.
+  assert.equal(new Set(plan.items.map((item) => item.combo)).size, 64)
+  assert.equal(plan.items.some((item) => item.tMs >= 7400), false)
+  // The cap is on distinct labels, not on time: a late repeat of an already-kept label survives
+  // and is still disclosed as part of the same plan.
+  const lateRepeat = keystrokeOverlay([...items, { tMs: 9000, combo: 'Ctrl+A' }], 20000).value.keystrokes
+  assert.equal(lateRepeat.dropped.items, 14)
+  assert.deepEqual(lateRepeat.items.at(-1), { tMs: 9000, endMs: 10100, combo: 'Ctrl+A' })
+  assert.equal(lateRepeat.sourceItems.at(-1).tMs, 9000)
+})
+
+// P2-08: the trim selection must be projected onto the SOURCE sequence BEFORE any render budget is
+// applied. A project track may persist up to 2000 capsules
+// (main/services/recording-project-service.js KEYSTROKE_LIMIT), while the render budget is 500
+// windows / 64 labels. Reading/slicing to a budget before the projection deletes the tail of the
+// source sequence, so a legal 600-capsule project trimmed to its last 100 s used to plan 0 capsules
+// with `truncated` still false - preview and film both went blank with no explanation.
+test('P2-08: 600 one-per-second capsules keep the full-film plan and the tail selection', () => {
+  const items = Array.from({ length: 600 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const metadata = { durationMs: 600000, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } }
+  // Whole recording: all 600 capsules are projected first, then the 500-window budget keeps the
+  // first 500 rendered windows and discloses the other 100 with their exact source-time range.
+  const full = options.normalizeExportRequest({ format: 'mp4', keystrokes: { enabled: true, items } }, metadata)
+    .value.keystrokes
+  assert.equal(full.truncated, true)
+  assert.deepEqual(full.total, { windows: 600, labels: 1 })
+  assert.equal(full.items.length, 500)
+  assert.equal(full.sourceItems.length, 500)
+  assert.deepEqual(full.dropped, { items: 100, labels: 1, firstSourceMs: 500500, lastSourceMs: 599500 })
+  assert.deepEqual(full.items.at(-1), { tMs: 499500, endMs: 500500, combo: 'Ctrl+S' })
+
+  // Trimmed to the last 100 s: the 100 capsules INSIDE the selection all reach the plan and there
+  // is nothing to truncate, because the projection runs before the render budget.
+  const tail = options.normalizeExportRequest({
+    format: 'mp4',
+    segments: [{ startMs: 500000, endMs: 600000 }],
+    keystrokes: { enabled: true, items }
+  }, metadata).value.keystrokes
+  assert.equal(tail.truncated, false)
+  assert.equal(tail.dropped, null)
+  assert.deepEqual(tail.total, { windows: 100, labels: 1 })
+  assert.equal(tail.items.length, 100)
+  assert.deepEqual(tail.items[0], { tMs: 500, endMs: 1500, combo: 'Ctrl+S' })
+  assert.deepEqual(tail.sourceItems[0], { tMs: 500500, durationMs: 1000, combo: 'Ctrl+S' })
+})
+
+test('P2-08: the source read limit is the project cap, so a >1000-capsule tail selection survives', () => {
+  // The old input slice was MAX_ITEMS * 2 = 1000 raw capsules while the project may persist 2000
+  // (main/services/recording-project-service.js KEYSTROKE_LIMIT), so a tail selection that starts
+  // after source event 1000 was projected from an empty list.
+  assert.equal(options.KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS, 2000)
+  assert.equal(options.KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS, 500)
+  assert.equal(options.KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS, 64)
+  const items = Array.from({ length: 1500 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const metadata = { durationMs: 1500000, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } }
+  const tail = options.normalizeExportRequest({
+    format: 'mp4',
+    segments: [{ startMs: 1400000, endMs: 1500000 }],
+    keystrokes: { enabled: true, items }
+  }, metadata).value.keystrokes
+  assert.equal(tail.truncated, false)
+  assert.deepEqual(tail.total, { windows: 100, labels: 1 })
+  assert.equal(tail.items.length, 100, 'capsules after source event 1000 are still inside the selection')
+  assert.deepEqual(tail.items.at(-1), { tMs: 99500, endMs: 100000, combo: 'Ctrl+S' })
+  assert.equal(tail.sourceItems[0].tMs, 1400500)
+})
+
+test('P2-08: the renderer-to-main bridge keeps every source capsule the project can persist', () => {
+  const items = Array.from({ length: 600 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const forwarded = options.toExportRequest({
+    sessionId: 'session-1',
+    requestId: 'request-P2-08',
+    request: { format: 'mp4', keystrokes: { enabled: true, items } }
+  })
+  assert.equal(forwarded.ok, true)
+  // The bridge slice must use the SOURCE limit: a 500-item slice here would re-introduce the
+  // read-time truncation one layer above the normaliser and the export plan would silently differ
+  // from the preview plan for a 600-capsule film.
+  assert.equal(forwarded.value.keystrokes.items.length, 600)
+})
+
 test('the module loads as a classic browser script and exposes the UI helpers', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'shared', 'recording-export-options.js'), 'utf8')
   const sandbox = { globalThis: null }

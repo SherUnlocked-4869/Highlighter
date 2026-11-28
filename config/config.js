@@ -25,7 +25,17 @@ let pendingRoute = 'home'
 // excludes every page that owns an editor.
 const configDirtyReasons = new Set()
 // Reasons that die with the route: their DOM draft is discarded on navigation.
-const ROUTE_DRAFT_REASONS = { 'local-search': ['local-search-categories'], models: ['models-provider-editor'] }
+// U05: every editor that replaces its own DOM on navigation has to be listed here. The models
+// provider settings form reported the 'models-provider-settings' reason but the route table did
+// not know it, so setConfigDirty() could never clear it and the main window stayed busy (the
+// reclaimer never reclaimed it). The price editors report through the same mechanism.
+const ROUTE_DRAFT_REASONS = {
+  'local-search': ['local-search-categories'],
+  models: ['models-provider-editor', 'models-provider-settings'],
+  chat: ['chat-price-edit'],
+  translation: ['translation-price-edit'],
+  usage: ['usage-price-edit']
+}
 function reportWindowState() {
   try {
     window.electronAPI?.reportWindowState?.({
@@ -109,6 +119,9 @@ function navigate(route) {
   if (currentRoute === 'history' && route !== 'history') {
     historyThumbnailObserver?.disconnect()
     historyThumbnailObserver = null
+    // U05: the search box debounces with a 220 ms timer; leaving the route used to let that
+    // timer fire renderHistory() against the DOM of whatever page was rendered next.
+    if (typeof historyDeactivate === 'function') historyDeactivate()
   }
   // The usage page owns an auto-refresh timer plus focus/visibility listeners and
   // one IPC subscription; leaving the route must drop all three or a background
@@ -209,6 +222,9 @@ window.electronAPI.onInterfaceLanguage((language) => {
   // During boot, leave any queued navigation intact.
   applyTranslations()
   if (configInitialized) navigate(currentRoute)
+  // N06: the sidebar search results are built with t(), so a language switch has
+  // to re-resolve the index; the input/query itself stays untouched.
+  if (typeof refreshSettingsSearchLanguage === 'function') refreshSettingsSearchLanguage()
 })
 
 async function init() {
@@ -221,5 +237,8 @@ async function init() {
   applyAppearance()
   configInitialized = true
   navigate(pendingRoute)
+  // N06: Ctrl+K global search. The wiring lives in routes/settings-search.js;
+  // init is idempotent and degrades to null when the markup is missing.
+  if (typeof initSettingsSearch === 'function') initSettingsSearch()
 }
 init()

@@ -26,8 +26,20 @@ const {
 const root = path.join(__dirname, '..')
 const tokens = fs.readFileSync(path.join(root, 'shared/tokens.css'), 'utf8')
 const configCss = fs.readFileSync(path.join(root, 'config/config.css'), 'utf8')
+const searchCss = fs.readFileSync(path.join(root, 'search/search.css'), 'utf8')
 const mainSource = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const settingsEffects = fs.readFileSync(path.join(root, 'main/domains/settings-effects/index.js'), 'utf8')
+
+// The declarations of one flat CSS rule, so a guard can rule out a property
+// without depending on how the stylesheet is formatted around it.
+function cssRule(sheet, selector) {
+  const start = sheet.indexOf(selector)
+  assert.ok(start >= 0, `${selector} is declared`)
+  const open = sheet.indexOf('{', start)
+  const close = sheet.indexOf('}', open)
+  assert.ok(open > start && close > open, `${selector} has a declaration block`)
+  return sheet.slice(start, close + 1)
+}
 
 function tokenBackground(sheet, selector) {
   const block = selector === ':root'
@@ -189,17 +201,18 @@ test('every window that owns a native backdrop takes it from the shared helper',
   }
   // main.js is an owner again (2026-10-24): the settings window is opaque after the
   // translucent experiment was rejected twice, so it takes the shared backdrop and
-  // opts into the theme-change repaint like every other rounded-card window.
+  // opts into the theme-change repaint like every other opaque window.
   const mainCreate = mainSource.slice(mainSource.indexOf('function createMainWindow'))
   assert.match(mainCreate.slice(0, mainCreate.indexOf('win.once(')),
     /trackWindowBackdrop\(win\)/, 'the settings window is tracked')
   assert.match(mainCreate, /backgroundColor: windowBackdropColor\(getSettings\(\), nativeTheme\)/)
 })
 
-test('the rounded-card windows are registered for the theme-change repaint', () => {
-  // Search and the selection result windows both cut their own corners. They do
-  // not repaint themselves: they opt into the registry, and the appearance
-  // broadcast walks it, so there is exactly one repaint path to reason about.
+test('the on-demand windows are registered for the theme-change repaint', () => {
+  // Search and the selection result windows are created after the app starts, so
+  // they can be alive when the theme flips. They do not repaint themselves: they
+  // opt into the registry, and the appearance broadcast walks it, so there is
+  // exactly one repaint path to reason about.
   const searchDomain = fs.readFileSync(path.join(root, 'main/domains/search/index.js'), 'utf8')
   assert.match(searchDomain, /searchWindow = trackWindowBackdrop\(win\)/, 'the search window is tracked')
   const manager = fs.readFileSync(path.join(root, 'main/services/selection-window-manager.js'), 'utf8')
@@ -255,15 +268,42 @@ test('the transparent-window scaffolding is gone', () => {
   assert.doesNotMatch(tokens, /--win-shadow/)
 })
 
-test('the shell fills the window without drawing a second frame', () => {
-  const shellRule = configCss.slice(
-    configCss.indexOf('.window-shell{'),
-    configCss.indexOf('.window-shell::before'))
-  assert.match(shellRule, /inset:0\b/, 'the shell fills the window (no frame margin)')
-  assert.match(shellRule, /background:var\(--bg\)/, 'the shell paints the base surface')
-  assert.doesNotMatch(shellRule, /\b(?:border(?:-[\w-]+)?|box-shadow)\s*:/,
-    'the native window is the only source of corners, border and shadow')
-  assert.doesNotMatch(shellRule, /backdrop-filter/, 'the shell is not a glass film')
+test('the window shells fill the frame without drawing a second one', () => {
+  // Both opaque windows used to draw a rounded card inside the native frame. The
+  // CSS radius cut four transparent wedges at the corners and --shadow-3 fell into
+  // them — visible as four arcs that did not match the window face (the settings
+  // window was fixed in feb5b59, the search window on 2026-11-27). The OS alone
+  // owns the window shape now: no shell may reintroduce a CSS outline.
+  const cases = [
+    { label: 'the settings shell', css: configCss, selector: '.window-shell{' },
+    { label: 'the search shell', css: searchCss, selector: '.search-shell {' }
+  ]
+  for (const { label, css, selector } of cases) {
+    const shellRule = cssRule(css, selector)
+    assert.match(shellRule, /inset:\s*0\b/, `${label} fills the window (no frame margin)`)
+    assert.match(shellRule, /background:\s*var\(--bg\)/, `${label} paints the base surface`)
+    assert.doesNotMatch(shellRule, /\b(?:border(?:-[\w-]+)?|box-shadow)\s*:/,
+      `${label}: the native window is the only source of corners, border and shadow`)
+    assert.doesNotMatch(shellRule, /backdrop-filter/, `${label} is not a glass film`)
+  }
+  // The page paints what the native backdrop paints: both are the --bg token, so a
+  // transparent corner could never show a different surface.
+  const bodyRule = cssRule(searchCss, '\nbody {')
+  assert.match(bodyRule, /background:\s*var\(--bg\)/, 'the search page paints the theme background')
+})
+
+test('the search window keeps native rounding and the OS shadow', () => {
+  // The search page no longer clips its own corners, so the native frame has to
+  // stay the one that rounds the window. The window must also remain opaque: a
+  // transparent window loses the OS rounding and the shadow.
+  const searchDomain = fs.readFileSync(path.join(root, 'main/domains/search/index.js'), 'utf8')
+  const createBlock = searchDomain.slice(searchDomain.indexOf('function createSearchWindow'))
+  const options = createBlock.slice(0, createBlock.indexOf('webPreferences'))
+  assert.doesNotMatch(options, /transparent:\s*true/, 'the search window is opaque')
+  assert.doesNotMatch(options, /roundedCorners:\s*false/, 'native rounding stays enabled')
+  assert.doesNotMatch(options, /hasShadow:\s*false/, 'the OS provides the shadow')
+  assert.doesNotMatch(options, /backgroundColor:\s*['"]#[0-9a-fA-F]{6}/,
+    'the search window must not hardcode a backdrop colour')
 })
 
 test('the settings window is tracked by the opaque-backdrop module', () => {

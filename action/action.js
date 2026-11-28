@@ -1,4 +1,10 @@
 const actionBridge = window.actionAPI
+// H03: the Markdown state machine and the streaming block splitter live in
+// shared/simple-markdown.js (loaded as a classic script by action.html) so
+// node:test can drive them directly. `escapeHtml` comes from the same module
+// instead of a second copy here.
+const markdown = window.simpleMarkdown
+const escapeHtml = markdown.escapeHtml
 // P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
 // and `applyTranslations` bindings are already visible here. They must NOT be
 // re-declared (destructuring them from `window` throws "Identifier 't' has
@@ -10,9 +16,12 @@ const DEFAULT_FOLLOW_UP = { enabled: false, disabledReason: '', maxTurns: 10, qu
 // P0-1-T5 (S12): the built-in label for the explain flow, kept as a named key so
 // `test/selection-toolbar-settings.test.js` can still pin the fallback.
 const EXPLAIN_LABEL = t('action.answer.label.explain')
+// H03: h4-h6 and tables joined the set together with the parser support; the
+// table tags are emitted without any attribute, so the whitelist below stays
+// untouched (href/rel only).
 const ALLOWED_MARKDOWN_TAGS = [
-  'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'hr',
-  'li', 'ol', 'p', 'pre', 'strong', 'ul'
+  'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+  'li', 'ol', 'p', 'pre', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul'
 ]
 
 const ACTION_ICONS = {
@@ -159,15 +168,6 @@ function showLoading(visible) {
   if (el.loading) el.loading.style.display = visible ? 'flex' : 'none'
 }
 
-function escapeHtml(value) {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
 function normalizeExternalUrl(value) {
   try {
     const url = new URL(String(value || ''))
@@ -196,99 +196,8 @@ function armStreamTimeout() {
   }, STREAM_IDLE_TIMEOUT_MS)
 }
 
-function safeLinkMarkup(label, value) {
-  const decoded = value
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-  const url = normalizeExternalUrl(decoded)
-  if (!url) return label
-  return `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${label}</a>`
-}
-
-function inlineMarkdown(text) {
-  return text
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/~~(.+?)~~/g, '<del>$1</del>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => safeLinkMarkup(label, url))
-}
-
-function simpleMarkdown(text) {
-  let value = escapeHtml(text)
-  value = value.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _language, code) => `<pre><code>${code}</code></pre>`)
-
-  const lines = value.split('\n')
-  const output = []
-  let inList = false
-  let listType = ''
-
-  function closeList() {
-    if (!inList) return
-    output.push(`</${listType}>`)
-    inList = false
-  }
-
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (!trimmed) {
-      closeList()
-      continue
-    }
-    if (/^-{3,}$/.test(trimmed)) {
-      closeList()
-      output.push('<hr>')
-      continue
-    }
-    if (trimmed.startsWith('&gt; ')) {
-      closeList()
-      output.push(`<blockquote>${inlineMarkdown(trimmed.slice(4))}</blockquote>`)
-      continue
-    }
-
-    const heading = trimmed.match(/^(#{1,3})\s+(.+)/)
-    if (heading) {
-      closeList()
-      const level = heading[1].length
-      output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
-      continue
-    }
-
-    const unorderedItem = line.match(/^\s*[-*]\s+(.+)/)
-    if (unorderedItem) {
-      if (!inList || listType !== 'ul') {
-        closeList()
-        output.push('<ul>')
-        inList = true
-        listType = 'ul'
-      }
-      output.push(`<li>${inlineMarkdown(unorderedItem[1])}</li>`)
-      continue
-    }
-
-    const orderedItem = line.match(/^\s*\d+\.\s+(.+)/)
-    if (orderedItem) {
-      if (!inList || listType !== 'ol') {
-        closeList()
-        output.push('<ol>')
-        inList = true
-        listType = 'ol'
-      }
-      output.push(`<li>${inlineMarkdown(orderedItem[1])}</li>`)
-      continue
-    }
-
-    closeList()
-    if (line.includes('<pre>') || line.includes('</pre>')) output.push(line)
-    else output.push(`<p>${inlineMarkdown(line)}</p>`)
-  }
-  closeList()
-  return output.join('')
-}
-
 function sanitizedMarkdown(text) {
-  const markup = simpleMarkdown(text)
+  const markup = markdown.render(text)
   if (!window.DOMPurify) return `<p>${escapeHtml(text)}</p>`
   return window.DOMPurify.sanitize(markup, {
     ALLOWED_TAGS: ALLOWED_MARKDOWN_TAGS,
@@ -312,14 +221,67 @@ function normalizeLinks(root) {
   }
 }
 
+// H03: a streamed answer is rendered as two levels instead of replacing the
+// whole `innerHTML` every animation frame. Blocks completed by a blank line or a
+// closed fence are appended to `.answer-stable` only when they first become
+// stable, so a text selection inside them survives the next frame; the still
+// open tail is rewritten into `.answer-tail`, which keeps the per-frame DOM work
+// proportional to the tail rather than to the answer. Both wrappers use
+// `display: contents` so the markdown spacing rules in action.css keep applying
+// to the block elements themselves.
+function createAnswerStream(turn) {
+  const stableEl = document.createElement('div')
+  stableEl.className = 'answer-stable'
+  stableEl.setAttribute('data-stable', '')
+  stableEl.style.display = 'contents'
+  const tailEl = document.createElement('div')
+  tailEl.className = 'answer-tail'
+  tailEl.setAttribute('data-stream-tail', '')
+  tailEl.style.display = 'contents'
+  turn.answerEl.replaceChildren(stableEl, tailEl)
+  turn.answerStream = { stableEl, tailEl, blocks: [] }
+  return turn.answerStream
+}
+
+function appendMarkdownBlock(container, source) {
+  const holder = document.createElement('div')
+  holder.innerHTML = sanitizedMarkdown(source)
+  normalizeLinks(holder)
+  while (holder.firstChild) container.appendChild(holder.firstChild)
+}
+
+function renderStreamingAnswer(turn) {
+  const stream = turn.answerStream || createAnswerStream(turn)
+  const { blocks, tail } = markdown.splitStreamBlocks(turn.content)
+  const plan = markdown.planStreamUpdate(stream.blocks, blocks)
+  if (plan.rebuild) stream.stableEl.replaceChildren()
+  for (let index = plan.appendFrom; index < blocks.length; index += 1) {
+    appendMarkdownBlock(stream.stableEl, blocks[index])
+  }
+  stream.blocks = blocks
+
+  const holder = document.createElement('div')
+  holder.innerHTML = sanitizedMarkdown(tail)
+  normalizeLinks(holder)
+  const cursorElement = document.createElement('span')
+  cursorElement.className = 'cursor'
+  const fragment = document.createDocumentFragment()
+  while (holder.firstChild) fragment.appendChild(holder.firstChild)
+  fragment.appendChild(cursorElement)
+  stream.tailEl.replaceChildren(fragment)
+}
+
 function renderTurnAnswer(turn, { cursor = false } = {}) {
+  if (cursor) {
+    renderStreamingAnswer(turn)
+    return
+  }
+  // The final render is one full pass. It runs on stream:done as well, which
+  // guarantees the answer matches the completed text even when the last frame
+  // never ran; it is also the only point where the whole answer is replaced.
+  turn.answerStream = null
   turn.answerEl.innerHTML = sanitizedMarkdown(turn.content)
   normalizeLinks(turn.answerEl)
-  if (cursor) {
-    const cursorElement = document.createElement('span')
-    cursorElement.className = 'cursor'
-    turn.answerEl.appendChild(cursorElement)
-  }
 }
 
 function createAssistantTurn() {

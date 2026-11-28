@@ -427,6 +427,182 @@ test('the editor demo request is accepted by the shared R5 normaliser (mp4/webm,
   assert.equal(exportOptions.normalizeExportRequest(bareRequest, metadata).value.demo, null)
 })
 
+// P2-05: the controller exposes ONE visible capsule sequence for the preview HUD and the export,
+// computed by the same shared normaliser the main process runs, and reports every retained
+// export material cap in advance (exact counts + source-time range) instead of hiding it.
+test('P2-05: the controller plans the exported capsule sequence and surfaces material-cap truncation', async () => {
+  const exportOptions = require('../shared/recording-export-options')
+  const project = {
+    id: 'project-keystrokes',
+    media: { durationMs: 600000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } },
+    recovery: { cleanStop: true, errorCode: '' }
+  }
+  const METADATA = { durationMs: 600000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  const create = (projectValue, metadata = METADATA) => require('../record/trim-controller').createRecordTrimController({
+    projectId: projectValue.id,
+    project: projectValue,
+    metadata,
+    translate: (key) => key,
+    available: true
+  })
+  const controller = create(project)
+  controller.applyEventTrack({
+    pointer: [],
+    clicks: [],
+    keystrokes: Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  })
+  assert.equal(controller.setExportKeystrokes(true), true)
+  const state = controller.state()
+  assert.equal(state.keystrokes.items.length, 300, 'the raw capture sequence still rides the request')
+  assert.equal(state.keystrokes.plan.truncated, false)
+  assert.equal(state.keystrokes.plan.items.length, 300, 'the preview plan keeps every capsule the film will show')
+  assert.deepEqual(state.keystrokes.plan.items.at(-1), { tMs: 299500, durationMs: 1100, combo: 'Ctrl+S' })
+
+  // The submitted request must reproduce the SAME plan through the shared normaliser: preview and
+  // export cannot disagree for the 300-repeat case.
+  let request = null
+  await controller.startExport({
+    submit: async ({ request: payload }) => {
+      request = payload
+      return { status: 'accepted', task: { taskId: 'task-1', state: 'running' } }
+    }
+  })
+  assert.equal(request.keystrokes.enabled, true)
+  assert.equal(request.keystrokes.items.length, 300)
+  const exported = exportOptions.normalizeExportRequest(request, METADATA)
+  assert.equal(exported.ok, true)
+  assert.deepEqual(exported.value.keystrokes.sourceItems, state.keystrokes.plan.items)
+  assert.equal(exported.value.keystrokes.truncated, false)
+
+  // >64 distinct labels: the retained ffmpeg label budget truncates, and the plan reports exactly
+  // which capsules and source-time range are lost BEFORE the user confirms the export.
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const manyMetadata = { durationMs: 20000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  const many = create({
+    ...project,
+    id: 'project-many',
+    media: { durationMs: 20000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } }
+  }, manyMetadata)
+  many.applyEventTrack({
+    pointer: [],
+    clicks: [],
+    keystrokes: combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo }))
+  })
+  const manyPlan = many.state().keystrokes.plan
+  assert.equal(manyPlan.maxLabels, exportOptions.KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS)
+  assert.equal(manyPlan.truncated, true)
+  assert.deepEqual(manyPlan.total, { windows: 78, labels: 78 })
+  assert.deepEqual(manyPlan.dropped, { items: 14, labels: 14, firstSourceMs: 7400, lastSourceMs: 8700 })
+  assert.equal(manyPlan.items.length, 64)
+
+  // Trimming the selection updates the SAME plan: a capsule in a removed gap leaves the HUD plan
+  // exactly as it leaves the export plan (cut-clipped window ends included).
+  const trimmedMetadata = { durationMs: 10000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  const trimmed = create({
+    ...project,
+    id: 'project-trimmed',
+    media: { durationMs: 10000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 1, keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 2000 }], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+  }, trimmedMetadata)
+  trimmed.applyEventTrack({
+    pointer: [],
+    clicks: [],
+    keystrokes: [
+      { tMs: 1000, combo: 'F5' },
+      { tMs: 1500, combo: 'Alt+Tab' },
+      { tMs: 5000, combo: 'Ctrl+S' }
+    ]
+  })
+  assert.equal(trimmed.setExportKeystrokes(true), true)
+  const trimmedPlan = trimmed.state().keystrokes.plan
+  assert.deepEqual(trimmedPlan.items, [
+    { tMs: 1000, durationMs: 500, combo: 'F5' },
+    { tMs: 1500, durationMs: 500, combo: 'Alt+Tab' }
+  ])
+  let trimmedRequest = null
+  await trimmed.startExport({
+    submit: async ({ request: payload }) => {
+      trimmedRequest = payload
+      return { status: 'accepted', task: { taskId: 'task-2', state: 'running' } }
+    }
+  })
+  const trimmedExport = exportOptions.normalizeExportRequest(trimmedRequest, trimmedMetadata)
+  assert.deepEqual(trimmedExport.value.keystrokes.sourceItems, trimmedPlan.items)
+})
+
+// P2-08: the editor used to truncate the project's capsule track to the first 500 AT READ TIME and
+// only then project the trim selection. A legal 600-capsule project trimmed to its last 100 s
+// therefore planned 0 capsules (the read cap had already deleted them) without any truncation
+// disclosure. The read limit is now the project's own KEYSTROKE_LIMIT (2000) and the 500-window
+// render budget is applied AFTER the projection.
+test('P2-08: the editor reads the whole project track before projecting the trim selection', async () => {
+  const exportOptions = require('../shared/recording-export-options')
+  const METADATA = { durationMs: 600000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  const project = {
+    id: 'project-keystrokes-600',
+    media: { durationMs: 600000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } },
+    recovery: { cleanStop: true, errorCode: '' }
+  }
+  const controller = require('../record/trim-controller').createRecordTrimController({
+    projectId: project.id,
+    project,
+    metadata: METADATA,
+    translate: (key) => key,
+    available: true
+  })
+  controller.applyEventTrack({
+    pointer: [],
+    clicks: [],
+    keystrokes: Array.from({ length: 600 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  })
+  assert.equal(controller.setExportKeystrokes(true), true)
+
+  // Whole film: all 600 source capsules survive the read, the plan renders 500 windows and
+  // discloses the other 100 with their exact source-time range.
+  const full = controller.state().keystrokes
+  assert.equal(full.count, 600, 'every source capsule inside the project limit is kept for projection')
+  assert.equal(full.items.length, 600)
+  assert.equal(full.plan.truncated, true)
+  assert.equal(full.plan.items.length, 500)
+  assert.deepEqual(full.plan.total, { windows: 600, labels: 1 })
+  assert.deepEqual(full.plan.dropped, { items: 100, labels: 1, firstSourceMs: 500500, lastSourceMs: 599500 })
+
+  // Trim to the last 100 s (split at 500 s, delete the head): the SAME 600 source events are
+  // re-projected, so every capsule inside the selection renders and there is nothing to disclose.
+  assert.equal(controller.splitAt(500000), true)
+  assert.equal(controller.deleteSegmentAt(250000), true)
+  assert.deepEqual(controller.state().segments, [{ startMs: 500000, endMs: 600000 }])
+  const tail = controller.state().keystrokes
+  assert.equal(tail.count, 600, 'trimming the selection never mutates the source track')
+  assert.equal(tail.plan.truncated, false)
+  assert.deepEqual(tail.plan.dropped, null)
+  assert.equal(tail.plan.items.length, 100)
+  // keystrokePlan exposes the HUD sequence on the SOURCE clock (it maps the normaliser's
+  // sourceItems), so the first capsule in the tail selection is the source event at 500.5 s.
+  assert.deepEqual(tail.plan.items[0], { tMs: 500500, durationMs: 1000, combo: 'Ctrl+S' })
+
+  // The submitted request still carries the full source sequence, and the shared normaliser the main
+  // process runs derives the SAME tail plan - preview and film cannot disagree.
+  let request = null
+  await controller.startExport({
+    submit: async ({ request: payload }) => {
+      request = payload
+      return { status: 'accepted', task: { taskId: 'task-p208', state: 'running' } }
+    }
+  })
+  assert.deepEqual(request.segments, [{ startMs: 500000, endMs: 600000 }])
+  assert.equal(request.keystrokes.items.length, 600, 'the bridge payload is the full source sequence')
+  const exported = exportOptions.normalizeExportRequest(request, METADATA)
+  assert.equal(exported.ok, true)
+  assert.equal(exported.value.keystrokes.truncated, false)
+  assert.deepEqual(exported.value.keystrokes.sourceItems, tail.plan.items)
+})
+
 // The timeline module is unit-testable on its own; a quick sanity check here proves the
 // repointed markup's gestures can be expressed with it (full coverage in
 // test/recording-editor-ui.test.js).

@@ -87,7 +87,11 @@ function createFakeDom() {
         value: Object.hasOwn(attributes, 'value') ? attributes.value : '',
         disabled: Object.hasOwn(attributes, 'disabled'),
         onclick: null,
-        onchange: null
+        onchange: null,
+        // Live-region updates mutate attributes instead of rebuilding the page;
+        // recordingSwitchMarkup() only ever emits "switch" / "switch on", so the
+        // fake mirrors what a real button would expose.
+        setAttribute(name, value) { this.attrs[name] = String(value) }
       }
       for (const [name, value] of Object.entries(attributes)) {
         if (name.startsWith('data-')) element.dataset[camelCase(name.slice(5))] = value
@@ -352,7 +356,8 @@ test('the shell registers the recording route, its title and its poll cleanup', 
   // Leaving the route must stop the state poll; the hook is optional-call guarded
   // so an older route file cannot take the navigation down.
   assert.match(shellSource, /currentRoute === 'recording' && route !== 'recording'[\s\S]{0,160}recordingDeactivate/)
-  assert.match(routeSource, /function recordingDeactivate\(\) \{\s*stopRecordingWorkbenchPolling\(\)\s*\}/)
+  // U05: leaving the recording route also cancels a pending audio preflight.
+  assert.match(routeSource, /function recordingDeactivate\(\) \{\s*stopRecordingWorkbenchPolling\(\)[\s\S]{0,500}?cancelRecordingPreflight\(\)\s*\}/)
   assert.match(routeSource, /window\.configRoutes\['renderRecording'\]/)
 })
 
@@ -502,7 +507,8 @@ test('choices and the start payload follow the frozen §9.1 shape', async () => 
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: false
+    demoEnhance: false,
+    demoKeystrokes: false
   })
 
   harness.run(`window.__testState = ${JSON.stringify(workbenchState({ config: workbenchConfig({ mode: 'region' }) }))}`)
@@ -615,7 +621,8 @@ test('start sends the frozen payload and switches to the region entry', async ()
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
       saveDirectory: 'D:/Videos',
-      demoEnhance: false
+      demoEnhance: false,
+      demoKeystrokes: false
     }
   })
 
@@ -793,7 +800,8 @@ test('window choices and the start payload follow the frozen §2.1 shape', async
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: false
+    demoEnhance: false,
+    demoKeystrokes: false
   })
 })
 
@@ -851,7 +859,8 @@ test('window mode lists recordable windows, selects one and sends the token payl
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
       saveDirectory: 'D:/Videos',
-      demoEnhance: false
+      demoEnhance: false,
+      demoKeystrokes: false
     }
   })
   assert.equal(Object.hasOwn(calls.start[0], 'displayId'), false)
@@ -1016,11 +1025,13 @@ test('preload workbenchStart forwards the demo switch in the frozen config shape
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: true
+    demoEnhance: true,
+    demoKeystrokes: true
   }
   api.workbenchStart({ mode: 'display', displayId: 'display-1', config: baseConfig })
   assert.equal(invocations[0].channel, 'record:workbench-start')
   assert.equal(invocations[0].payload.config.demoEnhance, true, 'the whitelist must not drop the boolean')
+  assert.equal(invocations[0].payload.config.demoKeystrokes, true, 'the keystroke opt-in must survive the whitelist')
   assert.equal(invocations[0].payload.displayId, 'display-1')
   assert.deepEqual(plain(invocations[0].payload.config), baseConfig, 'every frozen config field survives the sanitizer')
 
@@ -1028,13 +1039,16 @@ test('preload workbenchStart forwards the demo switch in the frozen config shape
   api.workbenchStart({ mode: 'window', windowToken: 'token-1', config: { ...baseConfig, mode: 'window', displayId: '' } })
   assert.equal(invocations[1].payload.windowToken, 'token-1')
   assert.equal(invocations[1].payload.config.demoEnhance, true)
+  assert.equal(invocations[1].payload.config.demoKeystrokes, true)
 
   // A missing / non-boolean value falls back to false; unrelated input is dropped.
-  api.workbenchStart({ mode: 'region', config: { demoEnhance: 'yes', unexpected: 'drop me' } })
+  api.workbenchStart({ mode: 'region', config: { demoEnhance: 'yes', demoKeystrokes: 'yes', unexpected: 'drop me' } })
   assert.equal(invocations[2].payload.config.demoEnhance, false)
+  assert.equal(invocations[2].payload.config.demoKeystrokes, false)
   assert.equal(Object.hasOwn(invocations[2].payload.config, 'unexpected'), false)
   api.workbenchStart({ mode: 'region' })
   assert.equal(invocations[3].payload.config.demoEnhance, false)
+  assert.equal(invocations[3].payload.config.demoKeystrokes, false)
 })
 
 test('demo enhance is a session-only opt-in carried by every mode payload', async () => {
@@ -1089,6 +1103,134 @@ test('demo enhance is a session-only opt-in carried by every mode payload', asyn
   assert.equal(demoSwitches()[0].attrs['aria-checked'], 'false', 'a new workbench visit resets the switch')
   const resetStart = await startAndRead(3)
   assert.equal(resetStart.config.demoEnhance, false)
+})
+
+test('global shortcut capture is a separate session-only opt-in', async () => {
+  // DEV-04 section 2: the global keyboard channel is only enabled for a take when
+  // the user turns this second switch on. It must stay independent from
+  // demoEnhance (different privacy scope), default off, and travel on the frozen
+  // config shape. P2-01: the copy promises "this recording only", so the opt-in is
+  // one-shot - an actual take consumes it, a failed start keeps the choice.
+  assert.match(preloadSource, /demoKeystrokes: config\.demoKeystrokes === true/, 'the preload sanitizer forwards the boolean')
+  assert.match(routeSource, /demoKeystrokes: choices \? choices\.demoKeystrokes === true : false/, 'the start payload carries the per-recording value')
+  assert.match(routeSource, /name !== 'demoKeystrokes'/, 'the switch whitelist accepts the new name')
+  assert.match(routeSource, /recordingSwitchMarkup\(choices\.demoKeystrokes, 'demoKeystrokes', 'demo-keystrokes'/, 'the parameters section renders the switch')
+
+  const { api, calls } = createApi(workbenchState())
+  let failNextStart = false
+  let nextStartResult = null
+  api.workbenchStart = async (payload) => {
+    calls.start.push(plain(payload))
+    if (failNextStart) return { ok: false, code: 'display-unavailable' }
+    return nextStartResult || { ok: true }
+  }
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+
+  const keystrokeSwitches = () => queryAll(harness.dom, '[data-testid="demo-keystrokes"]')
+  assert.equal(keystrokeSwitches().length, 1, 'the recording parameters expose one keystroke switch')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the switch is off by default')
+  assert.equal(harness.dom.view.innerHTML.includes('\u5f55\u5236\u5176\u4ed6\u5e94\u7528\u7684\u5feb\u6377\u952e'), true, 'the row has its localized label')
+  assert.match(harness.dom.view.innerHTML, /\u4e0d\u8bb0\u5f55\u666e\u901a\u8f93\u5165\u6587\u5b57/, 'the hint states the typed-text exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u5bc6\u7801\u6846/, 'the hint names the password-field exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u8f93\u5165\u6cd5\u7ec4\u5b57/, 'the hint names the IME exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u4ec5\u672c\u6b21\u5f55\u5236\u751f\u6548/, 'the hint states the session-only scope')
+
+  // Toggling the keystroke switch must not touch the mouse-enhance switch.
+  keystrokeSwitches()[0].onclick()
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-enhance"]')[0].attrs['aria-checked'], 'false', 'the two opt-ins are independent')
+
+  const startAndRead = async (expectedIndex) => {
+    click(harness.dom, '[data-testid="start-recording"]')
+    await harness.settle()
+    return calls.start[expectedIndex]
+  }
+
+  // Start A carries the opt-in the user just chose. The successful start consumes
+  // it: the same page, with no navigation, must show the switch closed again.
+  const firstStart = await startAndRead(0)
+  assert.equal(firstStart.config.demoKeystrokes, true, 'the take the user opted in for carries the boolean')
+  assert.equal(firstStart.config.demoEnhance, false, 'the other opt-in stays off')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'a successful start closes the switch on the same page')
+  assert.equal(keystrokeSwitches()[0].attrs.class, 'switch', 'the rendered control drops its on class too')
+  assert.equal(harness.run('recordingWorkbenchChoices.demoKeystrokes'), false, 'the state the next payload is built from is closed')
+
+  // Start B happens on the SAME workbench page: no renderRecording(), no route
+  // change, no re-render at all. It must not turn global capture back on.
+  const secondStart = await startAndRead(1)
+  assert.equal(secondStart.config.demoKeystrokes, false, 'the next take on the same page starts opted out')
+  assert.equal(secondStart.config.demoEnhance, false, 'the unrelated opt-in is untouched')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the switch stays closed')
+
+  // A rejected start is not a take: it keeps the choice the user just made so the
+  // retry does not silently lose the opt-in.
+  keystrokeSwitches()[0].onclick()
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true')
+  failNextStart = true
+  const failedStart = await startAndRead(2)
+  assert.equal(failedStart.config.demoKeystrokes, true, 'the rejected attempt was built from the choice')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true', 'a failed start keeps the user choice')
+  failNextStart = false
+  const retriedStart = await startAndRead(3)
+  assert.equal(retriedStart.config.demoKeystrokes, true, 'the retry still carries the preserved choice')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the successful retry consumes it')
+
+  // Window mode still forwards the per-take opt-in (the main process gates the
+  // channel), and it is consumed by its own start exactly like the other modes.
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'the reset survives a later section render')
+  queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].onclick()
+  const windowStart = await startAndRead(4)
+  assert.equal(windowStart.mode, 'window')
+  assert.equal(windowStart.config.demoKeystrokes, true, 'window mode forwards the opt-in for its own take')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'and consumes it after the start')
+
+  // P1-01 review: focusing the running bar is NOT a new take, and a cancelled region overlay is
+  // NOT a take either. Both must keep the one-shot opt-in armed; a successful start consumes it
+  // (display/window still answer the legacy `{ok:true}` shape, the region flow answers
+  // `created:true|false`). These are the three workbench start state transitions the review
+  // asked to cover.
+  queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].onclick()
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true')
+  nextStartResult = { ok: true, focused: true }
+  const focusedStart = await startAndRead(5)
+  assert.equal(focusedStart.config.demoKeystrokes, true, 'the focused start still carried the armed choice')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true', 'focusing the running bar does not consume the one-shot opt-in')
+  nextStartResult = { ok: true, created: false }
+  const cancelledStart = await startAndRead(6)
+  assert.equal(cancelledStart.config.demoKeystrokes, true, 'the cancelled region start still carried the armed choice')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true', 'a cancelled region selection does not consume the opt-in')
+  nextStartResult = { ok: true, created: true }
+  const createdStart = await startAndRead(7)
+  assert.equal(createdStart.config.demoKeystrokes, true)
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'a created region take consumes the opt-in')
+  assert.equal(harness.run('recordingWorkbenchChoices.demoKeystrokes'), false, 'the next payload is built opted out')
+  nextStartResult = null
+
+  // The one-shot reset is a pure decision on the start result; the unrelated
+  // demoEnhance switch is never part of it.
+  assert.match(routeSource, /function recordingStartCreatedRecording\(result\)/, 'the receipt predicate is a single helper')
+  assert.match(routeSource, /result\.focused === true/, 'focus-only is not a created take')
+  assert.match(routeSource, /result\.created === false/, 'a cancelled overlay is not a created take')
+  assert.match(routeSource, /function choicesAfterRecordingStart\(choices, result\)/, 'the one-shot reset is a single helper, not scattered mutations')
+  assert.match(routeSource, /button\.setAttribute\('aria-checked'/, 'the live switch is repainted, not rebuilt')
+  const afterSuccess = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true, demoEnhance: true }, { ok: true }))'))
+  assert.equal(afterSuccess.demoKeystrokes, false)
+  assert.equal(afterSuccess.demoEnhance, true, 'the helper only touches the shortcut switch')
+  const afterFailure = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: false, code: "display-unavailable" }))'))
+  assert.equal(afterFailure.demoKeystrokes, true, 'a failed start is not a take')
+  const afterFocusOnly = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, focused: true }))'))
+  assert.equal(afterFocusOnly.demoKeystrokes, true, 'focusing the running bar is not a take')
+  const afterCancelledRegion = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, created: false }))'))
+  assert.equal(afterCancelledRegion.demoKeystrokes, true, 'a cancelled region selection is not a take')
+  const afterCreatedRegion = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, created: true }))'))
+  assert.equal(afterCreatedRegion.demoKeystrokes, false, 'a created region take consumes the opt-in')
+  const afterNoResult = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }))'))
+  assert.equal(afterNoResult.demoKeystrokes, false, 'a channel that resolved without a result still started the take')
 })
 
 test('records filter and mode labels cover window recordings', async () => {

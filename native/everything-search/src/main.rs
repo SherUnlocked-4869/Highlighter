@@ -29,7 +29,7 @@ use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetClassNameW,
-    GetMessageW, GetWindowLongPtrW, GWLP_USERDATA, PostMessageW, RegisterClassW,
+    GetMessageW, GetWindowLongPtrW, IsWindow, GWLP_USERDATA, PostMessageW, RegisterClassW,
     SendMessageTimeoutW, SetWindowLongPtrW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COPYDATA, WM_DESTROY, WM_QUIT,
 };
@@ -50,18 +50,26 @@ const REQ_PATH: u32 = 0x0000_0002;
 const REQ_EXTENSION: u32 = 0x0000_0008;
 const REQ_SIZE: u32 = 0x0000_0010;
 const REQ_DATE_MODIFIED: u32 = 0x0000_0040;
+/// U04 (section 4.4 item 7): the file attribute dword, returned between the modified
+/// time and the highlighted strings. Used to tell directories apart from files
+/// (`FILE_ATTRIBUTE_DIRECTORY`) so the search window can draw a folder glyph.
+const REQ_ATTRIBUTES: u32 = 0x0000_0100;
 const REQ_HIGHLIGHTED_NAME: u32 = 0x0000_2000;
 const REQ_HIGHLIGHTED_PATH: u32 = 0x0000_4000;
 /// Canonical flag order (ascending bit value) — result data follows this order.
-const REQUEST_FLAGS_ORDER: [(u32, &str); 7] = [
+const REQUEST_FLAGS_ORDER: [(u32, &str); 8] = [
     (REQ_FILE_NAME, "name"),
     (REQ_PATH, "path"),
     (REQ_EXTENSION, "extension"),
     (REQ_SIZE, "size"),
     (REQ_DATE_MODIFIED, "modifiedAt"),
+    (REQ_ATTRIBUTES, "attributes"),
     (REQ_HIGHLIGHTED_NAME, "highlightedName"),
     (REQ_HIGHLIGHTED_PATH, "highlightedPath"),
 ];
+
+/// `FILE_ATTRIBUTE_DIRECTORY` from the Win32 file attribute dword.
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 
 const SEARCH_MATCH_PATH: u32 = 0x0000_0004;
 
@@ -83,13 +91,39 @@ const WAIT_READY_DEFAULT_MS: u64 = 30000;
 const WAIT_READY_MAX_MS: u64 = 120000;
 const WAIT_READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const MAX_PROBED_WINDOWS: usize = 6;
+/// P2-07: maximum number of status/query calls skipped between re-selection attempts
+/// while the only known instance stays alive but does not answer. The first failure
+/// re-resolves at once; a target that keeps staying silent then pays a doubling skip
+/// (1, 1, 2, 4, 8, 8, ...) instead of a full desktop enumeration on every poll.
+const SILENT_RESELECTION_SKIP_MAX: u32 = 8;
 
 static NEXT_QUERY_ID: AtomicU32 = AtomicU32::new(1);
+
+// F04: `OpenProcess` / `QueryFullProcessImageNameW` live in the windows crate's
+// `Win32_System_Threading` module, a feature this crate does not enable. These
+// kernel32 exports have a stable ABI, so bind them directly instead of widening
+// the dependency feature set.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn QueryFullProcessImageNameW(process: isize, flags: u32, exe_name: *mut u16, size: *mut u32) -> i32;
+    fn CloseHandle(object: isize) -> i32;
+}
+
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
+const PROCESS_PATH_MAX_UNITS: usize = 32_768;
 
 // ==================== Reply window ====================
 
 struct QueryTask {
     target: isize,
+    /// The value written to `EVERYTHING_IPC_QUERY2.reply_copydata_message`
+    /// (offset 4 of the request; the review report calls this `dwId`).
+    /// Everything echoes it back as the reply `COPYDATASTRUCT.dwData`, which is
+    /// the only per-query correlation field in the protocol —
+    /// `EVERYTHING_IPC_LIST2` itself has no id member (its dwords are
+    /// totitems/numitems/offset/request_flags/sort_type).
+    query_id: u32,
     buffer: Vec<u8>,
     timeout_ms: u32,
     tx: mpsc::Sender<Result<Vec<u8>, String>>,
@@ -99,6 +133,22 @@ struct ReplyState {
     /// The one in-flight forwarded query; cleared when the reply arrives,
     /// when forwarding fails, or when the caller times out.
     pending: Mutex<Option<QueryTask>>,
+}
+
+impl ReplyState {
+    /// Moves out the pending task only when the reply id matches it.
+    ///
+    /// Everything sends a query reply as WM_COPYDATA whose `dwData` echoes the
+    /// request's `reply_copydata_message`. A late reply from a query that already
+    /// timed out carries a different id: returning `None` (and leaving `pending`
+    /// untouched) is what keeps it from overwriting the current query's result.
+    fn take_reply(&self, reply_id: u32) -> Option<QueryTask> {
+        let mut guard = self.pending.lock().unwrap();
+        if !matches!(guard.as_ref(), Some(pending) if pending.query_id == reply_id) {
+            return None;
+        }
+        guard.take()
+    }
 }
 
 struct ReplyWindow {
@@ -156,12 +206,22 @@ unsafe extern "system" fn reply_wndproc(hwnd: HWND, msg: u32, w_param: WPARAM, l
             }
             let state = &*state_ptr;
             let copydata = &*(l_param.0 as *const COPYDATASTRUCT);
+            // Everything answers an EVERYTHING_IPC_QUERY2 with a WM_COPYDATA
+            // whose dwData echoes the request's reply_copydata_message (our
+            // query id). Do not look for an id inside EVERYTHING_IPC_LIST2:
+            // that structure has no dwId member (bytes 8..12 are the result
+            // list's `offset`, which is 0 for every request we send).
+            let reply_id = copydata.dwData as u32;
+            let pending = match state.take_reply(reply_id) {
+                Some(pending) => pending,
+                // A late reply for a query that already timed out (or was
+                // abandoned). Drop it instead of taking the current pending
+                // task, which would overwrite the in-flight query's result.
+                None => return LRESULT(0),
+            };
             let data = std::slice::from_raw_parts(copydata.lpData as *const u8, copydata.cbData as usize).to_vec();
-            if let Some(pending) = state.pending.lock().unwrap().take() {
-                pending.tx.send(Ok(data)).ok();
-                return LRESULT(1);
-            }
-            LRESULT(0)
+            pending.tx.send(Ok(data)).ok();
+            LRESULT(1)
         }
         WM_DESTROY => {
             let _ = PostMessageW(Some(hwnd), WM_QUIT, WPARAM(0), LPARAM(0));
@@ -230,10 +290,11 @@ fn spawn_reply_window() -> Result<ReplyWindow, String> {
 }
 
 impl ReplyWindow {
-    fn send_copydata(&self, target: isize, buffer: Vec<u8>, timeout_ms: u32) -> Result<Vec<u8>, String> {
+    fn send_copydata(&self, target: isize, buffer: Vec<u8>, query_id: u32, timeout_ms: u32) -> Result<Vec<u8>, String> {
         let (tx, rx) = mpsc::channel();
         let task = Box::new(QueryTask {
             target,
+            query_id,
             buffer,
             timeout_ms,
             tx,
@@ -310,6 +371,9 @@ fn send_ipc_command(hwnd: isize, command: u32) -> Option<usize> {
     }
 }
 
+/// Builds an `EVERYTHING_IPC_QUERY2` buffer and returns it together with the
+/// reply id (`reply_copydata_message`) that Everything will echo in the reply
+/// `COPYDATASTRUCT.dwData`.
 fn build_query_buffer(
     reply_hwnd: isize,
     search: &str,
@@ -318,7 +382,7 @@ fn build_query_buffer(
     sort: u32,
     offset: u32,
     max_results: u32,
-) -> Vec<u8> {
+) -> (Vec<u8>, u32) {
     let id = NEXT_QUERY_ID.fetch_add(1, Ordering::Relaxed);
     let mut buffer = Vec::with_capacity(30 + search.len() * 2);
     buffer.extend_from_slice(&(reply_hwnd as u32).to_le_bytes());
@@ -332,12 +396,12 @@ fn build_query_buffer(
         buffer.extend_from_slice(&unit.to_le_bytes());
     }
     buffer.extend_from_slice(&0u16.to_le_bytes());
-    buffer
+    (buffer, id)
 }
 
 fn probe_window(reply: &ReplyWindow, hwnd: isize) -> Result<u32, String> {
-    let buffer = build_query_buffer(reply.hwnd, PROBE_SEARCH, 0, PROBE_FLAGS, SORT_NAME_ASC, 0, 1);
-    let data = reply.send_copydata(hwnd, buffer, PROBE_TIMEOUT_MS)?;
+    let (buffer, query_id) = build_query_buffer(reply.hwnd, PROBE_SEARCH, 0, PROBE_FLAGS, SORT_NAME_ASC, 0, 1);
+    let data = reply.send_copydata(hwnd, buffer, query_id, PROBE_TIMEOUT_MS)?;
     if data.len() < 4 {
         return Err("bad-reply".to_string());
     }
@@ -352,67 +416,361 @@ struct TargetInfo {
     probe_total: u32,
 }
 
-/// Pick the candidate most likely to hold the user's real index: windows that
-/// answer a probe query with content rank first, fully accessible (same
-/// integrity level, index loaded) windows rank next.
+/// P2-10: one candidate's control-channel answers, separated from the Win32
+/// handles so the ranking policy is a pure, unit-testable function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeState {
+    /// The query channel answered a parseable result list carrying this total.
+    Answered(u32),
+    /// The query channel answered, but the payload could not be parsed.
+    BadReply,
+    /// `SendMessageTimeoutW` itself failed (the instance is not taking the forward).
+    SendFailed,
+    /// The forward succeeded but no `WM_COPYDATA` reply arrived in time.
+    Timeout,
+}
+
+impl ProbeState {
+    /// Classifies a `probe_window` result. `timeout` is distinct from
+    /// `bad-reply`: one means the query channel never answered, the other that it
+    /// did answer (with a payload we cannot parse).
+    fn classify(probe: &Result<u32, String>) -> Self {
+        match probe {
+            Ok(total) => Self::Answered(*total),
+            Err(message) if message == "send-failed" => Self::SendFailed,
+            Err(message) if message == "timeout" => Self::Timeout,
+            // Any other error came back through the reply window, so the instance
+            // did answer.
+            Err(_) => Self::BadReply,
+        }
+    }
+
+    fn answered(self) -> bool {
+        matches!(self, Self::Answered(_) | Self::BadReply)
+    }
+
+    fn content_total(self) -> u32 {
+        match self {
+            Self::Answered(total) => total,
+            _ => 0,
+        }
+    }
+}
+
+/// P2-10: everything `candidate_score` needs to rank one IPC candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CandidateSignals {
+    probe: ProbeState,
+    ipc_available: bool,
+    db_loaded: bool,
+    has_version: bool,
+}
+
+/// P2-10: pure candidate ranking, higher score wins. A candidate whose query
+/// channel answered always outranks one that only answers the status probes, even
+/// when that silent instance reports a loaded database:
+///
+/// 1. answering with content,
+/// 2. answering with an empty index,
+/// 3. answering with a malformed payload,
+/// 4. query-silent but answers the version + `IPC_IS_DB_LOADED` probes,
+/// 5. query-silent but answers only the version (or db-loaded) probe,
+/// 6. fully silent (score 0) — left to `resolve_target`'s silent fallback.
+///
+/// `send-failed` and `timeout` are both "the query channel did not answer"; an
+/// empty answering index must not tie with a timed-out old instance.
+fn candidate_score(signals: &CandidateSignals) -> i64 {
+    // Status answers only break ties inside a tier; they never lift a query-silent
+    // instance over an instance that answered.
+    let ready_bonus = if signals.ipc_available && signals.db_loaded { 10 } else { 0 };
+    if signals.probe.answered() {
+        return match signals.probe {
+            ProbeState::Answered(total) if total > 0 => {
+                3000 + i64::from(total.min(100)) + ready_bonus
+            }
+            ProbeState::Answered(_) => 2000 + ready_bonus,
+            // BadReply is the only remaining answered state.
+            _ => 1000 + ready_bonus,
+        };
+    }
+    if signals.ipc_available && signals.db_loaded {
+        200
+    } else if signals.ipc_available || signals.has_version || signals.db_loaded {
+        100
+    } else {
+        0
+    }
+}
+
+/// P2-10: index of the best scoreable candidate; the first enumeration order wins
+/// ties (the tie-break `resolve_target` always used). `None` means every
+/// candidate is fully silent and resolves to the silent fallback.
+fn rank_candidates(candidates: &[CandidateSignals]) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for (index, signals) in candidates.iter().enumerate() {
+        let score = candidate_score(signals);
+        if score > 0 && best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((index, score));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+/// Pick the candidate most likely to hold the user's real index: candidates that
+/// answer the query probe rank first (content > empty index > bad reply), then
+/// query-silent instances that still answer the version / `IPC_IS_DB_LOADED`
+/// probes, then fully silent windows as a running-only fallback. The policy itself
+/// is the pure `candidate_score`/`rank_candidates` pair; this function only feeds
+/// it the Win32 probe results.
 fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
     let candidates = enumerate_ipc_windows();
-    let mut best: Option<(i64, TargetInfo)> = None;
-    // A window carrying Everything's exclusive IPC class proves an instance is
-    // running even when both probe channels stay silent (UIPI filters them
-    // when Everything runs elevated and the instance does not re-allow
-    // WM_COPYDATA). Keep the first fully silent candidate so status can still
-    // report `running` — only its version/db are unknowable.
-    let mut silent_fallback: Option<TargetInfo> = None;
-    for (hwnd, class_name) in candidates {
-        let minor = send_ipc_command(hwnd, IPC_GET_MINOR_VERSION);
+    let mut signals = Vec::with_capacity(candidates.len());
+    // Volatile per-candidate fields, indexed in lockstep with `candidates`.
+    let mut snapshots: Vec<(Option<(u32, u32, u32, u32)>, bool, u32)> = Vec::with_capacity(candidates.len());
+    for (hwnd, _class_name) in &candidates {
+        let minor = send_ipc_command(*hwnd, IPC_GET_MINOR_VERSION);
         let version = minor.map(|_| {
-            let major = send_ipc_command(hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
+            let major = send_ipc_command(*hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
             let minor_version = minor.unwrap_or(0) as u32;
-            let revision = send_ipc_command(hwnd, 2).unwrap_or(0) as u32;
-            let build = send_ipc_command(hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
+            let revision = send_ipc_command(*hwnd, 2).unwrap_or(0) as u32;
+            let build = send_ipc_command(*hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
             (major, minor_version, revision, build)
         });
         let ipc_available = matches!(minor, Some(value) if value >= 4);
-        let db_loaded = send_ipc_command(hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
-        let probe_result = probe_window(reply, hwnd);
-        let probe_total = probe_result.as_ref().copied().unwrap_or(0);
-        let probe_failed = matches!(&probe_result, Err(message) if message == "send-failed");
-        if !ipc_available && version.is_none() && probe_total == 0 && probe_failed {
-            if silent_fallback.is_none() {
-                silent_fallback = Some(TargetInfo {
-                    hwnd,
-                    class_name,
-                    version: None,
-                    db_loaded: false,
-                    probe_total: 0,
-                });
-            }
-            continue;
-        }
-        let content_score = i64::from(probe_total.min(100));
-        let score: i64 = if probe_total > 0 {
-            2000 + content_score + if ipc_available && db_loaded { 10 } else { 0 }
-        } else if ipc_available && db_loaded {
-            200
-        } else if ipc_available || version.is_some() {
-            100
-        } else if !probe_failed {
-            // WM_COPYDATA answered (possibly across an integrity level) but
-            // the index holds no files yet.
-            20
-        } else {
-            0
-        };
-        if score == 0 {
-            continue;
-        }
-        let candidate = (score, TargetInfo { hwnd, class_name, version, db_loaded: db_loaded || probe_total > 0, probe_total });
-        if best.as_ref().is_none_or(|(best_score, _)| score > *best_score) {
-            best = Some(candidate);
+        let db_loaded = send_ipc_command(*hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
+        let probe = ProbeState::classify(&probe_window(reply, *hwnd));
+        signals.push(CandidateSignals {
+            probe,
+            ipc_available,
+            db_loaded,
+            has_version: version.is_some(),
+        });
+        snapshots.push((version, db_loaded, probe.content_total()));
+    }
+    if let Some(index) = rank_candidates(&signals) {
+        let (version, db_loaded, probe_total) = snapshots[index];
+        let (hwnd, class_name) = candidates[index].clone();
+        return Some(TargetInfo {
+            hwnd,
+            class_name,
+            version,
+            db_loaded: db_loaded || probe_total > 0,
+            probe_total,
+        });
+    }
+    // A window carrying Everything's exclusive IPC class proves an instance is
+    // running even when both probe channels stay silent (UIPI filters them when
+    // Everything runs elevated and the instance does not re-allow WM_COPYDATA).
+    // Keep the first fully silent candidate so status can still report `running` —
+    // only its version/db are unknowable.
+    candidates.first().map(|(hwnd, class_name)| TargetInfo {
+        hwnd: *hwnd,
+        class_name: class_name.clone(),
+        version: None,
+        db_loaded: false,
+        probe_total: 0,
+    })
+}
+
+// ==================== Live target cache ====================
+
+/// DEV-07: the Everything IPC target is resolved once and reused by `status`,
+/// `wait-ready` and `query`. Resolving re-enumerates every top-level window and
+/// probes each Everything candidate, which `wait-ready` used to repeat on every
+/// 300 ms poll while the index loaded. Only the target identity is cached; every
+/// consumer re-reads the volatile readiness fields it needs.
+fn is_window_live(hwnd: isize) -> bool {
+    // SAFETY: IsWindow only inspects a handle value; a stale handle is reported
+    // as BOOL(FALSE), never dereferenced.
+    unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
+}
+
+fn is_communication_failure(error: &Value) -> bool {
+    // `send_copydata` reports a failed SendMessageTimeoutW as "send-failed" and
+    // a missing WM_COPYDATA reply as "timeout"; both mean the cached handle is
+    // no longer answering. "bad-reply" means it did answer, so the cache stays.
+    matches!(error.get("code").and_then(Value::as_str), Some("send-failed" | "timeout"))
+}
+
+/// Reads a live window's class name; `None` means the handle no longer names a
+/// window, which invalidates a cached identity.
+fn read_window_class_name(hwnd: isize) -> Option<String> {
+    let mut buffer = [0u16; 256];
+    // SAFETY: GetClassNameW writes at most buffer.len() UTF-16 units and returns
+    // the number it wrote; a stale HWND simply returns 0.
+    let len = unsafe { GetClassNameW(HWND(hwnd as *mut _), &mut buffer) };
+    if len > 0 {
+        Some(String::from_utf16_lossy(&buffer[..len as usize]))
+    } else {
+        None
+    }
+}
+
+/// DEV-07: a cached target stays valid only while its HWND is alive and still
+/// carries the exact Everything IPC class it was resolved with. A destroyed
+/// window fails `IsWindow`; a reused numeric handle fails the class comparison,
+/// so both cause one bounded re-resolution.
+fn is_cached_target_live(target: &TargetInfo) -> bool {
+    if !is_window_live(target.hwnd) {
+        return false;
+    }
+    matches!(read_window_class_name(target.hwnd), Some(class_name) if class_name == target.class_name)
+}
+
+/// DEV-07: one shared live-target lookup. `run` reuses the cached identity while
+/// `is_live` accepts it, otherwise resolves at most once. `attempt` may refresh
+/// the volatile fields of the target (`dbLoaded`, probe total, version); a
+/// communication failure clears the cache so the next call re-resolves.
+///
+/// P2-07: a still-running but unresponsive instance is a communication failure too
+/// (`refresh_status` reports it through the error payload). The status surface keeps
+/// showing that instance from the carried snapshot, while the cache runs the bounded
+/// re-selection below instead of sticking to the silent HWND until `wait-ready` times
+/// out. `last_communication_error` is what a skipped backoff call returns.
+struct TargetCache {
+    target: Option<TargetInfo>,
+    /// Consecutive communication failures since the last successful attempt.
+    silent_failures: u32,
+    /// Calls still to skip before the next re-resolution attempt.
+    resolve_skip: u32,
+    /// Last communication failure, carrying the stale display snapshot (if any).
+    last_communication_error: Option<Value>,
+}
+
+impl TargetCache {
+    fn new() -> Self {
+        Self {
+            target: None,
+            silent_failures: 0,
+            resolve_skip: 0,
+            last_communication_error: None,
         }
     }
-    best.map(|(_, info)| info).or(silent_fallback)
+
+    fn reset_silence(&mut self) {
+        self.silent_failures = 0;
+        self.resolve_skip = 0;
+        self.last_communication_error = None;
+    }
+
+    /// P2-07: the first re-selection after a failure is immediate; afterwards a
+    /// doubling backoff keeps a permanently silent instance from sweeping the desktop
+    /// on every 300 ms `wait-ready` poll.
+    fn skip_after_silent_failure(&mut self) {
+        self.silent_failures = self.silent_failures.saturating_add(1);
+        let exponent = self.silent_failures.saturating_sub(2).min(3);
+        self.resolve_skip = (1u32 << exponent).min(SILENT_RESELECTION_SKIP_MAX);
+    }
+
+    fn stale_status_error(&self) -> Value {
+        self.last_communication_error.clone().unwrap_or_else(|| {
+            json!({ "code": "not-running", "message": "IPC window not found" })
+        })
+    }
+
+    fn run<T>(
+        &mut self,
+        is_live: impl Fn(&TargetInfo) -> bool,
+        mut resolve: impl FnMut() -> Option<TargetInfo>,
+        mut attempt: impl FnMut(&mut TargetInfo) -> Result<T, Value>,
+    ) -> Result<T, Value> {
+        if let Some(target) = self.target.as_mut() {
+            if is_live(target) {
+                match attempt(target) {
+                    Ok(result) => {
+                        self.reset_silence();
+                        return Ok(result);
+                    }
+                    Err(error) if is_communication_failure(&error) => {
+                        // Stop reusing this handle, then fall through to exactly
+                        // one re-resolution instead of retrying in a loop.
+                        self.target = None;
+                        self.silent_failures = 0;
+                        self.resolve_skip = 0;
+                        self.last_communication_error = Some(error);
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                self.target = None;
+                self.reset_silence();
+            }
+        }
+        // P2-07: a silent target that keeps failing only pays a bounded number of
+        // re-selection attempts; skipped calls return the last status error unchanged
+        // so the display keeps reporting the instance that still exists.
+        if self.resolve_skip > 0 {
+            self.resolve_skip -= 1;
+            return Err(self.stale_status_error());
+        }
+        let mut target = match resolve() {
+            Some(target) => target,
+            None => {
+                self.reset_silence();
+                return Err(json!({ "code": "not-running", "message": "IPC window not found" }));
+            }
+        };
+        let result = attempt(&mut target);
+        match &result {
+            Ok(_) => {
+                self.target = Some(target);
+                self.reset_silence();
+            }
+            Err(error) if is_communication_failure(error) => {
+                self.skip_after_silent_failure();
+                self.last_communication_error = Some(error.clone());
+                self.target = None;
+            }
+            // A malformed reply is not a communication failure: keep the
+            // identity so a bad payload does not pay for another desktop sweep.
+            Err(_) => self.target = Some(target),
+        }
+        result
+    }
+}
+
+fn query_with_cache(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> Result<Value, Value> {
+    cache.run(is_cached_target_live, || resolve_target(reply), |target| {
+        run_query(reply, target.hwnd, params)
+    })
+}
+
+// ==================== Process image path ====================
+
+/// F04: resolve a pid to its executable path with QueryFullProcessImageNameW
+/// (sub-millisecond) instead of a cold-started PowerShell + WMI query
+/// (hundreds of milliseconds to seconds). Errors are typed strings and never
+/// panic; the JS service treats them as "unverifiable", refuses to kill that pid
+/// and logs the failure.
+fn query_process_image_path(pid: u32) -> Result<String, &'static str> {
+    if pid == 0 {
+        return Err("invalid-pid");
+    }
+    // SAFETY: the handle comes from OpenProcess and is closed on every path; the
+    // buffer is live for the call and the API writes back its used length.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 {
+            return Err("process-open-failed");
+        }
+        let mut buffer = vec![0u16; PROCESS_PATH_MAX_UNITS];
+        let mut length = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let _ = CloseHandle(process);
+        if ok == 0 || length == 0 || length as usize > buffer.len() {
+            return Err("process-path-failed");
+        }
+        Ok(String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
+fn process_path_result(pid: Option<u64>) -> Result<Value, Value> {
+    let Some(pid) = pid.and_then(|value| u32::try_from(value).ok()).filter(|pid| *pid != 0) else {
+        return Err(json!({ "code": "invalid-pid", "message": "无效的进程 ID" }));
+    };
+    query_process_image_path(pid)
+        .map(|path| json!({ "path": path }))
+        .map_err(|code| json!({ "code": code, "message": "无法获取进程映像路径" }))
 }
 
 // ==================== Query execution ====================
@@ -456,6 +814,15 @@ fn read_u16_string(data: &[u8], cursor: &mut usize) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
+fn read_u32(data: &[u8], cursor: &mut usize) -> Option<u32> {
+    if *cursor + 4 > data.len() {
+        return None;
+    }
+    let value = u32::from_le_bytes(data[*cursor..*cursor + 4].try_into().ok()?);
+    *cursor += 4;
+    Some(value)
+}
+
 fn read_u64(data: &[u8], cursor: &mut usize) -> Option<u64> {
     if *cursor + 8 > data.len() {
         return None;
@@ -493,6 +860,8 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
                     .and_then(filetime_to_unix_ms)
                     .map(Value::from)
                     .unwrap_or(Value::Null),
+                // U04: the attribute dword is a u32, not a counted UTF-16 string.
+                REQ_ATTRIBUTES => read_u32(data, &mut cursor).map(Value::from).unwrap_or(Value::Null),
                 _ => read_u16_string(data, &mut cursor).map(Value::from).unwrap_or(Value::Null),
             };
             let position = REQUEST_FLAGS_ORDER.iter().position(|(f, _)| *f == flag).unwrap();
@@ -502,6 +871,14 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
         for (key, value) in fields {
             object.insert(key, value);
         }
+        // U04: expose the folder flag the search renderer draws a glyph from, and
+        // keep the raw attribute dword out of the JSON protocol.
+        let attributes = object.get("attributes").and_then(Value::as_u64).unwrap_or(0);
+        object.remove("attributes");
+        object.insert(
+            "isFolder".to_string(),
+            Value::from(attributes & u64::from(FILE_ATTRIBUTE_DIRECTORY) != 0),
+        );
         let name = object.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let path = object.get("path").and_then(Value::as_str).unwrap_or("").to_string();
         let full_path = if path.ends_with('\\') || path.ends_with('/') {
@@ -515,7 +892,20 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
     Ok((total, items))
 }
 
-fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result<Value, Value> {
+/// Fields every user query asks Everything for. Kept as a function so the unit
+/// tests can assert the attributes bit (U04 folder detection) stays requested.
+fn query_request_flags() -> u32 {
+    REQ_FILE_NAME
+        | REQ_PATH
+        | REQ_EXTENSION
+        | REQ_SIZE
+        | REQ_DATE_MODIFIED
+        | REQ_ATTRIBUTES
+        | REQ_HIGHLIGHTED_NAME
+        | REQ_HIGHLIGHTED_PATH
+}
+
+fn run_query(reply: &ReplyWindow, target_hwnd: isize, params: &Value) -> Result<Value, Value> {
     let search = params.get("search").and_then(Value::as_str).unwrap_or("");
     let max_results = params
         .get("maxResults")
@@ -529,15 +919,9 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
         .and_then(Value::as_u64)
         .map(|value| value.min(QUERY_TIMEOUT_MAX_MS))
         .unwrap_or(QUERY_TIMEOUT_DEFAULT_MS) as u32;
-    let request_flags = REQ_FILE_NAME
-        | REQ_PATH
-        | REQ_EXTENSION
-        | REQ_SIZE
-        | REQ_DATE_MODIFIED
-        | REQ_HIGHLIGHTED_NAME
-        | REQ_HIGHLIGHTED_PATH;
+    let request_flags = query_request_flags();
     let search_flags = if match_path { SEARCH_MATCH_PATH } else { 0 };
-    let buffer = build_query_buffer(
+    let (buffer, query_id) = build_query_buffer(
         reply.hwnd,
         search,
         search_flags,
@@ -547,7 +931,7 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
         max_results,
     );
     let data = reply
-        .send_copydata(target.hwnd, buffer, timeout_ms)
+        .send_copydata(target_hwnd, buffer, query_id, timeout_ms)
         .map_err(|message| json!({ "code": message, "message": "Everything 查询失败" }))?;
     let (total, items) = parse_reply(&data, request_flags).map_err(|message| {
         json!({ "code": "bad-reply", "message": message })
@@ -555,50 +939,199 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
     Ok(json!({ "total": total, "items": items }))
 }
 
-fn status_value(reply: &ReplyWindow) -> Value {
-    match resolve_target(reply) {
-        None => json!({ "running": false, "dbLoaded": false, "version": null, "instance": null }),
-        Some(info) => {
-            let version = info.version
-                .map(|(major, minor, revision, build)| format!("{major}.{minor}.{revision}.{build}"));
-            let instance = info
-                .class_name
-                .strip_prefix(&format!("{IPC_CLASS_PREFIX}("))
-                .and_then(|rest| rest.strip_suffix(')'))
-                .map(str::to_string);
-            json!({
-                "running": true,
-                "ipcAvailable": info.version.is_some(),
-                "dbLoaded": info.db_loaded || info.probe_total > 0,
-                "version": version,
-                "instance": instance,
-                "probeTotal": info.probe_total,
-            })
+fn not_running_status() -> Value {
+    json!({ "running": false, "dbLoaded": false, "version": null, "instance": null })
+}
+
+/// Builds the status reply from a target snapshot. Same fields and value shapes
+/// the JS service consumed before DEV-07.
+fn status_snapshot(info: &TargetInfo) -> Value {
+    let version = info
+        .version
+        .map(|(major, minor, revision, build)| format!("{major}.{minor}.{revision}.{build}"));
+    let instance = info
+        .class_name
+        .strip_prefix(&format!("{IPC_CLASS_PREFIX}("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(str::to_string);
+    json!({
+        "running": true,
+        "ipcAvailable": info.version.is_some(),
+        "dbLoaded": info.db_loaded || info.probe_total > 0,
+        "version": version,
+        "instance": instance,
+        "probeTotal": info.probe_total,
+    })
+}
+
+/// DEV-07: re-reads the volatile readiness fields of the cached target on every
+/// call. `dbLoaded` and `probeTotal` are sampled from Everything each time, so a
+/// loading index becomes ready without re-enumerating the desktop.
+///
+/// P2-07: the query probe is also the status path's liveness check. A probe that
+/// reports "send-failed"/"timeout" means the window exists but no longer talks to us;
+/// that surfaces as a communication failure (with the still-true running snapshot in
+/// the error) so the cache re-selects instead of treating silence as a healthy status.
+///
+/// P2-10: returns whether this round's query probe answered, alongside the display
+/// snapshot. The snapshot keeps the running instance's `dbLoaded` even when the query
+/// channel is silent, so readiness must not be derived from the snapshot alone.
+fn apply_probe_result(
+    target: &mut TargetInfo,
+    db_loaded: bool,
+    probe: Result<u32, String>,
+) -> Result<bool, Value> {
+    match probe {
+        Ok(total) => {
+            target.db_loaded = db_loaded || total > 0;
+            target.probe_total = total;
+            Ok(true)
+        }
+        Err(message) if message == "send-failed" || message == "timeout" => {
+            // The HWND still exists but is not taking the probe (for example an
+            // instance blocked by UIPI, or a hung Everything.exe). Keep the same
+            // display shape as before, but tell the cache this is a failure.
+            target.db_loaded = db_loaded;
+            target.probe_total = 0;
+            Err(json!({
+                "code": "send-failed",
+                "message": message,
+                "status": status_snapshot(target),
+            }))
+        }
+        // A malformed payload is still an answer: the instance received the query
+        // and replied, so it is not a communication failure (the cache stays) and
+        // the query channel counts as alive. Only "send-failed"/"timeout" mean the
+        // channel never answered. The payload itself is reported by the probe total
+        // staying 0.
+        Err(_) => {
+            target.db_loaded = db_loaded;
+            target.probe_total = 0;
+            Ok(true)
         }
     }
 }
 
-fn wait_ready(reply: &ReplyWindow, params: &Value) -> Value {
+fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<(Value, bool), Value> {
+    // Version is stable for one instance, but it is sampled again because an
+    // in-place upgrade replaces the window while `wait-ready` may still be
+    // polling; the returned `version`/`ipcAvailable` fields stay truthful.
+    let minor = send_ipc_command(target.hwnd, IPC_GET_MINOR_VERSION);
+    target.version = minor.map(|minor_version| {
+        let major = send_ipc_command(target.hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
+        let revision = send_ipc_command(target.hwnd, 2).unwrap_or(0) as u32;
+        let build = send_ipc_command(target.hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
+        (major, minor_version as u32, revision, build)
+    });
+    let db_loaded = send_ipc_command(target.hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
+    let answered = apply_probe_result(target, db_loaded, probe_window(reply, target.hwnd))?;
+    Ok((status_snapshot(target), answered))
+}
+
+/// P2-07: the status surface keeps reporting a still-running but silent instance
+/// (the communication error carries its last snapshot) while the cache performs
+/// bounded re-selection; once an instance answers again the fresh snapshot wins.
+/// P2-10: a status sample is the display snapshot plus whether *this round's*
+/// query probe answered. The snapshot may still carry a stale `dbLoaded: true`
+/// from the running instance, so readiness must be derived from `answered` too.
+fn status_from_cache(
+    cache: &mut TargetCache,
+    is_live: impl Fn(&TargetInfo) -> bool,
+    resolve: impl FnMut() -> Option<TargetInfo>,
+    attempt: impl FnMut(&mut TargetInfo) -> Result<(Value, bool), Value>,
+) -> (Value, bool) {
+    match cache.run(is_live, resolve, attempt) {
+        Ok(sample) => sample,
+        // A silent attempt still shows the instance that exists, but no query
+        // channel answered this round.
+        Err(error) => (
+            error
+                .get("status")
+                .filter(|status| status.is_object())
+                .cloned()
+                .unwrap_or_else(not_running_status),
+            false,
+        ),
+    }
+}
+
+/// P2-10: the readiness-facing status path. It returns the round-independent
+/// display snapshot plus whether *this round's* query probe answered.
+fn status_sample(reply: &ReplyWindow, cache: &mut TargetCache) -> (Value, bool) {
+    status_from_cache(
+        cache,
+        is_cached_target_live,
+        || resolve_target(reply),
+        |target| refresh_status(reply, target),
+    )
+}
+
+/// P2-03: the protocol boundary for every status object the sidecar emits. The
+/// display snapshot (`status_snapshot` / `status_from_cache`) stays
+/// round-independent on purpose — P2-10 keeps a running instance's `dbLoaded: true`
+/// even when its query channel goes silent — so the per-round `queryAnswered` flag
+/// is inserted only here. Both the `status` action and each `wait-ready` sample
+/// carry it, and the JS service derives readiness from this one field; a consumer
+/// that sees no flag must fail closed.
+fn protocol_status(mut snapshot: Value, answered: bool) -> Value {
+    if let Value::Object(object) = &mut snapshot {
+        object.insert("queryAnswered".to_string(), Value::Bool(answered));
+    }
+    snapshot
+}
+
+/// P2-03: the `status` action reply is the display snapshot plus whether this
+/// round's query channel answered. The JS service reads `queryAnswered` instead of
+/// inferring readiness from `running && dbLoaded` alone.
+fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
+    let (status, answered) = status_sample(reply, cache);
+    protocol_status(status, answered)
+}
+
+/// DEV-07: the readiness polling loop is kept separate from the Win32 plumbing
+/// so the resolve-count budget of hot polling is unit-testable.
+fn poll_until_ready(timeout_ms: u64, poll_interval: Duration, mut sample: impl FnMut() -> (bool, Value)) -> Value {
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(timeout_ms);
+    loop {
+        let (ready, status) = sample();
+        if ready || Instant::now() >= deadline {
+            return json!({
+                "ready": ready,
+                "elapsedMs": start.elapsed().as_millis() as u64,
+                "status": status,
+            });
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// P2-10: readiness requires the query channel to have answered *this round*.
+/// The display snapshot can keep `dbLoaded: true` for a running instance whose
+/// query probe times out (see `apply_probe_result`), so `running && dbLoaded`
+/// alone reports ready with `probeTotal: 0` before searches can be served.
+fn ready_from_sample(status: &Value, answered: bool) -> bool {
+    answered
+        && status.get("running").and_then(Value::as_bool).unwrap_or(false)
+        && status.get("dbLoaded").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn wait_ready(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> Value {
     let timeout_ms = params
         .get("timeoutMs")
         .and_then(Value::as_u64)
         .map(|value| value.min(WAIT_READY_MAX_MS))
         .unwrap_or(WAIT_READY_DEFAULT_MS);
-    let start = Instant::now();
-    let deadline = start + Duration::from_millis(timeout_ms);
-    loop {
-        let current = status_value(reply);
-        let ready = current["running"].as_bool().unwrap_or(false)
-            && current["dbLoaded"].as_bool().unwrap_or(false);
-        if ready || Instant::now() >= deadline {
-            return json!({
-                "ready": ready,
-                "elapsedMs": start.elapsed().as_millis() as u64,
-                "status": current,
-            });
-        }
-        std::thread::sleep(WAIT_READY_POLL_INTERVAL);
-    }
+    poll_until_ready(timeout_ms, WAIT_READY_POLL_INTERVAL, || {
+        let (status, answered) = status_sample(reply, cache);
+        // P2-03: the `status` object embedded in a wait-ready reply carries the same
+        // per-round `queryAnswered` flag as the plain `status` action, so every
+        // consumer of the status protocol sees one readiness condition.
+        (
+            ready_from_sample(&status, answered),
+            protocol_status(status, answered),
+        )
+    })
 }
 
 fn write_response(id: &Value, ok: bool, error: Option<Value>, result: Option<Value>) {
@@ -628,6 +1161,10 @@ fn main() {
         let _ = handle.flush();
     }
     let stdin = std::io::stdin();
+    // DEV-07: one shared target identity for status, wait-ready and query. It
+    // stays cached while the HWND is a live Everything window, so index-loading
+    // polls re-read readiness instead of re-enumerating the desktop.
+    let mut target_cache = TargetCache::new();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
@@ -652,7 +1189,7 @@ fn main() {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let action = request.get("action").and_then(Value::as_str).unwrap_or("");
         match action {
-            "status" => write_response(&id, true, None, Some(status_value(&reply))),
+            "status" => write_response(&id, true, None, Some(status_value(&reply, &mut target_cache))),
             "probe-all" => {
                 let candidates = enumerate_ipc_windows();
                 let details: Vec<Value> = candidates.iter().map(|(hwnd, class_name)| {
@@ -671,13 +1208,17 @@ fn main() {
                 }).collect();
                 write_response(&id, true, None, Some(json!({ "candidates": details })));
             }
-            "wait-ready" => write_response(&id, true, None, Some(wait_ready(&reply, &request))),
+            "wait-ready" => write_response(&id, true, None, Some(wait_ready(&reply, &mut target_cache, &request))),
             "query" => {
-                let outcome = match resolve_target(&reply) {
-                    Some(target) => run_query(&reply, &target, &request),
-                    None => Err(json!({ "code": "not-running", "message": "IPC window not found" })),
-                };
+                let outcome = query_with_cache(&reply, &mut target_cache, &request);
                 match outcome {
+                    Ok(result) => write_response(&id, true, None, Some(result)),
+                    Err(error) => write_response(&id, false, Some(error), None),
+                }
+            }
+            "process-path" => {
+                let pid = request.get("pid").and_then(Value::as_u64);
+                match process_path_result(pid) {
                     Ok(result) => write_response(&id, true, None, Some(result)),
                     Err(error) => write_response(&id, false, Some(error), None),
                 }
@@ -695,5 +1236,860 @@ fn main() {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query_task(query_id: u32) -> QueryTask {
+        let (tx, _rx) = mpsc::channel();
+        QueryTask {
+            target: 0,
+            query_id,
+            buffer: Vec::new(),
+            timeout_ms: 1,
+            tx,
+        }
+    }
+
+    // H04: the review report claims EVERYTHING_IPC_LIST2 carries a dwId at
+    // offset 8..12. The official Everything.h has no such member: the reply id
+    // travels in COPYDATASTRUCT.dwData, and the list header is
+    // totitems(0)/numitems(4)/offset(8)/request_flags(12)/sort_type(16).
+    #[test]
+    fn h04_query_buffer_carries_reply_id_at_offset_four() {
+        let (buffer, query_id) = build_query_buffer(0x1234_5678, "中文", 0, REQ_FILE_NAME, SORT_NAME_ASC, 0, 5);
+        assert_ne!(query_id, 0);
+        assert_eq!(u32::from_le_bytes(buffer[0..4].try_into().unwrap()), 0x1234_5678);
+        // reply_copydata_message: Everything echoes this in the reply dwData.
+        assert_eq!(u32::from_le_bytes(buffer[4..8].try_into().unwrap()), query_id);
+        // The dwords a LIST2 reply reuses at 8/12/16 are not an id.
+        assert_eq!(u32::from_le_bytes(buffer[8..12].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(buffer[12..16].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(buffer[20..24].try_into().unwrap()), REQ_FILE_NAME);
+        let units: Vec<u16> = buffer[28..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(String::from_utf16_lossy(&units[..2]), "中文");
+    }
+
+    // H04: a late reply from a query that already timed out must be dropped
+    // without disturbing the query that is now in flight.
+    #[test]
+    fn h04_take_reply_drops_late_reply_with_mismatched_id() {
+        let state = ReplyState { pending: Mutex::new(Some(query_task(7))) };
+        assert!(state.take_reply(6).is_none());
+        assert_eq!(
+            state.pending.lock().unwrap().as_ref().map(|task| task.query_id),
+            Some(7),
+            "a mismatched reply must not clear the in-flight query"
+        );
+        let taken = state.take_reply(7).expect("the matching reply is delivered");
+        assert_eq!(taken.query_id, 7);
+        assert!(state.pending.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn h04_take_reply_ignores_reply_without_pending_query() {
+        let state = ReplyState { pending: Mutex::new(None) };
+        assert!(state.take_reply(1).is_none());
+    }
+
+    // ===================== F04 / DEV-07: live target cache =====================
+
+    fn target(hwnd: isize) -> TargetInfo {
+        TargetInfo {
+            hwnd,
+            class_name: format!("{IPC_CLASS_PREFIX}(1.4)"),
+            version: Some((1, 4, 1, 1032)),
+            db_loaded: true,
+            probe_total: 10,
+        }
+    }
+
+    /// Drives the shared cache with an injected liveness check, resolver and
+    /// attempt, so the reuse/invalidation policy runs without a message pump.
+    fn run_cached_for_test<T>(
+        cache: &mut TargetCache,
+        is_live: impl Fn(&TargetInfo) -> bool,
+        mut resolve: impl FnMut() -> Option<TargetInfo>,
+        mut attempt: impl FnMut(isize) -> Result<T, Value>,
+    ) -> Result<T, Value> {
+        cache.run(is_live, &mut resolve, |target| attempt(target.hwnd))
+    }
+
+    // F04: the review report's first finding is that every query re-ran
+    // resolve_target (EnumWindows + 5 WM_USER probes + one `*.exe` COPYDATA
+    // probe). With a live cached HWND the second query must attempt the cached
+    // window directly and never call the resolver.
+    #[test]
+    fn f04_query_reuses_live_cached_target_without_resolving() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 0, "a live cached HWND must skip resolve_target");
+        assert_eq!(attempted, vec![0x1111], "the query goes straight to the cached window");
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x1111));
+    }
+
+    // F04: Everything restarted, so the old HWND is no longer a window. The
+    // query must resolve a fresh target instead of failing on the dead handle.
+    #[test]
+    fn f04_query_reresolves_when_cached_window_is_gone() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| false,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(attempted, vec![0x2222]);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // F04: a SendMessageTimeoutW failure / missing CopyData receipt means the
+    // cached window stopped answering; re-resolve exactly once so the user's
+    // query still succeeds after an Everything restart.
+    #[test]
+    fn f04_query_reresolves_once_after_communication_failure() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                if hwnd == 0x1111 {
+                    Err(json!({ "code": "timeout" }))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempted, vec![0x1111, 0x2222], "one retry after re-resolving");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // F04: a malformed payload is not a communication failure, so it must keep
+    // the cache instead of paying for another full desktop enumeration.
+    #[test]
+    fn f04_query_keeps_cache_after_non_communication_error() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |_| Err(json!({ "code": "bad-reply" })),
+        );
+        assert_eq!(result.unwrap_err().get("code").and_then(Value::as_str), Some("bad-reply"));
+        assert_eq!(resolve_calls, 0);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x1111));
+    }
+
+    // F04: no cache and no Everything instance keeps the original not-running
+    // protocol error the JS service relies on to re-check readiness.
+    #[test]
+    fn f04_query_reports_not_running_when_resolve_finds_nothing() {
+        let mut cache = TargetCache::new();
+        let mut attempted = 0;
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| true,
+            || None,
+            |_| {
+                attempted += 1;
+                Ok(())
+            },
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.get("code").and_then(Value::as_str), Some("not-running"));
+        assert_eq!(attempted, 0);
+        assert!(cache.target.is_none());
+    }
+
+    #[test]
+    fn f04_window_liveness_accepts_real_windows_and_rejects_stale_handles() {
+        assert!(!is_window_live(0), "a null HWND is not live");
+        // IsWindow is the exact guard for cache reuse; the desktop window is a
+        // real window in every interactive session.
+        let desktop = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
+        assert!(is_window_live(desktop.0 as isize));
+    }
+
+    // ===================== DEV-07: shared target polling =====================
+
+    // DEV-07: `wait_ready` polls every 300 ms while the index loads. Before the
+    // shared cache each poll ran status_value -> resolve_target, so a large
+    // desktop was enumerated again and again. The cache must resolve once and
+    // re-read the volatile readiness fields on every poll instead.
+    #[test]
+    fn dev07_wait_ready_polling_resolves_the_target_once() {
+        let mut cache = TargetCache::new();
+        let mut resolve_calls = 0;
+        let mut probe_calls = 0;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            match cache.run(
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x1111))
+                },
+                |target| {
+                    probe_calls += 1;
+                    target.db_loaded = probe_calls >= 20;
+                    target.probe_total = 1;
+                    Ok((target.db_loaded, json!({ "running": true, "dbLoaded": target.db_loaded })))
+                },
+            ) {
+                Ok(sample) => sample,
+                Err(_) => (false, not_running_status()),
+            }
+        });
+        assert_eq!(result["ready"], true);
+        assert_eq!(resolve_calls, 1, "20 hot polls must resolve the target once, not once per poll");
+        assert_eq!(probe_calls, 20, "volatile readiness is re-read on every poll");
+        assert!(result["elapsedMs"].as_u64().is_some());
+    }
+
+    // DEV-07: a destroyed window or a numeric HWND reused by another class must
+    // clear the identity and trigger exactly one bounded re-resolution.
+    #[test]
+    fn dev07_cached_identity_is_invalidated_when_the_window_is_gone_or_reused() {
+        assert!(!is_cached_target_live(&target(0)), "a null HWND is never a live cached target");
+        let desktop = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
+        let mut reused = target(desktop.0 as isize);
+        assert!(
+            !is_cached_target_live(&reused),
+            "a reused handle carrying another window class is rejected"
+        );
+        reused.class_name = read_window_class_name(desktop.0 as isize).expect("desktop window class");
+        assert!(is_cached_target_live(&reused), "a live window with the cached class stays valid");
+
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| false,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                assert_eq!(hwnd, 0x2222);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 1, "a destroyed/reused window triggers exactly one re-resolution");
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // DEV-07: only the identity is reused; the returned readiness fields come
+    // from the refreshed target so a loading index flips to ready in place.
+    #[test]
+    fn dev07_status_snapshot_reports_volatile_fields_from_the_refreshed_target() {
+        let mut info = target(0x1111);
+        info.db_loaded = false;
+        info.probe_total = 0;
+        info.version = None;
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["running"], true);
+        assert_eq!(snapshot["dbLoaded"], false);
+        assert_eq!(snapshot["ipcAvailable"], false);
+        assert_eq!(snapshot["probeTotal"], 0);
+
+        info.db_loaded = true;
+        info.probe_total = 10;
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["dbLoaded"], true);
+        assert_eq!(snapshot["probeTotal"], 10);
+
+        // A content-answering probe marks readiness even when dbLoaded is unset.
+        info.db_loaded = false;
+        info.probe_total = 3;
+        assert_eq!(status_snapshot(&info)["dbLoaded"], true);
+
+        info.version = Some((1, 5, 0, 1414));
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["version"], "1.5.0.1414");
+        assert_eq!(snapshot["ipcAvailable"], true);
+        assert_eq!(snapshot["instance"], "1.4");
+        assert_eq!(
+            not_running_status(),
+            json!({ "running": false, "dbLoaded": false, "version": null, "instance": null })
+        );
+    }
+
+    // ===================== P2-07: silent instance re-selection =====================
+
+    fn silent_status_error(status: Value) -> Value {
+        json!({ "code": "send-failed", "status": status })
+    }
+
+    // P2-07: the status probe is the liveness check. A silent instance must surface as a
+    // communication failure carrying its display snapshot, while a malformed reply is
+    // still an answer and keeps the cache.
+    #[test]
+    fn p2_07_a_silent_probe_is_a_communication_failure_with_its_status_snapshot() {
+        let mut info = target(0x1111);
+        info.db_loaded = false;
+        info.probe_total = 0;
+        assert!(
+            apply_probe_result(&mut info, false, Err("bad-reply".to_string()))
+                .expect("a malformed reply came from the instance and is not a communication failure"),
+            "a bad reply answered the query channel, even though the payload is unusable"
+        );
+        assert_eq!(info.probe_total, 0);
+        assert!(
+            apply_probe_result(&mut info, false, Ok(12)).expect("a parseable reply answered"),
+            "an answered query probe reports the channel as usable"
+        );
+        assert_eq!(info.probe_total, 12);
+        assert!(info.db_loaded);
+        for message in ["send-failed", "timeout"] {
+            let mut silent = target(0x1111);
+            silent.version = None;
+            silent.db_loaded = false;
+            silent.probe_total = 0;
+            let error = apply_probe_result(&mut silent, false, Err(message.to_string()))
+                .expect_err("silence is not a healthy status");
+            assert_eq!(error.get("code").and_then(Value::as_str), Some("send-failed"));
+            assert!(is_communication_failure(&error), "{message} invalidates the cached identity");
+            let status = error.get("status").expect("the silent snapshot rides the error");
+            assert_eq!(status["running"], true, "the instance still exists");
+            assert_eq!(status["ipcAvailable"], false);
+            assert_eq!(status["probeTotal"], 0);
+            assert_eq!(silent.probe_total, 0);
+        }
+    }
+
+    // P2-07: an unresponsive cached HWND must not pin status/wait-ready to it while a
+    // newly started instance is already answering. The new snapshot wins and the cache
+    // switches identity after a single bounded re-resolution.
+    #[test]
+    fn p2_07_a_silent_cached_target_switches_to_a_responsive_instance() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let (status, answered) = status_from_cache(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |cached| {
+                attempted.push(cached.hwnd);
+                if cached.hwnd == 0x1111 {
+                    let mut snapshot = target(0x1111);
+                    snapshot.version = None;
+                    snapshot.db_loaded = false;
+                    snapshot.probe_total = 0;
+                    Err(silent_status_error(status_snapshot(&snapshot)))
+                } else {
+                    Ok((status_snapshot(cached), true))
+                }
+            },
+        );
+        assert!(answered, "the answering instance's query probe reported an answer");
+        assert_eq!(status["running"], true);
+        assert_eq!(status["dbLoaded"], true, "the answering instance is reported");
+        assert_eq!(status["probeTotal"], 10);
+        assert_eq!(attempted, vec![0x1111, 0x2222], "one bounded re-selection");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // P2-07: while only the silent instance exists, every status still reports it as
+    // running, but repeated polling must not enumerate the desktop on every call.
+    #[test]
+    fn p2_07_silent_only_status_stays_running_and_bounds_resolution() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        for _ in 0..24 {
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x1111))
+                },
+                |cached| {
+                    let mut snapshot = target(cached.hwnd);
+                    snapshot.version = None;
+                    snapshot.db_loaded = false;
+                    snapshot.probe_total = 0;
+                    Err(silent_status_error(status_snapshot(&snapshot)))
+                },
+            );
+            assert!(!answered, "no query channel answered while only the silent instance exists");
+            assert_eq!(status["running"], true, "a silent instance is still reported");
+            assert_eq!(status["dbLoaded"], false);
+        }
+        assert!(resolve_calls >= 2, "the first failures must still attempt re-selection");
+        assert!(
+            resolve_calls <= usize::try_from(SILENT_RESELECTION_SKIP_MAX).unwrap()
+                && resolve_calls < 24,
+            "24 silent polls must not sweep the desktop every call: {resolve_calls}"
+        );
+    }
+
+    // P2-07: `wait-ready` is the user-visible symptom. With a silent cached target and a
+    // responsive second instance, readiness must flip on the first re-selection instead
+    // of polling until the 30 s timeout.
+    #[test]
+    fn p2_07_wait_ready_recovers_when_a_new_instance_answers() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x2222))
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        Err(silent_status_error(json!({
+                            "running": true,
+                            "ipcAvailable": false,
+                            "dbLoaded": false,
+                            "version": null,
+                            "instance": null,
+                            "probeTotal": 0
+                        })))
+                    } else {
+                        Ok((json!({
+                            "running": true,
+                            "ipcAvailable": true,
+                            "dbLoaded": true,
+                            "version": "1.4.1.1032",
+                            "instance": "1.4",
+                            "probeTotal": 10
+                        }), true))
+                    }
+                },
+            );
+            (ready_from_sample(&status, answered), status)
+        });
+        assert_eq!(result["ready"], true, "wait-ready switches to the answering instance");
+        assert_eq!(result["status"]["version"], "1.4.1.1032");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // ===================== F04: process image path =====================
+
+    // F04: QueryFullProcessImageNameW replaces the PowerShell + WMI probe that
+    // cold-started a shell process per verification. The current process is a
+    // known-good target for the real API.
+    #[test]
+    fn f04_process_path_resolves_the_current_process() {
+        let path = query_process_image_path(std::process::id()).expect("own image path");
+        let expected = std::env::current_exe().expect("current exe path");
+        assert_eq!(
+            path.to_lowercase(),
+            expected.to_string_lossy().to_lowercase(),
+            "QueryFullProcessImageNameW must return the current executable path"
+        );
+    }
+
+    // F04: safe degradation — a pid that cannot be resolved is a typed error,
+    // never a panic and never a guessed path.
+    #[test]
+    fn f04_process_path_rejects_unresolvable_pids() {
+        assert_eq!(query_process_image_path(0), Err("invalid-pid"));
+        let bogus = query_process_image_path(u32::MAX);
+        assert!(bogus.is_err(), "a pid that cannot be opened must not resolve: {bogus:?}");
+        let invalid = process_path_result(Some(0)).unwrap_err();
+        assert_eq!(invalid.get("code").and_then(Value::as_str), Some("invalid-pid"));
+        let accepted = process_path_result(Some(u64::from(std::process::id()))).expect("own pid");
+        assert!(accepted.get("path").and_then(Value::as_str).is_some());
+    }
+
+    // ===================== U04: folder detection =====================
+
+    fn push_u32(buffer: &mut Vec<u8>, value: u32) {
+        buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u64(buffer: &mut Vec<u8>, value: u64) {
+        buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_wide_string(buffer: &mut Vec<u8>, value: &str) {
+        let units: Vec<u16> = value.encode_utf16().collect();
+        push_u32(buffer, units.len() as u32);
+        for unit in &units {
+            buffer.extend_from_slice(&unit.to_le_bytes());
+        }
+        buffer.extend_from_slice(&0u16.to_le_bytes());
+    }
+
+    // U04 (section 4.4 item 7): a directory result has an empty extension and used to
+    // render as "?" in the search window. Everything reports the Win32 file
+    // attributes when the request flag is set, so the bridge has to ask for it and
+    // turn FILE_ATTRIBUTE_DIRECTORY into the `isFolder` boolean the renderer reads.
+    #[test]
+    fn u04_query_requests_file_attributes_for_folder_detection() {
+        assert_eq!(REQ_ATTRIBUTES, 0x0000_0100);
+        assert_eq!(query_request_flags() & REQ_ATTRIBUTES, REQ_ATTRIBUTES);
+
+        let flags: Vec<u32> = REQUEST_FLAGS_ORDER.iter().map(|(flag, _)| *flag).collect();
+        let mut ascending = flags.clone();
+        ascending.sort_unstable();
+        assert_eq!(flags, ascending, "reply parsing depends on ascending flag order");
+        let position = REQUEST_FLAGS_ORDER
+            .iter()
+            .position(|(flag, _)| *flag == REQ_ATTRIBUTES)
+            .expect("attributes flag is part of the canonical order");
+        assert_eq!(REQUEST_FLAGS_ORDER[position].1, "attributes");
+        assert_eq!(REQUEST_FLAGS_ORDER[position - 1].1, "modifiedAt");
+        assert_eq!(REQUEST_FLAGS_ORDER[position + 1].1, "highlightedName");
+    }
+
+    // U04: the attribute dword is 4 bytes (not a counted UTF-16 string like the
+    // filename fields), so a mis-sized read would shift every following field of
+    // the reply. This crafts a real EVERYTHING_IPC_LIST2 layout with a file and a
+    // directory and asserts both the flag and the field alignment.
+    #[test]
+    fn u04_parse_reply_marks_directories_from_file_attributes() {
+        let flags = REQ_FILE_NAME
+            | REQ_PATH
+            | REQ_EXTENSION
+            | REQ_SIZE
+            | REQ_DATE_MODIFIED
+            | REQ_ATTRIBUTES
+            | REQ_HIGHLIGHTED_NAME;
+        let modified_unix_ms = 1_700_000_000_000u64;
+        let modified_filetime = (modified_unix_ms + 11_644_473_600_000) * 10_000;
+        let entries: [(&str, &str, &str, u64, u32, &str); 2] = [
+            ("report.xlsx", "C:\\docs", "xlsx", 1234, 0x0000_0020, "report"),
+            ("Archive", "C:\\docs", "", 0, FILE_ATTRIBUTE_DIRECTORY, "Archive"),
+        ];
+        let item_count = entries.len();
+        let data_start = 20 + item_count * 8;
+        let mut data = Vec::new();
+        let mut offsets = Vec::new();
+        for (name, path, extension, size, attributes, highlighted) in entries {
+            offsets.push(data_start + data.len());
+            push_wide_string(&mut data, name);
+            push_wide_string(&mut data, path);
+            push_wide_string(&mut data, extension);
+            push_u64(&mut data, size);
+            push_u64(&mut data, modified_filetime);
+            push_u32(&mut data, attributes);
+            push_wide_string(&mut data, highlighted);
+        }
+
+        let mut buffer = Vec::new();
+        push_u32(&mut buffer, item_count as u32); // total items
+        push_u32(&mut buffer, item_count as u32); // returned items
+        push_u32(&mut buffer, 0); // result list offset
+        push_u32(&mut buffer, flags); // request flags echoed by Everything
+        push_u32(&mut buffer, SORT_NAME_ASC); // sort type
+        for offset in &offsets {
+            push_u32(&mut buffer, 0); // per-item flags (unused by the parser)
+            push_u32(&mut buffer, *offset as u32); // item data offset
+        }
+        buffer.extend_from_slice(&data);
+
+        let (total, items) = parse_reply(&buffer, flags).expect("crafted reply parses");
+        assert_eq!(total, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["isFolder"], json!(false), "a regular file is not a folder");
+        assert_eq!(items[1]["isFolder"], json!(true), "FILE_ATTRIBUTE_DIRECTORY marks a folder");
+        assert_eq!(items[0]["name"], json!("report.xlsx"));
+        assert_eq!(items[1]["name"], json!("Archive"));
+        assert_eq!(items[0]["fullPath"], json!("C:\\docs\\report.xlsx"));
+        assert_eq!(items[0]["size"], json!(1234));
+        assert_eq!(items[0]["modifiedAt"], json!(modified_unix_ms));
+        // Read after the attribute dword: a mis-sized attributes read shifts this.
+        assert_eq!(items[0]["highlightedName"], json!("report"));
+        assert!(
+            items[0].get("attributes").is_none(),
+            "the raw attribute dword stays an internal IPC detail"
+        );
+    }
+
+    // ===================== P2-10: query-channel readiness =====================
+
+    // P2-10: an instance can answer the version + IPC_IS_DB_LOADED probes while
+    // never answering the WM_COPYDATA query probe (the report's repro:
+    // ready:true, elapsedMs:0, probeTotal:0). The status snapshot keeps
+    // `dbLoaded: true` in that branch (the display still reports the running
+    // instance), so a readiness predicate of `running && dbLoaded` would end the
+    // wait before the query channel works. Readiness must require this round's
+    // query probe to answer, and the first re-selection to an answering instance
+    // must end the wait.
+    #[test]
+    fn p2_10_wait_ready_requires_an_answering_query_channel() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut polls = 0usize;
+        let mut resolve_calls = 0usize;
+        let mut silent_samples = 0usize;
+        let answer_from_poll = 4usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            polls += 1;
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    if polls >= answer_from_poll {
+                        Some(target(0x2222))
+                    } else {
+                        Some(target(0x1111))
+                    }
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        // Version + IPC_IS_DB_LOADED answer; the query probe times out.
+                        let mut snapshot = target(0x1111);
+                        snapshot.db_loaded = true;
+                        snapshot.probe_total = 0;
+                        Err(silent_status_error(status_snapshot(&snapshot)))
+                    } else {
+                        Ok((status_snapshot(cached), true))
+                    }
+                },
+            );
+            let ready = ready_from_sample(&status, answered);
+            if !ready {
+                silent_samples += 1;
+                assert_eq!(status["dbLoaded"], true, "the display keeps the running instance's dbLoaded");
+                assert!(!answered, "not ready while the only instance answers only status probes");
+            }
+            (ready, status)
+        });
+        assert!(
+            silent_samples >= 2,
+            "wait-ready must observe silent samples instead of returning ready from the stale snapshot: {silent_samples}"
+        );
+        assert!(polls > silent_samples, "the wait continues past the silent samples: {polls}");
+        assert_eq!(result["ready"], true, "the wait ends once an answering instance is re-selected");
+        assert_eq!(result["status"]["version"], "1.4.1.1032");
+        assert_eq!(result["status"]["probeTotal"], 10);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+        assert!(resolve_calls >= 1, "the answering instance is found by re-selection");
+    }
+
+    // P2-10: the first re-selection to an answering instance ends the wait (the
+    // stale dbLoaded snapshot alone never does).
+    #[test]
+    fn p2_10_wait_ready_flips_on_the_first_answering_reselection() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0usize;
+        let mut samples = 0usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            samples += 1;
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x2222))
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        // The version + db probes answer; the query channel is silent.
+                        let mut snapshot = target(0x1111);
+                        snapshot.db_loaded = true;
+                        snapshot.probe_total = 0;
+                        Err(silent_status_error(status_snapshot(&snapshot)))
+                    } else {
+                        Ok((status_snapshot(cached), true))
+                    }
+                },
+            );
+            (ready_from_sample(&status, answered), status)
+        });
+        assert_eq!(samples, 1, "the first re-selection to an answering instance ends the wait");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["status"]["probeTotal"], 10);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    fn candidate(probe: ProbeState, ipc_available: bool, db_loaded: bool, has_version: bool) -> CandidateSignals {
+        CandidateSignals { probe, ipc_available, db_loaded, has_version }
+    }
+
+    // P2-10: the old instance answers version + IPC_IS_DB_LOADED but times out the
+    // query probe; the new instance answers the query probe with 0 results (an empty
+    // index is still a working query channel). The pure ranking must pick the new
+    // instance: a healthy-looking status snapshot must neither tie nor outrank an
+    // answering query channel.
+    #[test]
+    fn p2_10_an_answering_empty_index_outranks_a_status_healthy_query_silent_instance() {
+        let old_instance = candidate(ProbeState::Timeout, true, true, true);
+        let new_instance = candidate(ProbeState::Answered(0), true, true, true);
+        assert!(
+            candidate_score(&new_instance) > candidate_score(&old_instance),
+            "an answering empty index ({}) must outrank a query-silent status-healthy instance ({})",
+            candidate_score(&new_instance),
+            candidate_score(&old_instance)
+        );
+        assert_eq!(
+            rank_candidates(&[old_instance, new_instance]),
+            Some(1),
+            "resolve_target's ranking must switch to the instance that answers queries"
+        );
+
+        // Answers beat every silence mode: content > empty index > bad reply.
+        assert!(
+            candidate_score(&candidate(ProbeState::Answered(3), false, false, false))
+                > candidate_score(&candidate(ProbeState::Answered(0), false, false, false)),
+            "content outranks an answering empty index"
+        );
+        assert!(
+            candidate_score(&candidate(ProbeState::BadReply, false, false, false))
+                > candidate_score(&candidate(ProbeState::Timeout, true, true, true)),
+            "a bad reply proves the query channel answered, so it outranks a silent one"
+        );
+        // Query-silent instances still rank by their status answers, and a fully
+        // silent candidate is left to resolve_target's silent fallback.
+        assert!(
+            candidate_score(&candidate(ProbeState::Timeout, true, true, true))
+                > candidate_score(&candidate(ProbeState::SendFailed, true, false, true)),
+            "timeout and send-failed are both unanswered; only the status answers differ"
+        );
+        let fully_silent = candidate(ProbeState::SendFailed, false, false, false);
+        assert_eq!(candidate_score(&fully_silent), 0, "fully silent candidates are not scoreable");
+        assert_eq!(rank_candidates(&[fully_silent]), None, "fully silent falls back to a running-only snapshot");
+        assert_eq!(rank_candidates(&[]), None);
+    }
+
+    // ===================== P2-03: status protocol carries the round answer =====================
+
+    // P2-03: the report's repro is an instance whose status probes answer (version +
+    // IPC_IS_DB_LOADED) while the query probe send-fails: the display snapshot keeps
+    // `running:true, dbLoaded:true`, exactly the value the old JS predicate read as
+    // ready. The `status` action reply must therefore carry `queryAnswered:false`,
+    // and readiness must stay false.
+    #[test]
+    fn p2_03_silent_loaded_status_protocol_reports_query_answered_false() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let (snapshot, answered) = status_from_cache(
+            &mut cache,
+            |_| true,
+            || Some(target(0x1111)),
+            |cached: &mut TargetInfo| -> Result<(Value, bool), Value> {
+                let mut loaded = target(cached.hwnd);
+                loaded.db_loaded = true;
+                loaded.probe_total = 0;
+                // Status probes answer; the query probe times out.
+                Err(apply_probe_result(&mut loaded, true, Err("send-failed".to_string()))
+                    .expect_err("the query channel stayed silent this round"))
+            },
+        );
+        assert!(!answered, "a silent query channel reports no answer");
+        assert_eq!(snapshot["running"], true, "the display still reports the live instance");
+        assert_eq!(snapshot["dbLoaded"], true, "the display keeps the loaded index (the P2-03 trap)");
+        assert_eq!(snapshot["ipcAvailable"], true, "the version probes still answer");
+        assert_eq!(snapshot["probeTotal"], 0);
+        let protocol = protocol_status(snapshot, answered);
+        assert_eq!(protocol["queryAnswered"], false, "the status protocol exposes the silent round");
+        assert_eq!(protocol["dbLoaded"], true, "the display fields survive the protocol boundary");
+        assert!(!ready_from_sample(&protocol, answered), "a query-silent round is never ready");
+    }
+
+    // P2-03: an instance that answers the query probe with an empty index is ready.
+    // `probeTotal: 0` is not a blocker by itself, and the protocol object keeps every
+    // display field while reporting `queryAnswered:true`.
+    #[test]
+    fn p2_03_answering_empty_index_status_protocol_reports_query_answered_true() {
+        let mut info = target(0x2222);
+        info.db_loaded = true;
+        info.probe_total = 0;
+        let answered = apply_probe_result(&mut info, true, Ok(0)).expect("a parseable empty result list answered");
+        assert!(answered, "an empty result list still proves the query channel works");
+        assert_eq!(info.probe_total, 0, "the empty index keeps probeTotal at 0");
+        assert!(info.db_loaded, "the loaded-index display field is kept");
+        let protocol = protocol_status(status_snapshot(&info), answered);
+        assert_eq!(protocol["queryAnswered"], true);
+        // The display shape is unchanged: the JS status surface still reads these.
+        assert_eq!(protocol["running"], true);
+        assert_eq!(protocol["dbLoaded"], true);
+        assert_eq!(protocol["ipcAvailable"], true);
+        assert_eq!(protocol["version"], "1.4.1.1032");
+        assert_eq!(protocol["instance"], "1.4");
+        assert_eq!(protocol["probeTotal"], 0);
+        assert!(ready_from_sample(&protocol, answered), "an answered empty index can be ready");
+    }
+
+    // P2-03: wait-ready emits its `status` object through the same protocol boundary,
+    // so the embedded object carries the round flag too: a silent sample first, then
+    // the answering empty-index instance ends the wait with `queryAnswered:true`.
+    #[test]
+    fn p2_03_wait_ready_status_object_carries_the_round_query_answer() {
+        let mut samples = 0usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            samples += 1;
+            let mut info = target(0x1111);
+            info.db_loaded = true;
+            info.probe_total = 0;
+            // First poll: the query probe times out. Second poll: the re-selected
+            // instance answers with 0 rows.
+            let probe = if samples == 1 { Err("timeout".to_string()) } else { Ok(0) };
+            let answered = apply_probe_result(&mut info, true, probe).unwrap_or(false);
+            let protocol = protocol_status(status_snapshot(&info), answered);
+            (ready_from_sample(&protocol, answered), protocol)
+        });
+        assert_eq!(samples, 2, "wait-ready must observe the silent sample before the answering one");
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["status"]["running"], true);
+        assert_eq!(result["status"]["dbLoaded"], true, "the display keeps the loaded index");
+        assert_eq!(result["status"]["probeTotal"], 0, "an answered empty index is ready");
+        assert_eq!(result["status"]["queryAnswered"], true, "the embedded status carries the flag");
     }
 }

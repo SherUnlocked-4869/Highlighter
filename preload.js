@@ -29,6 +29,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   backupInspect: (directory) => ipcRenderer.invoke('data-root:backup-inspect', directory),
   backupRestore: (options) => ipcRenderer.invoke('data-root:backup-restore', options),
   backupDelete: (directory) => ipcRenderer.invoke('data-root:backup-delete', directory),
+  // N06: single-file `.hlbackup.zip` archives. The renderer submits only the
+  // selected module ids plus an in-memory password; both native file dialogs run
+  // in the main process, so no filesystem path crosses this bridge. The password
+  // is cleared from the page input after the call returns.
+  backupExportArchive: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const modules = Array.isArray(source.modules)
+      ? source.modules.filter((id) => typeof id === 'string' && id.length <= 32).slice(0, 16)
+      : []
+    const password = typeof source.password === 'string' ? source.password : ''
+    return ipcRenderer.invoke('data-root:backup-export-archive', { modules, password })
+  },
+  backupImportArchive: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const password = typeof source.password === 'string' ? source.password : ''
+    return ipcRenderer.invoke('data-root:backup-import-archive', { password })
+  },
   executeFunction: (name, payload) => ipcRenderer.invoke('app:execute-function', { name, payload }),
   getHistory: (filter) => ipcRenderer.invoke('history:list', filter),
   getHistoryThumbnail: (id) => ipcRenderer.invoke('history:thumbnail', id),
@@ -45,6 +62,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openHistory: (id) => ipcRenderer.invoke('history:open', id),
   copyHistoryPath: (id) => ipcRenderer.invoke('history:copy-path', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
+  // N02 (review section 5.2): add/remove/replace the tags of one history record. The write
+  // travels as a command envelope on the existing history:list channel (see
+  // main/ipc/history-ipc.js: the main-role IPC inventory is frozen, so a dedicated
+  // history:update-tags channel cannot be added here without a matching sender policy).
+  // Values are normalized again in HistoryService; this only keeps the payload well-typed.
+  updateHistoryTags: (id, tags) => ipcRenderer.invoke('history:list', {
+    op: 'update-tags',
+    id: typeof id === 'string' ? id.slice(0, 128) : '',
+    tags: Array.isArray(tags) ? tags.filter((tag) => typeof tag === 'string').slice(0, 16) : []
+  }),
+  // N02 follow-up (real-device verification, 2026-11-27): the tag filter dropdown and the OCR
+  // status UI. All three ride the same 'history:list' command envelope as the tag write, for
+  // the same frozen main-role IPC inventory reason documented in main/ipc/history-ipc.js.
+  getHistoryTags: () => ipcRenderer.invoke('history:list', { op: 'list-tags' }),
+  getHistoryOcrState: () => ipcRenderer.invoke('history:list', { op: 'ocr-state' }),
+  // `ids` retries one card; `all` asks the main process to index every capture that has no
+  // text index yet. The renderer never passes file paths or OCR text; only ids and the flag.
+  indexHistoryOcr: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const payload = { op: 'index-ocr', all: source.all === true }
+    if (Array.isArray(source.ids)) {
+      payload.ids = source.ids.filter((id) => typeof id === 'string').slice(0, 500)
+    }
+    return ipcRenderer.invoke('history:list', payload)
+  },
   requestAi: (messages, options) => ipcRenderer.invoke('ai:complete', { messages, options }),
   translateText: (text, sourceLanguage, targetLanguage) => ipcRenderer.invoke('ai:translate', { text, sourceLanguage, targetLanguage }),
   chooseDirectory: () => ipcRenderer.invoke('dialog:choose-directory'),
@@ -84,7 +126,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         // main process starts the pointer track only when it is true and the mode
         // is display/region. Whitelisting it here keeps this payload sanitizer from
         // silently dropping the field.
-        demoEnhance: config.demoEnhance === true
+        demoEnhance: config.demoEnhance === true,
+        // DEV-04 section 4.1: the global shortcut-capture opt-in is a second
+        // per-recording boolean with its own privacy scope; the main process
+        // enables the keyboard channel only while it is true and a take runs.
+        demoKeystrokes: config.demoKeystrokes === true
       }
     })
   },
