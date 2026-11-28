@@ -238,6 +238,95 @@ test('pin renderer runtime: visible-rect export, real-diff parity and measured O
   // Sanity: the vertical-rl block really is a multi-column layout, not one line per block.
   assert.ok(translated.facts.blocks[0].layout.lines.length >= 2)
   assert.ok(translated.facts.blocks[1].layout.lines.length >= 2)
+
+  // ---- P2-02: vertical-rl glyph orientation parity (the re-review's `I` defect) ----------
+  // The real pin window (shown inactive off-screen so the frame is live) and the exported view
+  // to PNG are compared per measured glyph box: bounds, centre and pixel-mask IoU. The defect
+  // was a 90° difference: the screen showed the sideways `I` (21.6x2.4 CSS px at 125%) while the
+  // PNG painted it upright (2.4x21.6).
+  const vertical = report.phases.verticalText
+  assert.ok(vertical, 'the probe reported the vertical-glyph phase')
+  const cases = new Map(vertical.cases.map((entry) => [entry.id, entry]))
+  const centreDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
+  const assertGlyphParity = (id, expectations) => {
+    const entry = cases.get(id)
+    assert.ok(entry, `vertical case ${id} exists`)
+    assert.equal(entry.exported.ok, true, `${id}: view export failed: ${JSON.stringify(entry.exported)}`)
+    assert.equal(entry.facts.vertical, true, `${id}: the chip is a vertical-rl block`)
+    assert.equal(entry.analysis.screenSize.width, entry.analysis.exportSize.width, `${id}: screen and export are the same physical width`)
+    assert.ok(Math.abs(entry.analysis.screenSize.height - entry.analysis.exportSize.height) <= 2)
+    assert.deepEqual(entry.analysis.glyphs.map((glyph) => glyph.text), expectations.map((item) => item.text))
+    assert.deepEqual(entry.analysis.glyphs.map((glyph) => glyph.sideways), expectations.map((item) => item.sideways),
+      `${id}: measured orientation flags`)
+    for (let index = 0; index < expectations.length; index += 1) {
+      const expected = expectations[index]
+      const glyph = entry.analysis.glyphs[index]
+      const screen = glyph.box.screen.bounds
+      const exported = glyph.box.exported.bounds
+      assert.ok(glyph.box.screen.count > 0 && glyph.box.exported.count > 0, `${id} [${glyph.text}]: both images show this glyph`)
+      assert.ok(screen && exported, `${id} [${glyph.text}]: ink bounds exist`)
+      assert.ok(centreDistance(glyph.box.screen.centroid, glyph.box.exported.centroid) <= (expected.centreTolerance || 3),
+        `${id} [${glyph.text}]: ink centre moved ${centreDistance(glyph.box.screen.centroid, glyph.box.exported.centroid)} px`)
+      // Same orientation means the exported ink covers the same axis-aligned extent as the live
+      // rendering. A 90° error swaps width and height, which this tolerance catches. Sideways
+      // glyphs get the tighter tolerance: for an upright error their width and height swap by
+      // more than 2 CSS px. Upright CJK keeps the looser tolerance because Chromium's DOM text
+      // rasterisation and the canvas painter differ by up to ~3 CSS px on complex glyphs.
+      const dimensionTolerance = expected.dimensionTolerance || 4
+      assert.ok(Math.abs(exported.width - screen.width) <= dimensionTolerance,
+        `${id} [${glyph.text}]: exported ink width ${exported.width} vs screen ${screen.width}`)
+      assert.ok(Math.abs(exported.height - screen.height) <= dimensionTolerance,
+        `${id} [${glyph.text}]: exported ink height ${exported.height} vs screen ${screen.height}`)
+      if (expected.iou !== undefined) {
+        assert.ok(glyph.box.iou >= expected.iou, `${id} [${glyph.text}]: ink overlap ${glyph.box.iou} < ${expected.iou}`)
+      }
+    }
+  }
+  // Single Latin `I`: the browser sets it sideways, so BOTH images must show a wide, flat bar.
+  assertGlyphParity('latin-i', [{ text: 'I', sideways: true, iou: 0.5, dimensionTolerance: 2 }])
+  const latinCase = cases.get('latin-i')
+  const latinScreen = latinCase.analysis.glyphs[0].box.screen.bounds
+  const latinExport = latinCase.analysis.glyphs[0].box.exported.bounds
+  assert.ok(latinScreen.width > latinScreen.height * 3,
+    `screen I is sideways: ${latinScreen.width}x${latinScreen.height}`)
+  assert.ok(latinExport.width > latinExport.height * 3,
+    `exported I keeps the sideways orientation: ${latinExport.width}x${latinExport.height} (the defect was 2.4x21.6)`)
+  assert.ok(Math.abs(latinExport.width - 21.6) <= 2 && Math.abs(latinExport.height - 3.2) <= 2,
+    `exported I ink is ${latinExport.width}x${latinExport.height} CSS px (expected ~21.6x2.4-3.2 at 125%)`)
+  // Mixed Chinese/English: only the Latin `A` is sideways; CJK stays upright with its glyph.
+  assertGlyphParity('mixed-zh-en', [
+    { text: '中', sideways: false },
+    { text: 'A', sideways: true, iou: 0.5, dimensionTolerance: 2 },
+    { text: '文', sideways: false }
+  ])
+  // Pure CJK: every glyph upright, same column order (top to bottom), same measured x centre.
+  assertGlyphParity('cjk', [
+    { text: '中', sideways: false },
+    { text: '文', sideways: false },
+    { text: '竖', sideways: false },
+    { text: '排', sideways: false }
+  ])
+  const cjkGlyphs = cases.get('cjk').analysis.glyphs
+  for (let index = 1; index < cjkGlyphs.length; index += 1) {
+    assert.ok(cjkGlyphs[index - 1].box.screen.centroid.y < cjkGlyphs[index].box.screen.centroid.y,
+      'CJK columns read top to bottom on screen')
+    assert.ok(cjkGlyphs[index - 1].box.exported.centroid.y < cjkGlyphs[index].box.exported.centroid.y,
+      'CJK columns read top to bottom in the export')
+    assert.ok(Math.abs(cjkGlyphs[index - 1].box.exported.centroid.x - cjkGlyphs[index].box.exported.centroid.x) <= 2,
+      'CJK glyphs stay in one column')
+  }
+  // ZWJ emoji: the browser cannot join it vertically and stacks the parts, and the export must
+  // reproduce that stack (ink height ~67 CSS px, not one collapsed square run). It stays upright.
+  assertGlyphParity('emoji', [{
+    text: '👩‍💻',
+    sideways: false,
+    iou: 0.5,
+    centreTolerance: 3,
+    dimensionTolerance: 3
+  }])
+  const emojiExport = cases.get('emoji').analysis.glyphs[0].box.exported.bounds
+  assert.ok(emojiExport.height > emojiExport.width * 1.8,
+    `the exported ZWJ emoji keeps the vertical stack: ${emojiExport.width}x${emojiExport.height}`)
 })
 
 // ---------------------------------------------------------------------------
@@ -667,8 +756,28 @@ ${report ? JSON.stringify(report, null, 2) : 'no report written'}`
   return report
 }
 
+// P2-02: a vertical upright ZWJ sequence the browser stacks (measured advance > 1.5 em) is
+// painted as one fillText per part, not one per cluster; every other vertical glyph is one call.
+function verticalDrawTexts(block) {
+  const texts = []
+  for (const line of Array.isArray(block.lines) ? block.lines : []) {
+    for (const glyph of Array.isArray(line.glyphs) ? line.glyphs : []) {
+      const text = typeof glyph?.text === 'string' ? glyph.text : ''
+      const height = Number(glyph?.height) || 0
+      const size = Number(block.fontSize) || 0
+      const parts = text.indexOf('\u200d') !== -1 && size > 0 && height > size * 1.5
+        ? text.split('\u200d').filter((part) => part.length > 0)
+        : null
+      if (parts && parts.length > 1) texts.push(...parts)
+      else if (text) texts.push(text)
+    }
+  }
+  return texts
+}
+
 // The recorded fillText calls are grouped in plan order: a measured horizontal block draws
-// one call per line, a vertical block one call per glyph, and the legacy fallback one call.
+// one call per line, a vertical block one call per (possibly split) glyph, and the legacy
+// fallback one call.
 function splitFillTexts(runtime) {
   const groups = []
   let cursor = 0
@@ -677,7 +786,7 @@ function splitFillTexts(runtime) {
     if (block.measured === true) {
       const lines = Array.isArray(block.lines) ? block.lines : []
       expected = block.vertical === true
-        ? lines.reduce((sum, line) => sum + (Array.isArray(line.glyphs) ? line.glyphs.length : 0), 0)
+        ? verticalDrawTexts(block).length
         : lines.length
     }
     groups.push(runtime.fillTexts.slice(cursor, cursor + expected))
@@ -728,9 +837,14 @@ test('pin renderer runtime: grapheme shaping and a bounded measurement-attempt b
   for (let index = 1; index < measured[3].lines.length; index += 1) {
     assert.ok(measured[3].lines[index - 1].glyphs[0].x > measured[3].lines[index].glyphs[0].x, 'vertical columns run right to left')
   }
+  // P2-02: an upright ZWJ emoji sequence the browser stacked vertically is painted part by part
+  // (the same slots); every non-ZWJ grapheme stays ONE complete fillText.
+  const verticalDraws = verticalDrawTexts(plan.ocrBlocks[3])
+  assert.deepEqual(groups.groups[3].map((call) => call.text), verticalDraws, 'vertical paints each measured grapheme / stacked part exactly once')
+  assert.equal(verticalDraws.join(''), facts.blocks[3].text.replace(/\u200d/g, ''), 'the stacked parts cover the whole cluster text')
   const verticalGraphemes = plan.ocrBlocks[3].lines.reduce((all, line) => all.concat(Array.from(line.glyphs, (glyph) => glyph.text)), [])
-  assert.deepEqual(groups.groups[3].map((call) => call.text), verticalGraphemes, 'vertical paints one complete grapheme per fillText')
-  assert.equal(verticalGraphemes.join(''), facts.blocks[3].text)
+  assert.equal(verticalGraphemes.join(''), facts.blocks[3].text, 'the measured clusters keep the ZWJ sequence whole')
+  assert.ok(verticalDraws.length > verticalGraphemes.length, 'the ZWJ cluster is the one split into stacked parts')
 
   // The exported ink lands where the live overlay shows the glyphs.
   for (let index = 0; index < 3; index += 1) {

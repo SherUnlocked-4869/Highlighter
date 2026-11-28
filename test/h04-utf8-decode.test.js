@@ -155,7 +155,7 @@ test('H04 everything-service keeps a Chinese stdout reply intact when a chunk bo
       child.pushStdout(Buffer.from(`${JSON.stringify({
         id: request.id,
         ok: true,
-        result: { running: true, dbLoaded: true, version: '1.4.1.1032' }
+        result: { running: true, dbLoaded: true, queryAnswered: true, version: '1.4.1.1032' }
       })}\n`))
     }
   }

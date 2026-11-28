@@ -651,30 +651,53 @@ function createRecordDomain(deps) {
   const editorWindows = new Map()
   // Capture configuration chosen by the workbench for the region flow, plus the mode that selection
   // implies. The capture overlay returns only a rectangle, so the workbench's just-picked parameters
-  // travel through this one-shot slot that createRecordWindow() consumes. The timestamp bounds how
-  // long a cancelled overlay can leak its config into an unrelated later capture.
+  // travel through this one-shot slot that createRecordWindow() consumes.
   //
   // P1-01 follow-up: the slot is BOUND to the overlay request that opened it. createRecordWindow()
   // only consumes it when the rectangle comes from that same request id (the quick entry never
   // carries one), and cancellation/close/supersede revokes it. The workbench start waits for the
   // outcome receipt, so the one-shot shortcut opt-in is consumed only after a control window was
   // really created — never when the selection overlay merely opened, was cancelled or was replaced.
+  //
+  // P1-01/P1-02 re-review: the binding lasts until the request is confirmed or revoked; there is NO
+  // wall-clock expiry. A selection that stays open longer than a few minutes is still the same
+  // request, so its audio/quality/mode/shortcut choices must still be the ones that start the take
+  // (the old 5-minute TTL silently restarted from the persisted preferences, re-enabling audio the
+  // user had just switched off). Creation re-checks this registry after every await and aborts
+  // without creating a window when the request was revoked meanwhile.
   let pendingRegionCapture = null
   const regionCaptureRequests = new Map() // requestId -> { settle }
-  const REGION_PENDING_TTL_MS = 5 * 60 * 1000
 
   // Resolves the waiting workbenchStart() for one region request. created=true is sent by
   // createRecordWindow() after the control window exists; anything else (closed, replaced,
   // superseded) is a cancellation and drops the pending slot it owns.
   function settleRegionCaptureRequest(requestId, created) {
     const request = regionCaptureRequests.get(requestId)
+    // A duplicate/late settle must never leave a slot bound to an already-settled request: an id
+    // is unique for the app lifetime, so a matching slot without a registered request is stale.
+    if (pendingRegionCapture && pendingRegionCapture.requestId === requestId) pendingRegionCapture = null
     if (!request) return false
     regionCaptureRequests.delete(requestId)
-    if (created !== true && pendingRegionCapture && pendingRegionCapture.requestId === requestId) {
-      pendingRegionCapture = null
-    }
     request.settle(created === true)
     return true
+  }
+
+  // A region request is live only while BOTH halves exist: the registered overlay request (its
+  // workbench receipt is still waiting) and the one-shot capture slot that request created. A
+  // cancelled/replaced overlay removes the registration; a supersede removes/replaces the slot.
+  function liveRegionCapture(requestId) {
+    if (!requestId) return null
+    const request = regionCaptureRequests.get(requestId)
+    if (!request) return null
+    const pending = pendingRegionCapture
+    if (!pending || pending.requestId !== requestId) return null
+    return { request, pending }
+  }
+
+  // Revoke a region request without claiming a take. Safe for an already-settled request (a late
+  // duplicate) and for a slot whose registration is already gone.
+  function revokeRegionCapture(requestId) {
+    return settleRegionCaptureRequest(requestId, false)
   }
 
   // Quit/shutdown path: never leave a workbench start awaiting an overlay that will not close.
@@ -2159,33 +2182,48 @@ function createRecordDomain(deps) {
 
   // ---------------------------------------------------------------- control bar window
 
+  // P1-01/P1-02 re-review: the single entry point. A workbench region request that fails or aborts
+  // must never leave its waiting workbenchStart() unresolved, so the wrapper revokes the request on
+  // any thrown error (a cancelled request is idempotent) and rethrows for the caller's error path.
   async function createRecordWindow(options = {}) {
     assertGameModeDisabled()
+    const requestedRegionId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
+    try {
+      return await createRecordWindowInternal(options, requestedRegionId)
+    } catch (error) {
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+      throw error
+    }
+  }
+
+  // `requestedRegionId` is the workbench region-request identity; it is EMPTY for quick entries and
+  // for the display/window entries. A non-empty id is authoritative: the request must be live when
+  // it is consumed, and it is re-checked at every async boundary before a window is created or
+  // shown, so a cancellation/replacement during enumeration creates zero windows.
+  async function createRecordWindowInternal(options, requestedRegionId) {
     // Repeat-entry arbitration (contract §10.1): a second "start recording" while a control window
     // is alive focuses that window instead of silently destroying the capture in progress.
     if (recordWindow && !recordWindow.isDestroyed()) {
       focusActive()
+      // No new take was created for a region request that confirmed into this branch.
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
       return recordWindow
     }
+    // P1-01/P1-02: only the overlay request that opened the workbench region flow may consume its
+    // one-shot capture configuration, and only while that request is still LIVE. A stale confirm
+    // IPC (queued before the overlay closed), an unrelated/forged id and a superseded request all
+    // fail closed: no window is created and the persisted preferences are never used as a silent
+    // fallback (that fallback re-enabled audio the user had explicitly switched off).
+    const region = requestedRegionId ? liveRegionCapture(requestedRegionId) : null
+    if (requestedRegionId && !region) {
+      revokeRegionCapture(requestedRegionId)
+      return null
+    }
     await closeRecordFlow()
-    // P1-01 follow-up: only the overlay request that opened the workbench region flow may consume
-    // its one-shot capture configuration. A quick-entry rectangle (empty request id), a replaced
-    // overlay and a stale slot all fall back to the persisted/default capture config.
-    const requestedRegionId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
-    // The receipt belongs to the request even after the config TTL expired (a very slow
-    // selection still starts a recording, just with the persisted defaults).
-    const requestedRegion = requestedRegionId && regionCaptureRequests.has(requestedRegionId)
-      ? requestedRegionId
-      : ''
-    const pendingRegion = requestedRegion && pendingRegionCapture &&
-      pendingRegionCapture.requestId === requestedRegion &&
-      Date.now() - pendingRegionCapture.at < REGION_PENDING_TTL_MS
-      ? pendingRegionCapture
-      : null
-    const providedCapture = options.capture || (pendingRegion?.capture ?? null)
+    const providedCapture = options.capture || (region ? (region.pending.capture ?? null) : null)
     const config = resolveCaptureConfig({
       ...options,
-      mode: options.mode || pendingRegion?.mode,
+      mode: options.mode || (region ? region.pending.mode : undefined),
       capture: providedCapture
     })
     const requestedBounds = options.selectionBounds && {
@@ -2213,6 +2251,14 @@ function createRecordDomain(deps) {
         }
       : normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
     const source = windowMode ? null : await getDesktopSource(display)
+    // P1-01 re-review: the overlay can be cancelled — or replaced by a new capture window, which
+    // closes it — while getDesktopSource() awaits. Re-check the request identity at the LAST async
+    // boundary before the first window is created: a revoked request creates zero frame/control
+    // windows instead of one that still carries its shortcut/audio authorization.
+    if (requestedRegionId && !liveRegionCapture(requestedRegionId)) {
+      revokeRegionCapture(requestedRegionId)
+      return null
+    }
     const target = windowMode
       ? describeWindowCaptureTarget(windowBinding)
       : describeCaptureTarget(display, config.mode, selectionBounds)
@@ -2384,6 +2430,16 @@ function createRecordDomain(deps) {
       frameWindow ? frameWindow.loadFile(framePagePath) : Promise.resolve(),
       controlWindow.loadFile(controlPagePath)
     ])
+    // The overlay stays interactive until this function returns (startRegionRecording closes it
+    // only afterwards), so an Esc during the window load is a cancellation too. Tear down exactly
+    // the windows this call created — never the module-level recordWindow, which may already belong
+    // to a newer take — and report no take instead of showing an orphaned control bar.
+    if (requestedRegionId && !liveRegionCapture(requestedRegionId)) {
+      revokeRegionCapture(requestedRegionId)
+      if (frameWindow && !frameWindow.isDestroyed()) frameWindow.close()
+      if (controlWindow && !controlWindow.isDestroyed()) controlWindow.close()
+      return null
+    }
     if (frameWindow) frameWindow.showInactive()
     controlWindow.show()
     if (windowMode) {
@@ -2400,10 +2456,11 @@ function createRecordDomain(deps) {
       countdown: config.countdown
     })
     // P1-01 follow-up: the workbench's receipt is "a control window now exists". Consuming the
-    // one-shot config earlier would let a failed/aborted creation eat the user's opt-in.
-    if (requestedRegion) {
-      if (pendingRegionCapture && pendingRegionCapture.requestId === requestedRegion) pendingRegionCapture = null
-      settleRegionCaptureRequest(requestedRegion, true)
+    // one-shot config earlier would let a failed/aborted creation eat the user's opt-in. Nothing
+    // awaits between the liveness re-check above and this settle, so the request is still live.
+    if (requestedRegionId) {
+      if (pendingRegionCapture && pendingRegionCapture.requestId === requestedRegionId) pendingRegionCapture = null
+      settleRegionCaptureRequest(requestedRegionId, true)
     }
     return controlWindow
   }
@@ -3387,7 +3444,9 @@ function createRecordDomain(deps) {
           let settleOutcome = null
           const outcome = new Promise((resolve) => { settleOutcome = resolve })
           regionCaptureRequests.set(requestId, { settle: settleOutcome })
-          pendingRegionCapture = { requestId, capture: payloadCapture, mode: 'region', at: Date.now() }
+          // P1-02 re-review: the slot has no wall-clock expiry; it stays bound to this request
+          // until the overlay confirms (created receipt) or closes/is replaced (cancellation).
+          pendingRegionCapture = { requestId, capture: payloadCapture, mode: 'region' }
           try {
             const overlay = await openSelection({ mode: 'region', source: 'recording-workbench', regionRequestId: requestId })
             if (overlay && typeof overlay.once === 'function') {

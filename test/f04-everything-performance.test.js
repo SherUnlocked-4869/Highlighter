@@ -83,11 +83,11 @@ function createProtocol(handlers = {}) {
     switch (request.action) {
       case 'status':
         if (handlers.status) handlers.status(request, child)
-        else child.respond(request, { running: true, dbLoaded: true, version: '1.5.0.1414', ipcAvailable: true, probeTotal: 10 })
+        else child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414', ipcAvailable: true, probeTotal: 10 })
         break
       case 'wait-ready':
         if (handlers['wait-ready']) handlers['wait-ready'](request, child)
-        else child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+        else child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true, queryAnswered: true } })
         break
       case 'query':
         if (handlers.query) handlers.query(request, child)
@@ -224,6 +224,14 @@ test('F04/DEV-07 Rust shares one live Everything target across status, wait-read
   assert.match(resolveTarget, /ProbeState::classify\(&probe_window\(reply, \*hwnd\)\)/, 'candidates feed the classified query probe into the ranking')
   assert.match(resolveTarget, /rank_candidates\(&signals\)/, 'resolve_target uses the pure ranking helper')
   assert.doesNotMatch(resolveTarget, /let mut best: Option<\(i64, TargetInfo\)>/, 'the old inline scoring is gone')
+
+  // P2-03: the ordinary `status` reply and every `wait-ready` status object carry
+  // *this round's* query answer, so both JS entry points can share one predicate.
+  assert.match(source, /fn protocol_status\(mut snapshot: Value, answered: bool\) -> Value/, 'one protocol boundary inserts queryAnswered')
+  const statusValue = source.slice(source.indexOf('fn status_value('), source.indexOf('fn poll_until_ready('))
+  assert.ok(statusValue.length > 0, 'status_value must exist')
+  assert.match(statusValue, /protocol_status\(status, answered\)/, 'the status action carries queryAnswered')
+  assert.match(waitReady, /protocol_status\(status, answered\)/, 'wait-ready status objects carry queryAnswered too')
 })
 
 test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and safe degradation', () => {
@@ -248,7 +256,11 @@ test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and sa
     // P2-10: query-channel readiness and answering-candidate ranking.
     'p2_10_wait_ready_requires_an_answering_query_channel',
     'p2_10_wait_ready_flips_on_the_first_answering_reselection',
-    'p2_10_an_answering_empty_index_outranks_a_status_healthy_query_silent_instance'
+    'p2_10_an_answering_empty_index_outranks_a_status_healthy_query_silent_instance',
+    // P2-03: the status protocol carries the round's query answer.
+    'p2_03_silent_loaded_status_protocol_reports_query_answered_false',
+    'p2_03_answering_empty_index_status_protocol_reports_query_answered_true',
+    'p2_03_wait_ready_status_object_carries_the_round_query_answer'
   ]) {
     assert.match(source, new RegExp(`fn ${name}\\(\\)`), `${name} must exist (cargo test runs it)`)
   }
@@ -262,11 +274,11 @@ test('F04 the second query rides one sidecar and does not re-run readiness probe
     handlers: {
       status: (request, child) => {
         statusCount += 1
-        child.respond(request, { running: true, dbLoaded: true, version: '1.5.0.1414' })
+        child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414' })
       },
       'wait-ready': (request, child) => {
         waitReadyCount += 1
-        child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+        child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true, queryAnswered: true } })
       },
       query: (request, child) => {
         queryCount += 1
@@ -450,7 +462,7 @@ test('F04 the default process probe resolves through the sidecar process-path ac
 test('F04 getStatus and query failure semantics are unchanged after the split', async () => {
   const { service, children } = createHarness({
     handlers: {
-      status: (request, child) => child.respond(request, { running: true, dbLoaded: true, version: '1.5.0.1414' }),
+      status: (request, child) => child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414' }),
       query: (request, child) => child.fail(request, 'not-running', 'IPC window not found')
     }
   })

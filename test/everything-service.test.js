@@ -7,7 +7,7 @@ const path = require('node:path')
 const { setTimeout: delay } = require('node:timers/promises')
 const { EventEmitter } = require('node:events')
 
-const { EverythingService } = require('../main/services/everything-service')
+const { EverythingService, snapshotIsReady } = require('../main/services/everything-service')
 // The service resolves its status copy through the main-process runtime; the
 // tests assert the published pair (message + the key it came from) instead of
 // hard-coding one language's sentence.
@@ -40,10 +40,10 @@ function createRespondingSidecar(handlers = {}) {
       child.requests.push(request)
       if (request.action === 'status') {
         if (handlers.status) handlers.status(request, child)
-        else child.respond(request, { running: true, dbLoaded: true, version: '1.5.0.1414' })
+        else child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414' })
       } else if (request.action === 'wait-ready') {
         if (handlers['wait-ready']) handlers['wait-ready'](request, child)
-        else child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+        else child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true, queryAnswered: true } })
       } else if (request.action === 'query') {
         if (handlers.query) handlers.query(request, child)
         else child.respond(request, { total: 1, items: [{ name: request.search, fullPath: 'C:\\' + request.search }] })
@@ -182,10 +182,10 @@ test('ensureReady reports ready immediately when Everything is running with a lo
 
 test('ensureReady waits for the index through wait-ready', async () => {
   const { service } = createService({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: false }),
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, queryAnswered: false }),
     'wait-ready': (request, child) => {
       assert.equal(request.timeoutMs, 30000)
-      child.respond(request, { ready: true, elapsedMs: 12, status: { running: true, dbLoaded: true, version: '1.4.1' } })
+      child.respond(request, { ready: true, elapsedMs: 12, status: { running: true, dbLoaded: true, queryAnswered: true, version: '1.4.1' } })
     }
   })
   const status = await service.ensureReady()
@@ -196,8 +196,8 @@ test('ensureReady waits for the index through wait-ready', async () => {
 
 test('ensureReady times out with a hint when the index never loads', async () => {
   const { service } = createService({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: false }),
-    'wait-ready': (request, child) => child.respond(request, { ready: false, elapsedMs: 30000, status: { running: true, dbLoaded: false } })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, queryAnswered: false }),
+    'wait-ready': (request, child) => child.respond(request, { ready: false, elapsedMs: 30000, status: { running: true, dbLoaded: false, queryAnswered: false } })
   })
   await assert.rejects(service.ensureReady(), /初始化超时，索引尚未就绪/)
   assert.equal(service.status.phase, 'error')
@@ -218,7 +218,7 @@ test('ensureReady spawns the bundled Everything only when allowed and present', 
     runtimeEverythingDir: runtimeDir
   }, {
     status: (request, child) => child.respond(request, { running: false, dbLoaded: false }),
-    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 5, status: { running: true, dbLoaded: true, version: '1.4.1' } })
+    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 5, status: { running: true, dbLoaded: true, queryAnswered: true, version: '1.4.1' } })
   })
   const status = await service.ensureReady()
   assert.equal(status.phase, 'ready')
@@ -257,7 +257,7 @@ test('caches readiness briefly and re-checks after a query reports not-running',
   const { service } = createService({}, {
     status: (request, child) => {
       statusCount += 1
-      child.respond(request, { running: true, dbLoaded: true, version: '1.5' })
+      child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5' })
     },
     query: (request, child) => {
       queryFailures += 1
@@ -307,7 +307,7 @@ test('stop() shuts the sidecar down, rejects pending requests, and stops managed
   child.stdin.write = (line, callback) => {
     const request = JSON.parse(line)
     writes.push(request)
-    if (request.action === 'status') child.respond(request, { running: true, dbLoaded: true })
+    if (request.action === 'status') child.respond(request, { running: true, dbLoaded: true, queryAnswered: true })
     if (typeof callback === 'function') callback()
   }
 
@@ -362,7 +362,7 @@ test('status snapshots report sidecar availability from the filesystem', async (
 
 test('refreshStatus probes the sidecar and surfaces a running Everything', async () => {
   const { service, child } = createService({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, version: '1.4.1.1032', ipcAvailable: true })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.4.1.1032', ipcAvailable: true })
   })
   const status = await service.refreshStatus()
   assert.equal(status.running, true)
@@ -373,7 +373,7 @@ test('refreshStatus probes the sidecar and surfaces a running Everything', async
 
 test('refreshStatus marks waiting when Everything runs without a loaded index', async () => {
   const { service } = createService({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, ipcAvailable: true, version: '1.4' })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, queryAnswered: false, ipcAvailable: true, version: '1.4' })
   })
   const status = await service.refreshStatus()
   assert.equal(status.running, true)
@@ -387,7 +387,7 @@ test('refreshStatus reuses the recent probe while the sidecar stays active', asy
   const { service } = createService({}, {
     status: (request, child) => {
       statusCount += 1
-      child.respond(request, { running: true, dbLoaded: true, version: '1.4' })
+      child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.4' })
     }
   })
   await service.refreshStatus()
@@ -401,7 +401,7 @@ test('refreshStatus honors the throttle after the sidecar idles away', async () 
   const { service } = createService({}, {
     status: (request, child) => {
       statusCount += 1
-      child.respond(request, { running: true, dbLoaded: true })
+      child.respond(request, { running: true, dbLoaded: true, queryAnswered: true })
     }
   })
   await service.refreshStatus()
@@ -436,7 +436,7 @@ test('ensureReady fails fast when an instance is detected but unreachable', asyn
   const { service } = createService({
     bundledEverythingPath: path.join(os.tmpdir(), 'missing-everything.exe')
   }, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, ipcAvailable: false })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, queryAnswered: false, ipcAvailable: false })
   })
   await assert.rejects(service.ensureReady(), /无法与之通信/)
   assert.equal(service.status.phase, 'error')
@@ -446,11 +446,92 @@ test('ensureReady fails fast when an instance is detected but unreachable', asyn
 
 test('ensureReady still reaches ready when ipcAvailable is false but the probe query answers', async () => {
   const { service } = createService({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, ipcAvailable: false, version: '1.5.0.1414' })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, ipcAvailable: false, version: '1.5.0.1414' })
   })
   const status = await service.ensureReady()
   assert.equal(status.phase, 'ready')
   assert.equal(status.version, '1.5.0.1414')
+})
+
+// P2-03: the shared predicate itself must fail closed. The sidecar ships with the
+// app, so a snapshot that predates the `queryAnswered` field (or a partial status)
+// must never be treated as ready off `running && dbLoaded`.
+test('P2-03 the shared readiness predicate fails closed without a query answer', () => {
+  assert.equal(snapshotIsReady({ running: true, dbLoaded: true, queryAnswered: true }), true)
+  assert.equal(snapshotIsReady({ running: true, dbLoaded: true }), false, 'a flag-less snapshot is not ready')
+  assert.equal(snapshotIsReady({ running: true, dbLoaded: true, queryAnswered: false }), false)
+  assert.equal(snapshotIsReady({ running: false, dbLoaded: true, queryAnswered: true }), false)
+  assert.equal(snapshotIsReady({ running: true, dbLoaded: false, queryAnswered: true }), false)
+  assert.equal(snapshotIsReady(null), false)
+})
+
+test('P2-03 a sidecar ready flag without a query answer fails closed', async () => {
+  const { service } = createService({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, queryAnswered: false }),
+    // A sidecar that predates the field would report ready from dbLoaded alone.
+    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+  })
+  await assert.rejects(service.ensureReady({ timeoutMs: 3000 }), /初始化超时，索引尚未就绪/)
+  assert.equal(service.status.phase, 'error')
+  assert.equal(service.status.queryAnswered, false)
+  assert.ok(!service.lastReadyAt, 'a flag-less ready flag must not seed the ready cache')
+})
+
+// P2-03: the re-review's repro, driven through the real EverythingService with
+// controllable sidecar answers. A query-silent but index-loaded instance
+// (running+dbLoaded+ipcAvailable, probeTotal 0) used to make BOTH refreshStatus()
+// and ensureReady() report ready — the latter writing the 2 s ready cache — and
+// query() then issued searches against a dead query channel. Readiness must now
+// follow the round's `queryAnswered` flag: the silent instance stays waiting
+// without seeding the ready cache, and only the re-selected instance that answers
+// (here with an empty index) may serve the query.
+test('P2-03 a query-silent but loaded instance waits until an answering round can serve queries', async () => {
+  let answering = false
+  let statusRequests = 0
+  const silentStatus = { running: true, dbLoaded: true, ipcAvailable: true, probeTotal: 0, queryAnswered: false }
+  const answeringStatus = { running: true, dbLoaded: true, ipcAvailable: true, probeTotal: 0, queryAnswered: true }
+  const { service, child } = createService({}, {
+    status: (request, sidecar) => {
+      statusRequests += 1
+      sidecar.respond(request, answering ? answeringStatus : silentStatus)
+    },
+    'wait-ready': (request, sidecar) => {
+      sidecar.respond(request, answering
+        ? { ready: true, elapsedMs: 4, status: answeringStatus }
+        : { ready: false, elapsedMs: 1, status: silentStatus })
+    },
+    query: (request, sidecar) => sidecar.respond(request, { total: 0, items: [] })
+  })
+
+  // The ordinary status path must decide from the round's answer, not from
+  // `running && dbLoaded`, and it must actually request that round from the sidecar.
+  const refreshed = await service.refreshStatus()
+  assert.equal(refreshed.phase, 'waiting', 'a query-silent, index-loaded instance is not ready')
+  assert.equal(refreshed.running, true, 'the instance is still reported as running')
+  assert.equal(refreshed.dbLoaded, true, 'the display keeps the loaded index')
+  assert.equal(refreshed.queryAnswered, false, 'status consumers see the silent round')
+  assert.ok(statusRequests >= 1, 'refreshStatus issued the deciding status request')
+  assert.ok(!service.lastReadyAt, 'the silent round must not write the ready cache')
+
+  // The search readiness path must not resolve ready and must not send a query.
+  await assert.rejects(service.ensureReady({ timeoutMs: 3000 }), /初始化超时，索引尚未就绪/)
+  assert.ok(!service.lastReadyAt, 'ensureReady must not write the ready cache from the silent snapshot')
+  assert.equal(child.requests.filter((request) => request.action === 'query').length, 0, 'no query goes to a silent instance')
+  assert.ok(child.requests.some((request) => request.action === 'wait-ready'), 'the silent instance falls through to wait-ready')
+  assert.equal(service.status.phase, 'error')
+  const statusRoundsBeforeSwitch = statusRequests
+
+  // Switch to the re-selected instance: it answers the query probe with 0 rows.
+  answering = true
+  const result = await service.query({ search: 'x' })
+  assert.deepEqual(result, { total: 0, items: [] }, 'an answering empty index is a valid, accepted reply')
+  const queries = child.requests.filter((request) => request.action === 'query')
+  assert.equal(queries.length, 1, 'the query request is actually sent after the answering round')
+  assert.equal(queries[0].search, 'x')
+  assert.ok(statusRequests > statusRoundsBeforeSwitch, 'a fresh status round decided the switch instead of a cached phase')
+  assert.ok(service.lastReadyAt > 0, 'the ready cache is written only after the answering round')
+  assert.equal(service.status.phase, 'ready')
+  assert.equal(service.status.queryAnswered, true)
 })
 
 test('e2eQuery short-circuits the sidecar for query, status, and readiness', async () => {
@@ -500,12 +581,12 @@ test('every published status pairs its message with the key it was resolved from
 
   // ready
   await run({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, version: '1.5' })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, queryAnswered: true, version: '1.5' })
   })
   // waiting for the index, then ready
   await run({}, {
-    status: (request, child) => child.respond(request, { running: true, dbLoaded: false }),
-    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, queryAnswered: false }),
+    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true, queryAnswered: true } })
   })
   // bundled fallback disabled -> not installed
   await run({ getUseBundledEverything: () => false }, {

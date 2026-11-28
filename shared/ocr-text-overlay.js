@@ -137,6 +137,81 @@
     return rotation === 90 || rotation === 270
   }
 
+  // ---------------------------------------------------------------------------
+  // P2-02 (re-review): vertical glyph orientation.
+  //
+  // A vertical-rl block renders with the CSS default `text-orientation: mixed` (pin.css): characters
+  // from vertical scripts stay UPRIGHT, characters from horizontal-only scripts are laid out SIDEWAYS
+  // (rotated 90° clockwise) as one shaped run in reading order. The measured layout knows every
+  // grapheme's centre and box, but the old painter drew every grapheme upright, so a Latin letter in
+  // a vertical translation exported 90° from the screen (the re-review's single `I`: screen ink
+  // 21.6x2.4 CSS px, PNG 2.4x21.6). The painter now rotates exactly the graphemes the browser sets
+  // sideways, keeping the browser's column order and measured centres; upright scripts (CJK, kana,
+  // Hangul, emoji, ...) keep the old per-cluster fillText.
+  //
+  // The decision is the Unicode Vertical_Orientation property (UAX #50), whose DEFAULT is Rotated:
+  // the table below lists the property's upright ranges (Unicode 18.0.0 VerticalOrientation.txt,
+  // characters assigned `U` or `Tu`; `Tu` is a transformed-upright glyph, painted upright at the
+  // position the browser measured). `Tr` (transformed rotated) stays rotated, the closest the canvas
+  // painter can reproduce. A character outside every range is rotated, matching the default.
+  // This is a Unicode property, not a font property, so the same code point classifies identically
+  // for every installed font and every DPR.
+  // ---------------------------------------------------------------------------
+  const VERTICAL_UPRIGHT_RANGES = [
+    0xA7, 0xA7, 0xA9, 0xA9, 0xAE, 0xAE, 0xB1, 0xB1,
+    0xBC, 0xBE, 0xD7, 0xD7, 0xF7, 0xF7, 0x2EA, 0x2EB,
+    0x1100, 0x11FF, 0x1401, 0x167F, 0x18B0, 0x18FF, 0x2016, 0x2016,
+    0x2020, 0x2021, 0x2030, 0x2031, 0x203B, 0x203C, 0x2042, 0x2042,
+    0x2047, 0x2049, 0x2051, 0x2051, 0x2065, 0x2065, 0x20DD, 0x20E0,
+    0x20E2, 0x20E4, 0x2100, 0x2101, 0x2103, 0x2109, 0x210F, 0x210F,
+    0x2113, 0x2114, 0x2116, 0x2117, 0x211E, 0x2123, 0x2125, 0x2125,
+    0x2127, 0x2127, 0x2129, 0x2129, 0x212E, 0x212E, 0x2135, 0x213F,
+    0x2145, 0x214A, 0x214C, 0x214D, 0x214F, 0x2189, 0x218C, 0x218F,
+    0x221E, 0x221E, 0x2234, 0x2235, 0x2300, 0x2307, 0x230C, 0x231F,
+    0x2324, 0x2328, 0x232B, 0x232B, 0x237D, 0x239A, 0x23BE, 0x23CD,
+    0x23CF, 0x23CF, 0x23D1, 0x23DB, 0x23E2, 0x2422, 0x2424, 0x24FF,
+    0x25A0, 0x2619, 0x2620, 0x2767, 0x2776, 0x2793, 0x2B12, 0x2B2F,
+    0x2B50, 0x2B59, 0x2B97, 0x2B97, 0x2BB8, 0x2BD1, 0x2BD3, 0x2BEB,
+    0x2BF0, 0x2BFF, 0x2E50, 0x2E51, 0x2E80, 0x3007, 0x3012, 0x3013,
+    0x3020, 0x302F, 0x3031, 0x309F, 0x30A1, 0x30FB, 0x30FD, 0xA4CF,
+    0xA960, 0xA97F, 0xAC00, 0xD7FF, 0xE000, 0xFAFF, 0xFE10, 0xFE1F,
+    0xFE30, 0xFE48, 0xFE50, 0xFE57, 0xFE5F, 0xFE62, 0xFE67, 0xFE6F,
+    0xFF01, 0xFF07, 0xFF0A, 0xFF0C, 0xFF0E, 0xFF19, 0xFF1F, 0xFF3A,
+    0xFF3C, 0xFF3C, 0xFF3E, 0xFF3E, 0xFF40, 0xFF5A, 0xFFE0, 0xFFE2,
+    0xFFE4, 0xFFE7, 0xFFF0, 0xFFF8, 0xFFFC, 0xFFFD, 0x10980, 0x1099F,
+    0x11580, 0x115FF, 0x11A00, 0x11ABF, 0x13000, 0x1467F, 0x16FE0, 0x191DF,
+    0x1AFF0, 0x1B2FF, 0x1CEC0, 0x1CEDC, 0x1CEE0, 0x1CEF0, 0x1CEFE, 0x1CFCF,
+    0x1D000, 0x1D1FF, 0x1D250, 0x1D281, 0x1D2E0, 0x1D37F, 0x1D800, 0x1DAAF,
+    0x1F000, 0x1F7FF, 0x1F900, 0x1FAFF, 0x20000, 0x2FFFD, 0x30000, 0x3FFFD,
+    0xF0000, 0xFFFFD, 0x100000, 0x10FFFD
+  ]
+
+  // @return true when the code point is Vertical_Orientation=Upright (U or Tu).
+  function verticalUpright(codePoint) {
+    let low = 0
+    let high = (VERTICAL_UPRIGHT_RANGES.length / 2) - 1
+    while (low <= high) {
+      const middle = (low + high) >> 1
+      const start = VERTICAL_UPRIGHT_RANGES[middle * 2]
+      const end = VERTICAL_UPRIGHT_RANGES[middle * 2 + 1]
+      if (codePoint < start) high = middle - 1
+      else if (codePoint > end) low = middle + 1
+      else return true
+    }
+    return false
+  }
+
+  // @return true when the browser sets this grapheme sideways in a vertical-rl `mixed` block, i.e.
+  // the measured painter must rotate the upright glyph 90° clockwise around its measured centre.
+  // The cluster's first code point decides (a grapheme cluster is base + combining marks / ZWJ
+  // sequences; the base carries the orientation of the whole cluster).
+  function verticalTextIsSideways(text) {
+    const value = String(text || '')
+    if (!value) return false
+    const first = value.codePointAt(0)
+    return !verticalUpright(first)
+  }
+
   function readBlockAngle(element, computed) {
     const inline = typeof element.style.transform === 'string' ? LAYOUT_ANGLE_PATTERN.exec(element.style.transform) : null
     if (inline) {
@@ -344,7 +419,10 @@
           width: glyphWidth,
           height: glyphHeight,
           startIndex: cluster.start,
-          endIndex: cluster.end
+          endIndex: cluster.end,
+          // P2-02: the measured painter must know whether the browser laid this grapheme out
+          // sideways (horizontal scripts in vertical-rl mixed) or upright (CJK/kana/Hangul/emoji).
+          sideways: vertical ? verticalTextIsSideways(cluster.text) : false
         })
       }
     }
@@ -406,7 +484,14 @@
         y: (minY + maxY) / 2,
         width: maxX - minX,
         height: maxY - minY,
-        glyphs: kept.map((glyph) => ({ text: glyph.text, x: glyph.x, y: glyph.y, width: glyph.width, height: glyph.height }))
+        glyphs: kept.map((glyph) => ({
+          text: glyph.text,
+          x: glyph.x,
+          y: glyph.y,
+          width: glyph.width,
+          height: glyph.height,
+          sideways: glyph.sideways === true
+        }))
       })
     }
     return {
@@ -475,5 +560,12 @@
     return layouts
   }
 
-  window.OcrTextOverlay = { renderBlocks, measureLayout, MAX_LAYOUT_GLYPHS, MAX_LAYOUT_BLOCKS, MAX_LAYOUT_TEXT }
+  window.OcrTextOverlay = {
+    renderBlocks,
+    measureLayout,
+    verticalTextIsSideways,
+    MAX_LAYOUT_GLYPHS,
+    MAX_LAYOUT_BLOCKS,
+    MAX_LAYOUT_TEXT
+  }
 })()

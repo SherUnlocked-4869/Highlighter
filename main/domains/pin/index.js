@@ -1217,6 +1217,17 @@ function createPinDomain(deps) {
     if (!topology || topology.ok !== true) {
       return { ok: false, code: topology?.code || 'TOPOLOGY_CHANGED', retryable: true }
     }
+    // P2-01 re-review: the count/target-id check alone cannot see a same-id layout change. Two
+    // displays keeping their ids can swap system coordinates (or the target can change its scale
+    // or rotation) during the await; the plan's physicalRect then describes the old topology and
+    // cropping it out of the new source delivers the other screen's pixels. Recompute the mapping
+    // from the post-await display list: a changed target/mapping is a retryable transition frame
+    // with no pixels, and the next tick re-plans from the current topology.
+    const consistency = pinScreenDiff.revalidateScreenCapturePlan(plan, displaysAfter)
+    if (!consistency || consistency.ok !== true) {
+      const code = consistency?.code || 'TOPOLOGY_CHANGED'
+      return { ok: false, code, retryable: code !== 'INVALID_PLAN' }
+    }
     // display_id is the authoritative match. There is deliberately NO blind fallback: with
     // more than one display an unidentified source could be the primary screen, and the
     // caller would then crop the target display's coordinates out of the wrong pixels

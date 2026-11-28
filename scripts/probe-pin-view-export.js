@@ -30,6 +30,12 @@ const fs = require('node:fs')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
+// P2-02 (re-review): the re-review's counterexample was measured at 125% Windows scaling
+// (devicePixelRatio 1.25). Pinning the scale factor makes the vertical-glyph phase reproduce the
+// exact reported ink sizes (21.6x2.4 CSS px for the sideways `I`) instead of depending on the host
+// display settings; every phase converts CSS<->device pixels through the page's own dpr.
+app.commandLine.appendSwitch('force-device-scale-factor', '1.25')
+
 // PIN_VIEW_EXPORT_PROBE_ROOT lets an evidence run point the same probe at an older checkout
 // copy (used to demonstrate the regression failing on b84eeba); normal runs use this repo.
 const ROOT = process.env.PIN_VIEW_EXPORT_PROBE_ROOT || path.join(__dirname, '..')
@@ -131,7 +137,7 @@ async function waitFor(win, expression, timeoutMs = 8000) {
 async function requestViewExport(win, requestId) {
   win.webContents.send('pin:view-export-request', { requestId })
   const started = Date.now()
-  while (Date.now() - started < 8000) {
+  while (Date.now() - started < 20000) {
     const found = envelopes.find((entry) => entry.requestId === requestId)
     if (found) return found
     await sleep(25)
@@ -257,6 +263,225 @@ async function runOcrPhase(win, state, payload) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// P2-02 phase D: vertical-rl glyph orientation on the REAL pin renderer.
+// ---------------------------------------------------------------------------------------------
+const VERTICAL_GLYPH_CASES = [
+  // `threshold` is the max RGB sum still counted as ink: dark text only for the text cases, a
+  // looser bound for the coloured emoji so its non-white pixels are part of the comparison.
+  { id: 'latin-i', text: 'I', threshold: 420 },
+  { id: 'mixed-zh-en', text: '中A文', threshold: 420 },
+  { id: 'cjk', text: '中文竖排', threshold: 420 },
+  { id: 'emoji', text: '👩‍💻', threshold: 700 }
+]
+const VERTICAL_CHIP = { x: 40, y: 30, width: 40, height: 180 }
+function verticalBlock(text) {
+  const { x, y, width, height } = VERTICAL_CHIP
+  return {
+    text,
+    text_score: 0.95,
+    box_points: [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }]
+  }
+}
+
+// Page-side: chip rect, the measured layout (the same payload the painter consumes) and the
+// per-glyph boxes in CHIP-LOCAL CSS px so the node test can read the measured orientation flags.
+function VERTICAL_FACTS_SOURCE() {
+  const overlay = document.getElementById('pinOcrOverlay')
+  const element = overlay.children[0]
+  const chip = element.getBoundingClientRect()
+  const layout = window.OcrTextOverlay.measureLayout(overlay)
+  const metricsCanvas = document.createElement('canvas')
+  const metricsContext = metricsCanvas.getContext('2d')
+  if (layout[0]) metricsContext.font = `${layout[0].fontSize}px ${layout[0].fontFamily}`
+  metricsContext.textAlign = 'center'
+  metricsContext.textBaseline = 'middle'
+  const glyphs = []
+  for (const line of (layout[0] && Array.isArray(layout[0].lines) ? layout[0].lines : [])) {
+    for (const glyph of (Array.isArray(line.glyphs) ? line.glyphs : [])) {
+      const measured = metricsContext.measureText(glyph.text)
+      glyphs.push({
+        text: glyph.text,
+        sideways: glyph.sideways === true,
+        x: glyph.x,
+        y: glyph.y,
+        width: glyph.width,
+        height: glyph.height,
+        metrics: {
+          ascent: measured.actualBoundingBoxAscent,
+          descent: measured.actualBoundingBoxDescent,
+          left: measured.actualBoundingBoxLeft,
+          right: measured.actualBoundingBoxRight,
+          fontAscent: measured.fontBoundingBoxAscent,
+          fontDescent: measured.fontBoundingBoxDescent
+        }
+      })
+    }
+  }
+  return {
+    dpr: devicePixelRatio,
+    innerWidth,
+    innerHeight,
+    chip: { x: chip.left, y: chip.top, width: chip.width, height: chip.height },
+    vertical: !!(layout[0] && layout[0].vertical === true),
+    fontSize: layout[0] ? layout[0].fontSize : 0,
+    glyphs
+  }
+}
+
+// Page-side: decode the live screen capture and the exported PNG, then report per-rect ink for
+// both. `ink` is any non-background pixel (dark text AND coloured emoji); the same predicate is
+// applied to both images, so IoU compares shape/orientation without depending on one colour.
+async function VERTICAL_COMPARE_SOURCE(payload) {
+  const load = (src) => new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('image decode failed'))
+    image.src = src
+  })
+  const screen = await load('data:image/png;base64,' + payload.screenBase64)
+  const exported = await load('data:image/png;base64,' + payload.exportBase64)
+  const toMask = (image) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth
+    canvas.height = image.naturalHeight
+    const context = canvas.getContext('2d')
+    context.drawImage(image, 0, 0)
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const mask = new Uint8Array(canvas.width * canvas.height)
+    for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+      if (data[index + 3] >= 128 && data[index] + data[index + 1] + data[index + 2] < payload.threshold) mask[pixel] = 1
+    }
+    return { mask, width: canvas.width, height: canvas.height }
+  }
+  const a = toMask(screen)
+  const b = toMask(exported)
+  const scale = Number(payload.dpr) || 1
+  const analyse = (rect) => {
+    const width = Math.min(a.width, b.width)
+    const height = Math.min(a.height, b.height)
+    const left = Math.max(0, Math.floor(rect.x * scale))
+    const top = Math.max(0, Math.floor(rect.y * scale))
+    const right = Math.min(width, Math.ceil((rect.x + rect.width) * scale))
+    const bottom = Math.min(height, Math.ceil((rect.y + rect.height) * scale))
+    const stats = () => ({ count: 0, sumX: 0, sumY: 0, minX: Infinity, minY: Infinity, maxX: -1, maxY: -1 })
+    const sa = stats()
+    const sb = stats()
+    let intersection = 0
+    let union = 0
+    for (let y = top; y < bottom; y += 1) {
+      for (let x = left; x < right; x += 1) {
+        const pixel = y * a.width + x
+        const inA = a.mask[pixel] === 1
+        const inB = b.mask[pixel] === 1
+        if (inA) {
+          sa.count += 1; sa.sumX += x; sa.sumY += y
+          if (x < sa.minX) sa.minX = x
+          if (y < sa.minY) sa.minY = y
+          if (x > sa.maxX) sa.maxX = x
+          if (y > sa.maxY) sa.maxY = y
+        }
+        if (inB) {
+          sb.count += 1; sb.sumX += x; sb.sumY += y
+          if (x < sb.minX) sb.minX = x
+          if (y < sb.minY) sb.minY = y
+          if (x > sb.maxX) sb.maxX = x
+          if (y > sb.maxY) sb.maxY = y
+        }
+        if (inA || inB) union += 1
+        if (inA && inB) intersection += 1
+      }
+    }
+    const shape = (entry) => entry.count === 0 ? { count: 0, bounds: null, centroid: null } : {
+      count: entry.count,
+      bounds: {
+        x: entry.minX / scale,
+        y: entry.minY / scale,
+        width: (entry.maxX - entry.minX + 1) / scale,
+        height: (entry.maxY - entry.minY + 1) / scale
+      },
+      centroid: { x: entry.sumX / entry.count / scale, y: entry.sumY / entry.count / scale }
+    }
+    return {
+      screen: shape(sa),
+      exported: shape(sb),
+      iou: union === 0 ? 0 : intersection / union
+    }
+  }
+  const glyphs = []
+  for (const glyph of payload.glyphs) {
+    glyphs.push({
+      text: glyph.text,
+      sideways: glyph.sideways === true,
+      box: analyse({
+        x: payload.chip.x + payload.chip.width / 2 + glyph.x - glyph.width / 2,
+        y: payload.chip.y + payload.chip.height / 2 + glyph.y - glyph.height / 2,
+        width: glyph.width,
+        height: glyph.height
+      })
+    })
+  }
+  return {
+    dpr: scale,
+    screenSize: { width: a.width, height: a.height },
+    exportSize: { width: b.width, height: b.height },
+    chip: analyse(payload.chip),
+    glyphs
+  }
+}
+
+async function runVerticalGlyphPhase(win) {
+  const results = []
+  const progress = []
+  for (const testCase of VERTICAL_GLYPH_CASES) {
+    progress.push({ id: testCase.id, stage: 'recognition' })
+    win.webContents.send('pin:recognition', {
+      action: 'translate',
+      phase: 'result',
+      result: {
+        imageWidth: 400,
+        imageHeight: 6000,
+        text: testCase.text,
+        textBlocks: [verticalBlock(testCase.text)]
+      }
+    })
+    await waitFor(win, `(() => {
+      const overlay = document.getElementById('pinOcrOverlay')
+      return overlay.childElementCount === 1 && overlay.textContent === ${JSON.stringify(testCase.text)}
+    })()`, 6000)
+    await sleep(250)
+    const facts = await win.webContents.executeJavaScript(`(${VERTICAL_FACTS_SOURCE.toString()})()`)
+    progress.push({ id: testCase.id, stage: 'facts', glyphs: facts.glyphs.length })
+    // What the window actually renders on screen (device pixels), captured before the export.
+    const screenPng = toBuffer((await win.webContents.capturePage()).toPNG())
+    progress.push({ id: testCase.id, stage: 'captured', bytes: screenPng.length })
+    const exported = await requestViewExport(win, `req-vertical-${testCase.id}`)
+    progress.push({ id: testCase.id, stage: 'exported' })
+    if (!exported.ok) {
+      results.push({ id: testCase.id, facts, exported: { ok: false, code: exported.code } })
+      continue
+    }
+    const analysis = await win.webContents.executeJavaScript(
+      `(${VERTICAL_COMPARE_SOURCE.toString()})(${JSON.stringify({
+        screenBase64: screenPng.toString('base64'),
+        exportBase64: toBuffer(exported.png).toString('base64'),
+        dpr: facts.dpr,
+        threshold: testCase.threshold,
+        chip: facts.chip,
+        glyphs: facts.glyphs
+      })})`
+    )
+    results.push({
+      id: testCase.id,
+      text: testCase.text,
+      facts,
+      exported: { ok: true, width: exported.width, height: exported.height },
+      analysis
+    })
+  }
+  return { cases: results, progress }
+}
+
 app.whenReady().then(async () => {
   try {
     const win = new BrowserWindow({
@@ -270,9 +495,18 @@ app.whenReady().then(async () => {
       webPreferences: {
         preload: path.join(ROOT, 'preload-pin.js'),
         contextIsolation: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        // A hidden probe window must still paint every recognition update: the vertical-glyph
+        // phase compares the LIVE rendering with the export, so background throttling would
+        // hand back a stale frame from the previous phase.
+        backgroundThrottling: false
       }
     })
+    report.console = []
+    win.webContents.on('console-message', (_event, level, message, line, source) => {
+      report.console.push({ level, message: String(message).slice(0, 500), line, source: String(source || '').slice(0, 200) })
+    })
+    win.webContents.on('render-process-gone', (_event, details) => { report.renderProcessGone = details })
     await win.loadFile(path.join(ROOT, 'pin', 'pin.html'))
     await waitFor(win, 'typeof window.applyPinData === "function" && !!window.pinViewExport && !!document.getElementById("image")', 10000)
     report.page = await win.webContents.executeJavaScript('({ innerWidth, innerHeight, devicePixelRatio, readyState: document.readyState })')
@@ -386,6 +620,25 @@ app.whenReady().then(async () => {
       phase: 'result',
       result: { imageWidth: 400, imageHeight: 6000, text: VERTICAL_TEXT, textBlocks: TRANSLATED_BLOCKS }
     })
+
+    // ---- phase D: P2-02 vertical-rl glyph orientation --------------------------------
+    // The re-review's counterexample: a single Latin `I` in a 40x180 vertical translation chip
+    // rendered sideways on screen (ink 21.6x2.4 CSS px) but the export painted it upright
+    // (2.4x21.6). For every case the probe compares the LIVE rendering (capturePage of the real
+    // pin window) with "export current view" ink, per measured glyph box: bounds, centroid and
+    // pixel-mask IoU. The node test owns the thresholds; the raw numbers live in the report.
+    // A `show: false` window stops producing new frames after the initial paint, so capturePage()
+    // would hand back a stale frame from an earlier phase. The phase compares the LIVE rendering,
+    // so the window is shown INACTIVE completely off every display and at zero opacity (some
+    // window managers clamp a far-off position back onto a screen) — no visible window, no focus
+    // steal — while the samples are taken. capturePage reads the web-contents surface, so the
+    // DWM opacity does not affect the pixels it returns.
+    win.setPosition(-20000, 0)
+    win.setOpacity(0)
+    win.showInactive()
+    await sleep(500)
+    report.phases.verticalText = await runVerticalGlyphPhase(win)
+    win.hide()
 
     win.destroy()
     report.ok = true

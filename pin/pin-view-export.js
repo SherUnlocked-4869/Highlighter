@@ -259,7 +259,11 @@
           x: x * scale,
           y: y * scale,
           width: positiveOr(glyph.width, 0) * scale,
-          height: positiveOr(glyph.height, 0) * scale
+          height: positiveOr(glyph.height, 0) * scale,
+          // P2-02 re-review: the browser sets characters of horizontal-only scripts sideways in
+          // vertical-rl; the measured painter must preserve that per-grapheme orientation.
+          // Missing (older/legacy measurement) stays upright, the pre-fix behaviour.
+          sideways: glyph?.sideways === true
         })
         glyphCount += 1
       }
@@ -461,6 +465,22 @@
     return true
   }
 
+  // P2-02: in a vertical-rl column Chromium cannot join a ZWJ emoji sequence vertically, so it
+  // lays the sequence out UPRIGHT but stacked (its measured advance is ~2-3 em). The canvas
+  // painter draws one run, which would collapse the stack into a single small glyph. When the
+  // measured advance proves the browser split an upright ZWJ sequence into several vertical
+  // slots, paint the parts into those same slots in order. Non-ZWJ clusters and every horizontal
+  // block keep the single shaped draw.
+  function verticalUprightParts(glyph, fontSize) {
+    const text = typeof glyph?.text === 'string' ? glyph.text : ''
+    if (!text || text.indexOf('\u200d') === -1) return null
+    const size = Number(fontSize) > 0 ? Number(fontSize) : 0
+    const height = Number(glyph?.height) > 0 ? Number(glyph.height) : 0
+    if (!size || !(height > size * 1.5)) return null
+    const parts = text.split('\u200d').filter((part) => part.length > 0)
+    return parts.length > 1 ? parts : null
+  }
+
   function drawOcrBlock(context, block) {
     const radians = (block.angle || 0) * Math.PI / 180
     context.save()
@@ -488,9 +508,56 @@
       if (block.vertical === true) {
         // P2-06: vertical-rl keeps the browser's columns (right to left in plan order) and
         // paints every measured grapheme cluster at its own box, so clusters stay whole.
+        // P2-02: a grapheme the browser set sideways (a horizontal-script letter/digit in the
+        // vertical column) is painted rotated 90° clockwise around its measured centre, exactly
+        // the orientation the live overlay shows; upright scripts keep the plain draw. The
+        // measured box is the ROTATED glyph's physical box, so the rotation swaps its axes back
+        // and the ink lands on the same pixels as the screen.
         for (const line of lines) {
           if (!Array.isArray(line.glyphs)) continue
-          for (const glyph of line.glyphs) context.fillText(glyph.text, glyph.x, glyph.y)
+          for (const glyph of line.glyphs) {
+            if (glyph.sideways === true) {
+              context.save()
+              context.translate(glyph.x, glyph.y)
+              context.rotate(Math.PI / 2)
+              // The measured box centre is the centre of the browser's ROTATED line box; the
+              // canvas `middle` baseline anchors the em square, not the ink. Nudge along the
+              // glyph frame's vertical axis by the measured ink offset so the rotated ink lands
+              // on the box centre like the live overlay (a 3+ CSS px shift otherwise, the review's
+              // 125% sample was visibly off-centre in the column). The nudge only affects the
+              // rotated screen-x axis; the along-column position is unchanged.
+              let inkOffset = 0
+              if (typeof context.measureText === 'function') {
+                const metrics = context.measureText(glyph.text)
+                const ascent = Number(metrics?.actualBoundingBoxAscent)
+                const descent = Number(metrics?.actualBoundingBoxDescent)
+                if (Number.isFinite(ascent) && Number.isFinite(descent)) inkOffset = (descent - ascent) / 2
+              }
+              context.fillText(glyph.text, 0, -inkOffset)
+              context.restore()
+            } else {
+              const parts = verticalUprightParts(glyph, block.fontSize)
+              if (parts) {
+                const top = glyph.y - glyph.height / 2
+                const slot = glyph.height / parts.length
+                for (let index = 0; index < parts.length; index += 1) {
+                  // Centre each part's INK in its measured slot (the canvas `middle` baseline
+                  // anchors the em square, which sits a couple of pixels above the colour-emoji
+                  // ink); the browser's vertical fallback centres each stacked glyph in its slot.
+                  let partOffset = 0
+                  if (typeof context.measureText === 'function') {
+                    const metrics = context.measureText(parts[index])
+                    const ascent = Number(metrics?.actualBoundingBoxAscent)
+                    const descent = Number(metrics?.actualBoundingBoxDescent)
+                    if (Number.isFinite(ascent) && Number.isFinite(descent)) partOffset = (descent - ascent) / 2
+                  }
+                  context.fillText(parts[index], glyph.x, top + slot * (index + 0.5) - partOffset)
+                }
+              } else {
+                context.fillText(glyph.text, glyph.x, glyph.y)
+              }
+            }
+          }
         }
       } else {
         // P2-06: a horizontal line was shaped by the browser as ONE run. One fillText keeps

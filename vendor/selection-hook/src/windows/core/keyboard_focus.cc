@@ -114,6 +114,12 @@ struct ElementEvidence
     bool textPatternReadOnly = false;
     bool hasWritableValue = false;
     bool textPatternWritable = false;
+    // P1-03 tri-state query results: a failed GetCurrentPatternAs is not "the element positively
+    // does not support the pattern" (which is SUCCEEDED + nullptr).
+    bool valuePatternQueryFailed = false;
+    bool textPatternQueryFailed = false;
+    // A failed read of the focused element's native window handle is not a successful empty handle.
+    bool focusHandleReadFailed = false;
     bool timedOut = false;
 };
 
@@ -163,10 +169,14 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
     // type is not Edit (combo box, spinner, custom text control). Read-only values are display
     // surfaces and stay safe. P1-3: presence and the read-only answer are recorded separately, so
     // a pattern whose read failed can no longer be mistaken for "not writable".
+    // Tri-state result (P1-03): SUCCEEDED + non-null -> the pattern is present; SUCCEEDED + null
+    // -> the provider positively answered "this element does not support the pattern" (no flag);
+    // FAILED -> the query itself failed, which is ambiguous and must not be read as "no pattern".
     IUIAutomationValuePattern *valuePattern = nullptr;
-    if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
-                                              reinterpret_cast<void **>(&valuePattern))) &&
-        valuePattern)
+    const HRESULT valueQuery =
+        element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
+                                     reinterpret_cast<void **>(&valuePattern));
+    if (SUCCEEDED(valueQuery) && valuePattern)
     {
         result.valuePatternPresent = true;
         BOOL readOnly = TRUE;
@@ -177,6 +187,10 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
             result.hasWritableValue = readOnly == FALSE;
         }
         valuePattern->Release();
+    }
+    else if (FAILED(valueQuery))
+    {
+        result.valuePatternQueryFailed = true;
     }
     if (ProbeBudgetExceeded(startedAt))
     {
@@ -201,9 +215,10 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
     if (!result.isPassword && !result.isTextEditControl && !result.hasWritableValue)
     {
         IUIAutomationTextPattern *textPattern = nullptr;
-        if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
-                                                  reinterpret_cast<void **>(&textPattern))) &&
-            textPattern)
+        const HRESULT textQuery =
+            element->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
+                                         reinterpret_cast<void **>(&textPattern));
+        if (SUCCEEDED(textQuery) && textPattern)
         {
             result.textPatternPresent = true;
             if (ProbeBudgetExceeded(startedAt))
@@ -242,6 +257,10 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
                 VariantClear(&isReadOnly);
             }
         }
+        else if (FAILED(textQuery))
+        {
+            result.textPatternQueryFailed = true;
+        }
     }
     if (ProbeBudgetExceeded(startedAt))
         result.timedOut = true;
@@ -262,6 +281,9 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
     // Provenance is part of the evidence: GetFocusedElement names the focus owner itself, while
     // the ElementFromHandle fallback below only proves a window/container.
     bool identityConfirmed = false;
+    // P1-03: survives the ElementFromHandle fallback below so the policy can report the precise
+    // root cause (focus_handle_read_failed) instead of a generic container rejection.
+    bool focusedElementHandleReadFailed = false;
     IUIAutomationElement *element = nullptr;
     HRESULT hr = automation->GetFocusedElement(&element);
     if (ProbeBudgetExceeded(startedAt))
@@ -280,16 +302,27 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
             static_cast<DWORD>(elementProcessId) == snapshot.processId)
         {
             // The focused element must still belong to the event-time foreground window: a stale
-            // drain must not classify a surface the user switched to after the key press. Web
-            // content elements commonly report no native window handle, so accept those on the
-            // process evidence alone; a handle must resolve to the same top-level foreground.
-            bool sameWindow = true;
+            // drain must not classify a surface the user switched to after the key press. The
+            // ownership read is tri-state (P1-03): S_OK + non-null handle must resolve to the same
+            // top-level foreground; S_OK + 0 is a web-content element with no native handle, which
+            // stays on the process-identity evidence (documented residual); FAILED proves nothing
+            // and must not be treated like a successful empty handle.
+            bool sameWindow = false;
             UIA_HWND nativeWindow = 0;
-            if (SUCCEEDED(element->get_CurrentNativeWindowHandle(&nativeWindow)) && nativeWindow)
+            const HRESULT nativeWindowResult = element->get_CurrentNativeWindowHandle(&nativeWindow);
+            if (FAILED(nativeWindowResult))
+            {
+                focusedElementHandleReadFailed = true;
+            }
+            else if (nativeWindow)
             {
                 const HWND elementWindow = reinterpret_cast<HWND>(nativeWindow);
                 sameWindow = elementWindow == snapshot.focusWindow ||
                              GetAncestor(elementWindow, GA_ROOT) == snapshot.foregroundWindow;
+            }
+            else
+            {
+                sameWindow = true;
             }
             usable = sameWindow;
             identityConfirmed = usable;
@@ -327,12 +360,20 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
     }
 
     if (!element)
+    {
+        result.focusHandleReadFailed = focusedElementHandleReadFailed;
         return result;
+    }
     result = ReadElementEvidence(element, startedAt);
     // P1-3: only the matching GetFocusedElement result proves the identity of the focus owner.
     // The ElementFromHandle fallback may map to a container host whose virtual subcontrols (for
     // example a password field inside a document host) were never read, so it stays unconfirmed.
     result.focusIdentityConfirmed = identityConfirmed;
+    // P1-03: the failed ownership read of the focused element is part of the probe outcome even
+    // when the classification fell back to ElementFromHandle, so the flag must survive into the
+    // decision: the fallback can never become Safe (its identity is unconfirmed anyway), and the
+    // policy reports the precise root cause instead of a generic container rejection.
+    result.focusHandleReadFailed = result.focusHandleReadFailed || focusedElementHandleReadFailed;
     element->Release();
     return result;
 }
@@ -518,6 +559,11 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyForeground(const Keyboard
     evidence.textPatternReadOnly = element.textPatternReadOnly;
     evidence.hasWritableValue = element.hasWritableValue;
     evidence.textPatternWritable = element.textPatternWritable;
+    // P1-03: a failed pattern query or a failed focus-owner handle read is tri-state evidence that
+    // must reach the pure policy; otherwise the failed query looks like "no pattern".
+    evidence.valuePatternQueryFailed = element.valuePatternQueryFailed;
+    evidence.textPatternQueryFailed = element.textPatternQueryFailed;
+    evidence.focusHandleReadFailed = element.focusHandleReadFailed;
     return ClassifyKeyboardFocus(evidence);
 }
 
@@ -562,6 +608,12 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyWindowHandle(HWND window)
     evidence.textPatternReadOnly = element.textPatternReadOnly;
     evidence.hasWritableValue = element.hasWritableValue;
     evidence.textPatternWritable = element.textPatternWritable;
+    // P1-03 pattern-query failures are propagated here too: the caller supplied this exact
+    // window/control handle (probe/self-test path) and the element's own pattern queries are the
+    // same ambiguous signal. This path never reads a focused element's native window handle (the
+    // handle was supplied by the caller), so focusHandleReadFailed stays false by construction.
+    evidence.valuePatternQueryFailed = element.valuePatternQueryFailed;
+    evidence.textPatternQueryFailed = element.textPatternQueryFailed;
     return ClassifyKeyboardFocus(evidence);
 }
 

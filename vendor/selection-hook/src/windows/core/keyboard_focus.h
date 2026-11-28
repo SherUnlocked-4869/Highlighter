@@ -17,25 +17,37 @@
  *  3. an active IME composition                                    -> ImeComposition (drop)
  *  4. UIA Edit control type, a writable ValuePattern or a writable TextPattern
  *     (Word/RichEdit/custom editors)                               -> TextInput (drop)
- *  5. focus identity not confirmed (evidence came from the ElementFromHandle fallback and may
+ *  5. a ValuePattern/TextPattern query returned a failed HRESULT, or the focused element's
+ *     native window-handle read returned a failed HRESULT (P1-03: a provider error is not a
+ *     negative answer and cannot authorize Safe)                   -> Unknown (drop)
+ *  6. focus identity not confirmed (evidence came from the ElementFromHandle fallback and may
  *     describe the host container of virtual subcontrols)          -> Unknown (drop)
- *  6. ValuePattern/TextPattern exists but its read-only answer could not be read
+ *  7. ValuePattern/TextPattern exists but its read-only answer could not be read
  *     (property-read failure)                                      -> Unknown (drop)
- *  7. positively confirmed read-only ValuePattern/TextPattern
+ *  8. positively confirmed read-only ValuePattern/TextPattern
  *     (browser demo page, read-only editors)                       -> Safe (accept)
- *  8. positively confirmed non-text control: no ValuePattern/TextPattern and the control type is
- *     not Document/Text                                            -> Safe (accept)
- *  9. anything else (e.g. Document/Text without read-only evidence) -> Unknown (drop)
+ *  9. positively confirmed non-text control: the ValuePattern and TextPattern queries both
+ *     succeeded with S_OK+NULL ("the element does not support that pattern") and the control type
+ *     is not Document/Text                                         -> Safe (accept)
+ * 10. anything else (e.g. Document/Text without read-only evidence) -> Unknown (drop)
  *
  * P1-3 (docs/reviews/2026-11-28-d7923ac-fix-delivery-review.md section 3): a successful
  * get_CurrentControlType/get_CurrentIsPassword only proves that the element is readable. Missing
  * writability evidence is no longer treated as safety: a present pattern without a read-only
  * answer, or an element that may be a container of virtual subcontrols, fails closed.
  *
+ * P1-03 (docs/reviews/2026-11-28-05d0dde-fix-delivery-re-review.md section P1-03): the pattern
+ * queries are tri-state. GetCurrentPatternAs returning a failed HRESULT leaves both
+ * "*PatternPresent" members false, exactly like a provider that positively answered S_OK+NULL
+ * ("this element does not support the pattern"). Only S_OK+NULL is "confirmed not supported" and
+ * may feed the safe_focus rule; a failed query is Unknown. The focused element's
+ * get_CurrentNativeWindowHandle is tri-state as well: S_OK+0 (a web-content element without a
+ * native HWND) may still use the process-identity evidence, a failed read may not.
+ *
  * Residual uncertainty (deliberate, documented instead of silently accepted):
  *  - The TextPattern rule needs the provider to answer UIA_IsReadOnlyAttributeId on its document
  *    range. A provider that cannot answer it now yields Unknown (fail closed) instead of the old
- *    weaker accept rule; providers without TextPattern stay on rule 8.
+ *    weaker accept rule; providers without TextPattern stay on rule 9.
  *  - Classification runs on the drained TSFN event, up to the wall-clock budget after the key
  *    press. A post-probe re-check proves foreground and native focus did not change during the
  *    probe; a same-window web-content focus change that does not move the native focus HWND
@@ -95,6 +107,14 @@ struct KeyboardFocusEvidence
     bool textPatternPresent = false;        ///< A TextPattern was obtained for the element.
     bool textPatternReadOnlyKnown = false;  ///< DocumentRange answered UIA_IsReadOnlyAttributeId.
     bool textPatternReadOnly = false;       ///< DocumentRange reports IsReadOnly=TRUE (valid when known).
+    // P1-03 tri-state query results. "Present" and "positively not supported" (S_OK+NULL) are
+    // negative/positive provider *answers*; a failed GetCurrentPatternAs is neither, so it is
+    // recorded here and the policy fails closed instead of reading the absence as "no pattern".
+    bool valuePatternQueryFailed = false;  ///< GetCurrentPatternAs(ValuePattern) returned a failed HRESULT.
+    bool textPatternQueryFailed = false;   ///< GetCurrentPatternAs(TextPattern) returned a failed HRESULT.
+    // Same tri-state rule for the focus owner's native window handle: S_OK+NULL is a web-content
+    // element without an HWND (process-identity evidence remains usable), a failed read is not.
+    bool focusHandleReadFailed = false;  ///< get_CurrentNativeWindowHandle returned a failed HRESULT.
     // Compatibility mirrors filled by the same reads. The policy OR-checks them with the
     // value-domain fields above, so neither "pattern present but unreadable" nor an old-style
     // writable flag can ever collapse into "not writable".
@@ -214,6 +234,32 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
         return rejected;
     }
 
+    // P1-03 fail closed: the provider query itself failed, which is not the same answer as
+    // "S_OK+NULL: this element does not support ValuePattern/TextPattern". Before this check the
+    // two outcomes were indistinguishable, so a failed GetCurrentPatternAs could reach the
+    // safe_focus rule and emit a shortcut from a focus the provider refused to describe. Placed
+    // after the sensitive-class rejects on purpose: a password/edit/writable surface is a
+    // rejection whatever the query failure was, and the existing precedence is unchanged.
+    if (evidence.valuePatternQueryFailed)
+    {
+        rejected.reason = "value_pattern_query_failed";
+        return rejected;
+    }
+    if (evidence.textPatternQueryFailed)
+    {
+        rejected.reason = "text_pattern_query_failed";
+        return rejected;
+    }
+    // Same tri-state rule for the focused element's native window handle: a failed ownership read
+    // cannot prove the element belongs to the event-time foreground window, while a successful
+    // empty handle falls back to the process-identity evidence (documented residual). This runs
+    // before the provenance rule so the fallback evidence carries the precise root cause.
+    if (evidence.focusHandleReadFailed)
+    {
+        rejected.reason = "focus_handle_read_failed";
+        return rejected;
+    }
+
     // P1-3 fail closed: an element obtained through ElementFromHandle may be the host container
     // of virtual subcontrols (the focused password field itself is not what was read), so the
     // container's non-text properties cannot authorize Safe.
@@ -250,8 +296,9 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
         return accepted;
     }
 
-    // Positively confirmed non-text control: no ValuePattern/TextPattern at all and the control
-    // type is not a Document/Text class.
+    // Positively confirmed non-text control: the two pattern queries answered S_OK+NULL (the
+    // element positively does not support ValuePattern/TextPattern) and the control type is not a
+    // Document/Text class. A failed query never reaches this accept (P1-03 above).
     if (!evidence.isTextControlType && !evidence.valuePatternPresent && !evidence.textPatternPresent)
     {
         KeyboardFocusDecision accepted;

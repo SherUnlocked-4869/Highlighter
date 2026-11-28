@@ -80,7 +80,10 @@
         id: display.id ?? null,
         bounds,
         workArea: normalizeRect(display.workArea) || bounds,
-        scaleFactor: Math.max(0.25, finiteOr(display.scaleFactor, 1))
+        scaleFactor: Math.max(0.25, finiteOr(display.scaleFactor, 1)),
+        // P2-01: a rotation change moves which physical pixels a DIP rectangle covers, so the
+        // post-enumeration consistency check needs it as part of the display identity.
+        rotation: normalizeRotation(display?.rotation)
       })
     }
     return normalized
@@ -147,6 +150,11 @@
       ok: true,
       display,
       rotation: normalizeRotation(source.rotation),
+      // P2-01: keep the exact inputs so `revalidateScreenCapturePlan` can recompute the same
+      // mapping against the post-enumeration display list instead of trusting the plan blindly.
+      pinBounds: { ...pinBounds },
+      imageBounds: { ...imageBounds },
+      maxPixels,
       imageBox,
       dipRect: { x: left, y: top, width: right - left, height: bottom - top },
       physicalRect,
@@ -319,6 +327,46 @@
     return { ok: true }
   }
 
+  // P2-01 (review finding 5 re-open): `checkDisplayTopology` above only proves the display COUNT
+  // and the target ID are unchanged. Two 1920x1080 displays with ids 1/2 can swap their system
+  // coordinates during `getSources()` and satisfy both checks, while the plan's `physicalRect` was
+  // computed from the OLD bounds: cropping that rectangle out of the source named by display_id
+  // then delivers the OTHER screen's pixels. Recompute the whole plan from the post-await display
+  // list with the same inputs and require the same target identity + mapping: display id, scale
+  // factor, rotation, DIP rectangle and physical crop rectangle must all be unchanged.
+  // Returns { ok:true } when the delivered frame would still describe the planned region; a
+  // retryable { ok:false, code:'TOPOLOGY_CHANGED' } otherwise (the next tick re-plans from the
+  // current topology and succeeds).
+  function revalidateScreenCapturePlan(plan, displaysAfter) {
+    if (!plan || plan.ok !== true || !normalizeRect(plan.pinBounds) || !normalizeRect(plan.imageBounds)) {
+      return { ok: false, code: 'INVALID_PLAN' }
+    }
+    const replanned = planScreenCapture({
+      pinBounds: plan.pinBounds,
+      imageBounds: plan.imageBounds,
+      rotation: plan.rotation,
+      displays: displaysAfter,
+      maxPixels: plan.maxPixels
+    })
+    if (!replanned.ok) return { ok: false, code: replanned.code }
+    if (String(replanned.display.id) !== String(plan.display.id)) {
+      return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    if (replanned.display.scaleFactor !== plan.display.scaleFactor ||
+        normalizeRotation(replanned.display.rotation) !== normalizeRotation(plan.display.rotation)) {
+      return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    for (const key of ['x', 'y', 'width', 'height']) {
+      if (replanned.dipRect[key] !== plan.dipRect[key]) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+      if (replanned.physicalRect[key] !== plan.physicalRect[key]) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    if (replanned.thumbnail.width !== plan.thumbnail.width ||
+        replanned.thumbnail.height !== plan.thumbnail.height) {
+      return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    return { ok: true, plan: replanned }
+  }
+
   // Frame-rate / in-flight / byte budget state machine. Everything is injected so node
   // tests drive a fake clock and fake capture promises. The experiment aborts after
   // MAX_CONSECUTIVE_FAILURES failures instead of retrying forever - but only GENUINE
@@ -468,6 +516,7 @@
     pickDisplay,
     pickScreenSource,
     checkDisplayTopology,
+    revalidateScreenCapturePlan,
     bgraToRgba,
     planScreenCapture,
     resampleRgba,

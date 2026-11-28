@@ -863,6 +863,92 @@ test('product: a vanished target display id during getSources is refused even at
   win._closed()
 })
 
+// P2-01 (re-review): the deterministic counterexample. Two 1920x1080 screens keep ids 1/2 and the
+// display COUNT, but swap their system coordinates while getSources() awaits. The old count+target
+// id check passed and the first frame cropped the pre-swap physicalRect out of display 1's source:
+// ok:true carrying marker 11, although the pin now sits on display 2 (marker 22). The transition
+// frame must be retryable with NO pixels; the next frame re-plans from the current topology and
+// delivers the screen actually under the pin with the correct crop size.
+test('product: displays that keep ids/count but swap layout during getSources never deliver the old screen (P2-01)', async () => {
+  const LEFT = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 }
+  const RIGHT = { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 }
+  const topology = [LEFT, RIGHT]
+  let call = 0
+  const desktopCapturer = {
+    getSources: async () => {
+      call += 1
+      if (call === 1) {
+        // Same ids, same count; only the system coordinates swap during the await.
+        topology.splice(0, topology.length,
+          { ...LEFT, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 } },
+          { ...RIGHT, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } })
+      }
+      return [screenSource('1', { marker: 11 }), screenSource('2', { marker: 22 })]
+    }
+  }
+  const harness = createScreenDiffHarness({
+    displays: topology,
+    winBounds: { x: 100, y: 50, width: 400, height: 200 },
+    desktopCapturer
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const stale = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  // Before this fix the stale frame was { ok:true, pixels: marker 11 } at 400x200: the screen that
+  // used to be under the pin, not the one that is under it now.
+  assert.equal(stale.ok, false)
+  assert.equal(stale.code, 'TOPOLOGY_CHANGED')
+  assert.equal(stale.retryable, true)
+  assert.equal(stale.pixels, undefined, 'the transition frame delivers no pixels')
+  assert.deepEqual(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame'), [],
+    'no screen-diff frame is sent for the stale mapping')
+  // The next frame re-plans from the current topology: display 2 is now at x=0 under the pin.
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.sourceMatched, true)
+  assert.equal(recovered.plan.display.id, 2, 'the frame is planned against the display actually under the pin')
+  assert.equal(recovered.width, 400)
+  assert.equal(recovered.height, 200)
+  assert.equal(recovered.plan.physicalRect.width, 400)
+  assert.equal(recovered.plan.physicalRect.height, 200)
+  assert.equal(recovered.pixels[0], 22, 'only the screen now under the pin may be delivered')
+  win._closed()
+})
+
+// P2-01: a scale-factor change of the target display during getSources is the same class of stale
+// mapping: the DIP rectangle no longer maps to the old physical crop. Refuse the transition frame,
+// then deliver the new physical mapping on the next tick.
+test('product: a target-display scale change during getSources is retryable, the next frame uses the new crop (P2-01)', async () => {
+  const topology = [{ ...DISPLAY_PRIMARY }]
+  let call = 0
+  const desktopCapturer = {
+    getSources: async () => {
+      call += 1
+      if (call === 1) topology[0] = { ...DISPLAY_PRIMARY, scaleFactor: 2 }
+      return [screenSource('1', { marker: 11 })]
+    }
+  }
+  const harness = createScreenDiffHarness({
+    displays: topology,
+    winBounds: { x: 100, y: 50, width: 400, height: 200 },
+    desktopCapturer
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const stale = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(stale.ok, false)
+  assert.equal(stale.code, 'TOPOLOGY_CHANGED')
+  assert.equal(stale.retryable, true)
+  assert.equal(stale.pixels, undefined)
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.width, 800, 'the same 400 DIP now maps to 800 physical pixels')
+  assert.equal(recovered.height, 400)
+  assert.equal(recovered.plan.scaleFactor, 2)
+  assert.equal(recovered.pixels[0], 11)
+  win._closed()
+})
+
 test('product: refuses without content protection, and the menu offers the opt-in with its side effect', async () => {
   const bare = createScreenDiffHarness({ noProtection: true })
   const bareWin = bare.domain.createPinWindow(ORIGINAL, {})
@@ -1014,6 +1100,49 @@ test('checkDisplayTopology refuses a count change or a vanished target id (P2-5)
   assert.deepEqual(diff.checkDisplayTopology([{ id: 1 }], [{ id: '1' }], '1'), { ok: true })
   // A target without an id cannot be presence-checked; the count remains the signal.
   assert.deepEqual(diff.checkDisplayTopology([{ id: null }], [{ id: null }], null), { ok: true })
+})
+
+// P2-01 (re-review): count + target-id are NOT enough when the ids and display count survive a
+// layout swap. Recompute the mapping from the post-await display list and require the same target,
+// scale, rotation, DIP rectangle and physical crop rectangle.
+test('revalidateScreenCapturePlan refuses a same-id layout, scale or rotation change (P2-01)', () => {
+  const displays = [DISPLAY_PRIMARY, DISPLAY_SCALED]
+  const plan = diff.planScreenCapture({
+    pinBounds: { x: 2000, y: 100, width: 400, height: 300 },
+    imageBounds: { x: 10, y: 20, width: 380, height: 260 },
+    rotation: 0,
+    displays
+  })
+  assert.equal(plan.ok, true)
+  const stable = diff.revalidateScreenCapturePlan(plan, displays)
+  assert.equal(stable.ok, true)
+  assert.deepEqual(stable.plan.physicalRect, plan.physicalRect)
+  assert.equal(stable.plan.display.id, plan.display.id)
+  // The re-review counterexample: two 1920x1080 displays keep ids 1/2 and the count, but swap
+  // their system coordinates. The target id is still present, so the topology check passes; the
+  // mapping no longer does.
+  const swapped = [
+    { ...DISPLAY_PRIMARY, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 } },
+    { ...DISPLAY_SCALED, bounds: { x: 0, y: 0, width: 2560, height: 1440 }, workArea: { x: 0, y: 0, width: 2560, height: 1400 } }
+  ]
+  assert.deepEqual(diff.checkDisplayTopology(displays, swapped, plan.display.id), { ok: true },
+    'the old topology check cannot see the swap')
+  assert.deepEqual(diff.revalidateScreenCapturePlan(plan, swapped), { ok: false, code: 'TOPOLOGY_CHANGED' })
+  // A scale-factor change alone changes the physical crop of the SAME DIP rectangle.
+  const scaled = [{ ...DISPLAY_SCALED, scaleFactor: 1.25 }, DISPLAY_PRIMARY]
+  assert.deepEqual(diff.revalidateScreenCapturePlan(plan, scaled), { ok: false, code: 'TOPOLOGY_CHANGED' })
+  // A display rotation change moves which physical pixels the rectangle covers.
+  const rotated = [DISPLAY_PRIMARY, { ...DISPLAY_SCALED, rotation: 90 }]
+  assert.deepEqual(diff.revalidateScreenCapturePlan(plan, rotated), { ok: false, code: 'TOPOLOGY_CHANGED' })
+  // A target that disappeared leaves the region outside every remaining display: the unchanged
+  // plan is refused and the next tick re-plans (retryable either way).
+  const gone = diff.revalidateScreenCapturePlan(plan, [DISPLAY_PRIMARY])
+  assert.equal(gone.ok, false)
+  assert.equal(gone.code, 'OUTSIDE_DISPLAY')
+  assert.equal(diff.revalidateScreenCapturePlan(null, displays).code, 'INVALID_PLAN')
+  // A pin that is entirely outside every display after the change is a retryable planning refusal.
+  const movedAway = [{ ...DISPLAY_PRIMARY, bounds: { x: 5000, y: 0, width: 1920, height: 1080 } }]
+  assert.equal(diff.revalidateScreenCapturePlan(plan, movedAway).ok, false)
 })
 
 test('wiring: the opt-in diff mode is reachable, bounded, and flash stays the default', () => {

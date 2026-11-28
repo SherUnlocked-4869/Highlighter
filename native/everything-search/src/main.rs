@@ -1055,8 +1055,8 @@ fn status_from_cache(
     }
 }
 
-/// P2-10: the readiness-facing status path. `status_value` below keeps the plain
-/// display object the JS status action consumes.
+/// P2-10: the readiness-facing status path. It returns the round-independent
+/// display snapshot plus whether *this round's* query probe answered.
 fn status_sample(reply: &ReplyWindow, cache: &mut TargetCache) -> (Value, bool) {
     status_from_cache(
         cache,
@@ -1066,8 +1066,26 @@ fn status_sample(reply: &ReplyWindow, cache: &mut TargetCache) -> (Value, bool) 
     )
 }
 
+/// P2-03: the protocol boundary for every status object the sidecar emits. The
+/// display snapshot (`status_snapshot` / `status_from_cache`) stays
+/// round-independent on purpose — P2-10 keeps a running instance's `dbLoaded: true`
+/// even when its query channel goes silent — so the per-round `queryAnswered` flag
+/// is inserted only here. Both the `status` action and each `wait-ready` sample
+/// carry it, and the JS service derives readiness from this one field; a consumer
+/// that sees no flag must fail closed.
+fn protocol_status(mut snapshot: Value, answered: bool) -> Value {
+    if let Value::Object(object) = &mut snapshot {
+        object.insert("queryAnswered".to_string(), Value::Bool(answered));
+    }
+    snapshot
+}
+
+/// P2-03: the `status` action reply is the display snapshot plus whether this
+/// round's query channel answered. The JS service reads `queryAnswered` instead of
+/// inferring readiness from `running && dbLoaded` alone.
 fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
-    status_sample(reply, cache).0
+    let (status, answered) = status_sample(reply, cache);
+    protocol_status(status, answered)
 }
 
 /// DEV-07: the readiness polling loop is kept separate from the Win32 plumbing
@@ -1106,7 +1124,13 @@ fn wait_ready(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> V
         .unwrap_or(WAIT_READY_DEFAULT_MS);
     poll_until_ready(timeout_ms, WAIT_READY_POLL_INTERVAL, || {
         let (status, answered) = status_sample(reply, cache);
-        (ready_from_sample(&status, answered), status)
+        // P2-03: the `status` object embedded in a wait-ready reply carries the same
+        // per-round `queryAnswered` flag as the plain `status` action, so every
+        // consumer of the status protocol sees one readiness condition.
+        (
+            ready_from_sample(&status, answered),
+            protocol_status(status, answered),
+        )
     })
 }
 
@@ -1982,5 +2006,90 @@ mod tests {
         assert_eq!(candidate_score(&fully_silent), 0, "fully silent candidates are not scoreable");
         assert_eq!(rank_candidates(&[fully_silent]), None, "fully silent falls back to a running-only snapshot");
         assert_eq!(rank_candidates(&[]), None);
+    }
+
+    // ===================== P2-03: status protocol carries the round answer =====================
+
+    // P2-03: the report's repro is an instance whose status probes answer (version +
+    // IPC_IS_DB_LOADED) while the query probe send-fails: the display snapshot keeps
+    // `running:true, dbLoaded:true`, exactly the value the old JS predicate read as
+    // ready. The `status` action reply must therefore carry `queryAnswered:false`,
+    // and readiness must stay false.
+    #[test]
+    fn p2_03_silent_loaded_status_protocol_reports_query_answered_false() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let (snapshot, answered) = status_from_cache(
+            &mut cache,
+            |_| true,
+            || Some(target(0x1111)),
+            |cached: &mut TargetInfo| -> Result<(Value, bool), Value> {
+                let mut loaded = target(cached.hwnd);
+                loaded.db_loaded = true;
+                loaded.probe_total = 0;
+                // Status probes answer; the query probe times out.
+                Err(apply_probe_result(&mut loaded, true, Err("send-failed".to_string()))
+                    .expect_err("the query channel stayed silent this round"))
+            },
+        );
+        assert!(!answered, "a silent query channel reports no answer");
+        assert_eq!(snapshot["running"], true, "the display still reports the live instance");
+        assert_eq!(snapshot["dbLoaded"], true, "the display keeps the loaded index (the P2-03 trap)");
+        assert_eq!(snapshot["ipcAvailable"], true, "the version probes still answer");
+        assert_eq!(snapshot["probeTotal"], 0);
+        let protocol = protocol_status(snapshot, answered);
+        assert_eq!(protocol["queryAnswered"], false, "the status protocol exposes the silent round");
+        assert_eq!(protocol["dbLoaded"], true, "the display fields survive the protocol boundary");
+        assert!(!ready_from_sample(&protocol, answered), "a query-silent round is never ready");
+    }
+
+    // P2-03: an instance that answers the query probe with an empty index is ready.
+    // `probeTotal: 0` is not a blocker by itself, and the protocol object keeps every
+    // display field while reporting `queryAnswered:true`.
+    #[test]
+    fn p2_03_answering_empty_index_status_protocol_reports_query_answered_true() {
+        let mut info = target(0x2222);
+        info.db_loaded = true;
+        info.probe_total = 0;
+        let answered = apply_probe_result(&mut info, true, Ok(0)).expect("a parseable empty result list answered");
+        assert!(answered, "an empty result list still proves the query channel works");
+        assert_eq!(info.probe_total, 0, "the empty index keeps probeTotal at 0");
+        assert!(info.db_loaded, "the loaded-index display field is kept");
+        let protocol = protocol_status(status_snapshot(&info), answered);
+        assert_eq!(protocol["queryAnswered"], true);
+        // The display shape is unchanged: the JS status surface still reads these.
+        assert_eq!(protocol["running"], true);
+        assert_eq!(protocol["dbLoaded"], true);
+        assert_eq!(protocol["ipcAvailable"], true);
+        assert_eq!(protocol["version"], "1.4.1.1032");
+        assert_eq!(protocol["instance"], "1.4");
+        assert_eq!(protocol["probeTotal"], 0);
+        assert!(ready_from_sample(&protocol, answered), "an answered empty index can be ready");
+    }
+
+    // P2-03: wait-ready emits its `status` object through the same protocol boundary,
+    // so the embedded object carries the round flag too: a silent sample first, then
+    // the answering empty-index instance ends the wait with `queryAnswered:true`.
+    #[test]
+    fn p2_03_wait_ready_status_object_carries_the_round_query_answer() {
+        let mut samples = 0usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            samples += 1;
+            let mut info = target(0x1111);
+            info.db_loaded = true;
+            info.probe_total = 0;
+            // First poll: the query probe times out. Second poll: the re-selected
+            // instance answers with 0 rows.
+            let probe = if samples == 1 { Err("timeout".to_string()) } else { Ok(0) };
+            let answered = apply_probe_result(&mut info, true, probe).unwrap_or(false);
+            let protocol = protocol_status(status_snapshot(&info), answered);
+            (ready_from_sample(&protocol, answered), protocol)
+        });
+        assert_eq!(samples, 2, "wait-ready must observe the silent sample before the answering one");
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["status"]["running"], true);
+        assert_eq!(result["status"]["dbLoaded"], true, "the display keeps the loaded index");
+        assert_eq!(result["status"]["probeTotal"], 0, "an answered empty index is ready");
+        assert_eq!(result["status"]["queryAnswered"], true, "the embedded status carries the flag");
     }
 }

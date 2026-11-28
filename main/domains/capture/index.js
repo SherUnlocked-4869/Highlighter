@@ -1411,13 +1411,15 @@ function createCaptureDomain(deps) {
         // P1-01 follow-up: the record domain only consumes the workbench config whose request id
         // matches this overlay; a quick-entry overlay forwards the empty id and gets no workbench
         // options. The id lives on the window, so the renderer cannot forge one.
-        await createRecordWindow({
+        // P1-01 re-review: the record domain re-checks that request after every await and returns
+        // null (without creating any window) when the overlay was cancelled/replaced meanwhile.
+        const created = await createRecordWindow({
           display,
           selectionBounds: bounds,
           regionRequestId: captureWindow._recordRegionRequestId || ''
         })
         if (!captureWindow.isDestroyed()) captureWindow.close()
-        return true
+        return created !== null
       },
       startLong: (event, payload = {}) => {
         reportCaptureSerial(payload)

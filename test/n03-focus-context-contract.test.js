@@ -20,6 +20,12 @@
 // evidence are all Unknown; only a confirmed read-only surface or a confirmed non-text control is
 // safe. The allowed read-only demo page stays a positive case.
 //
+// P1-03 (docs/reviews/2026-11-28-05d0dde-fix-delivery-re-review.md section P1-03): failed UIA
+// provider queries are tri-state. A failed GetCurrentPatternAs is NOT "the element does not
+// support the pattern" (S_OK+NULL is), and a failed get_CurrentNativeWindowHandle is NOT a
+// successful empty handle. Both failures are carried as explicit evidence and yield Unknown with
+// a stable reason, so a shortcut can never be emitted from a focus whose UIA query failed.
+//
 // The real hardware keyboard matrix (demo page / text input / password input / IME composition /
 // unknown focus) remains a real-device step; scripts/probe-keyboard-focus-context.js covers the
 // runtime focus classification with off-screen test windows and no key presses.
@@ -350,6 +356,106 @@ test('P1-02 native combo policy only accepts a grammar-valid combo on a safe sur
   assert.equal(keyOnly.context, 'unclassified')
 })
 
+test('P1-03 failed UIA provider queries are tri-state and never authorize a shortcut', { skip: !nativeAddon }, () => {
+  // Re-review payload: the focus, control-type and password reads succeeded (identity confirmed,
+  // Custom/non-Edit/Document/Text control type), but the provider query itself failed. Before the
+  // fix both *PatternPresent flags stayed false, which the policy read as "the element positively
+  // does not support that pattern" and accepted via safe_focus.
+  const failureCases = [
+    ['valuePatternQueryFailed', 'value_pattern_query_failed'],
+    ['textPatternQueryFailed', 'text_pattern_query_failed'],
+    ['focusHandleReadFailed', 'focus_handle_read_failed']
+  ]
+  for (const [field, reason] of failureCases) {
+    const result = focusResult({ [field]: true })
+    assertFocus(result, { classification: 'unknown', reason }, field)
+    assert.equal(result.safe, false, field)
+    // The bridge echoes the injected tri-state evidence, so the test can prove what the policy
+    // consumed rather than only the resulting class.
+    assert.equal(result[field], true, `the bridge must echo ${field}`)
+  }
+  // A healthy surface keeps the failure flags false: S_OK+NULL pattern answers are not failures.
+  const healthy = focusResult({})
+  for (const [field] of failureCases) assert.equal(healthy[field], false, field)
+  // Sensitive precedence is unchanged: a password/edit surface is rejected whatever the query
+  // failure was, matching the pre-existing class precedence.
+  assertFocus(focusResult({ isPassword: true, valuePatternQueryFailed: true }),
+    { classification: 'password', reason: 'password_focus' }, 'password wins over a failed query')
+  assertFocus(focusResult({ isTextEditControl: true, textPatternQueryFailed: true }),
+    { classification: 'text', reason: 'text_edit_focus' }, 'edit wins over a failed query')
+  // Positive controls the fix must preserve.
+  assertFocus(healthy, { classification: 'safe', reason: 'safe_focus' }, 'ordinary confirmed non-text button')
+  assertFocus(focusResult({ valuePatternPresent: true, valueReadOnlyKnown: true, valueReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'read-only ValuePattern document')
+  assertFocus(focusResult({ textPatternPresent: true, textPatternReadOnlyKnown: true, textPatternReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'read-only TextPattern document')
+  assertFocus(focusResult({ valuePatternPresent: true, valueReadOnlyKnown: true, valueReadOnly: false }),
+    { classification: 'text', reason: 'writable_value_focus' }, 'writable value')
+  assertFocus(focusResult({ textPatternWritable: true }),
+    { classification: 'text', reason: 'writable_text_pattern_focus' }, 'writable text pattern')
+  assertFocus(focusResult({ focusIdentityConfirmed: false }),
+    { classification: 'unknown', reason: 'unconfirmed_focus_identity' }, 'container-only fallback')
+  // The documented failure-class shorthands model exactly the production collector evidence.
+  const shorthand = (focus) => plain(nativeAddon.__testClassifyKeyboardFocus({ focus }))
+  for (const [field, reason] of failureCases) {
+    assertFocus(shorthand(field), { classification: 'unknown', reason }, `shorthand ${field}`)
+  }
+  // Combo bridge: the replacement-provider seam. The pure key policy still recognizes Ctrl+V, but
+  // no combo is accepted from a focus whose provider query failed ("final IPC/event-track delta
+  // 0" at the policy level): accepted:false, context "unknown", stable focus reason.
+  const classifyCombo = (focusValue) => plain(nativeAddon.__testClassifyKeyboardCombo({
+    vkCode: 0x56,
+    scanCode: 0x2f,
+    modifiers: 2, // Ctrl
+    focus: focusValue
+  }))
+  for (const [field, reason] of failureCases) {
+    const shapes = [
+      ['shorthand', field],
+      ['object-shaped evidence', {
+        foregroundAlive: true,
+        foregroundIsCurrent: true,
+        elementAvailable: true,
+        focusIdentityConfirmed: true,
+        [field]: true
+      }]
+    ]
+    for (const [shape, focusValue] of shapes) {
+      const result = classifyCombo(focusValue)
+      const label = `${shape} ${field}`
+      assert.equal(result.accepted, false, label)
+      assert.equal(result.combo, 'Ctrl+V', `${label}: the key policy still recognizes the combination`)
+      assert.equal(result.context, 'unknown', label)
+      assert.equal(result.reason, reason, label)
+    }
+  }
+  // Cross-layer: that "unknown" context is exactly the field the JS privacy filter consumes. Even
+  // if an old native build ever forwarded such a combo, the record-domain filter drops it before a
+  // keystroke event exists, so the event track / capsule channel delta stays 0 end to end.
+  for (const [field] of failureCases) {
+    const payload = {
+      tMs: 1764300000000,
+      vkCode: 0x56,
+      scanCode: 0x2f,
+      modifiers: 2,
+      combo: 'Ctrl+V',
+      context: classifyCombo(field).context
+    }
+    const filtered = capture.inspectGlobalKeystroke(payload)
+    assert.equal(filtered.ok, false, `${field}: the JS filter rejects the forwarded combo`)
+    assert.equal(filtered.reason, 'unknown-focus', field)
+    assert.equal(capture.filterGlobalKeystroke(payload), null, `${field}: no keystroke event is produced`)
+  }
+  // The confirmed safe positive controls still cross; the fix must not over-reject.
+  assert.deepEqual(classifyCombo('safe'), { accepted: true, combo: 'Ctrl+V', reason: 'accepted', context: 'safe' })
+  assert.deepEqual(classifyCombo('documentReadOnly'), { accepted: true, combo: 'Ctrl+V', reason: 'accepted', context: 'safe' })
+  assert.equal(classifyCombo(evidence({
+    textPatternPresent: true,
+    textPatternReadOnlyKnown: true,
+    textPatternReadOnly: true
+  })).accepted, true)
+})
+
 test('P1-02 runtime foreground probe returns a bounded classification and diagnostics', { skip: !nativeAddon }, () => {
   assert.equal(typeof nativeAddon.__testClassifyFocusedContext, 'function')
   const current = nativeAddon.__testClassifyFocusedContext()
@@ -483,6 +589,78 @@ test('P1-02 the classifier is bounded IUIAutomation2 and every failure fails clo
   const binding = read('vendor/selection-hook/binding.gyp')
   assert.match(binding, /src\/windows\/core\/keyboard_focus\.cc/)
   assert.match(binding, /imm32\.lib/)
+})
+
+test('P1-03 source contract: failed pattern/handle queries are tri-state and fail closed', () => {
+  const header = fs.readFileSync(FOCUS_HEADER_PATH, 'utf8')
+  for (const field of ['valuePatternQueryFailed', 'textPatternQueryFailed', 'focusHandleReadFailed']) {
+    assert.match(header, new RegExp('\\b' + field + '\\b'), `the evidence struct must carry ${field}`)
+  }
+  for (const reason of ['value_pattern_query_failed', 'text_pattern_query_failed', 'focus_handle_read_failed']) {
+    assert.match(header, new RegExp(reason), 'the policy must emit the stable reason ' + reason)
+  }
+  // The ambiguity failures are checked before any Safe accept (read_only_focus or safe_focus), so
+  // a failed provider query can never reach an accept branch.
+  const policy = sliceBetween(header, 'inline KeyboardFocusDecision ClassifyKeyboardFocus',
+    '// Runtime evidence collector')
+  assert.ok(policy.length > 0)
+  const firstAcceptAt = policy.indexOf('KeyboardFocusDecision accepted;')
+  assert.ok(firstAcceptAt > 0, 'the policy has a Safe accept branch')
+  for (const field of ['valuePatternQueryFailed', 'textPatternQueryFailed', 'focusHandleReadFailed']) {
+    const branchAt = policy.indexOf(`if (evidence.${field})`)
+    assert.ok(branchAt > 0, `the policy must branch on ${field}`)
+    assert.ok(branchAt < firstAcceptAt, `${field} is rejected before any Safe accept`)
+  }
+
+  const source = fs.readFileSync(FOCUS_SOURCE_PATH, 'utf8')
+  // ElementEvidence carries the same tri-state fields as the policy evidence.
+  const evidenceStruct = sliceBetween(source, 'struct ElementEvidence', '};')
+  for (const field of ['valuePatternQueryFailed', 'textPatternQueryFailed', 'focusHandleReadFailed']) {
+    assert.match(evidenceStruct, new RegExp(field), `ElementEvidence must carry ${field}`)
+  }
+  // ValuePattern: present only for SUCCEEDED+non-null; a FAILED query sets the failure flag. The
+  // single assignment proves the S_OK+NULL ("confirmed not supported") path does NOT set it.
+  const valueBlock = sliceBetween(source, 'IUIAutomationValuePattern *valuePattern = nullptr;',
+    '// A writable UIA TextPattern')
+  assert.match(valueBlock, /const HRESULT valueQuery =/)
+  assert.match(valueBlock, /SUCCEEDED\(valueQuery\) && valuePattern/)
+  assert.match(valueBlock, /else if \(FAILED\(valueQuery\)\)\s*\{\s*result\.valuePatternQueryFailed = true;\s*\}/)
+  assert.equal((valueBlock.match(/valuePatternQueryFailed = true/g) || []).length, 1,
+    'the ValuePattern failure flag is set exactly in the FAILED branch')
+  // TextPattern: same shape (the block is skipped for already-sensitive evidence).
+  assert.match(source, /const HRESULT textQuery =/)
+  assert.match(source, /SUCCEEDED\(textQuery\) && textPattern/)
+  assert.match(source, /else if \(FAILED\(textQuery\)\)\s*\{\s*result\.textPatternQueryFailed = true;\s*\}/)
+  assert.equal((source.match(/textPatternQueryFailed = true/g) || []).length, 1,
+    'the TextPattern failure flag is set exactly in the FAILED branch')
+  // ProbeFocusedElement: the native window-handle read is tri-state. A failed read must not keep
+  // the old default-true sameWindow fallback, and the flag must survive the ElementFromHandle
+  // fallback into the final evidence.
+  const probe = sliceBetween(source, 'ElementEvidence ProbeFocusedElement(', 'ElementEvidence ProbeWindowHandle(')
+  assert.match(probe, /bool sameWindow = false;/, 'a failed handle read must not default sameWindow=true')
+  assert.doesNotMatch(probe, /bool sameWindow = true;/, 'sameWindow must not be seeded true')
+  assert.match(probe, /const HRESULT nativeWindowResult = element->get_CurrentNativeWindowHandle\(&nativeWindow\);/)
+  assert.match(probe, /if \(FAILED\(nativeWindowResult\)\)\s*\{\s*focusedElementHandleReadFailed = true;\s*\}/)
+  assert.match(probe, /else\s*\{\s*sameWindow = true;\s*\}/,
+    'only S_OK+NULL (successful empty handle) uses the process-identity evidence')
+  assert.match(probe, /result\.focusHandleReadFailed = result\.focusHandleReadFailed \|\| focusedElementHandleReadFailed;/,
+    'the failed pressed-element handle read survives the ElementFromHandle fallback')
+  // The tri-state evidence reaches the pure policy on the runtime foreground path.
+  for (const field of ['valuePatternQueryFailed', 'textPatternQueryFailed', 'focusHandleReadFailed']) {
+    assert.match(source, new RegExp('evidence\\.' + field + ' = element\\.' + field + ';'),
+      `ClassifyForeground must propagate ${field}`)
+  }
+
+  // The self-test bridge parses, echoes and shorthands the tri-state fields (the documented
+  // "replacement provider" seam the Node tests drive).
+  const hook = read('vendor/selection-hook/src/windows/selection_hook.cc')
+  for (const field of ['valuePatternQueryFailed', 'textPatternQueryFailed', 'focusHandleReadFailed']) {
+    assert.ok(hook.includes(`ReadSelfTestBoolean(focus, "${field}", false)`),
+      `the bridge parser must read ${field}`)
+    assert.ok(hook.includes(`if (focus == "${field}")`), `the bridge must provide the ${field} shorthand`)
+    assert.ok(hook.includes(`result.Set("${field}", Napi::Boolean::New(env, evidence.${field}));`),
+      `the focus bridge must echo ${field}`)
+  }
 })
 
 test('P1-02 the native focus probe script exists and never presses keys', () => {

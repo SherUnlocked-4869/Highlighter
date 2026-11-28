@@ -15,6 +15,13 @@
 // `__testClassifyFocusedContext({ hwnd })` bridge. A final current-foreground call exercises the
 // production path (including the post-probe foreground/focus TOCTOU re-check).
 //
+// P1-03 (docs/reviews/2026-11-28-05d0dde-fix-delivery-re-review.md section P1-03): a failed
+// GetCurrentPatternAs or get_CurrentNativeWindowHandle is tri-state evidence, not the same answer
+// as "S_OK+NULL: positively not supported". The script injects those provider failures through
+// the native self-test bridges (`__testClassifyKeyboardFocus` / `__testClassifyKeyboardCombo`,
+// the documented replacement-provider seam) and asserts they are unknown with the stable reason
+// and that no combo is accepted from them.
+//
 // No key is pressed and no input is synthesized: the real hardware keyboard matrix (demo page /
 // text input / password input / IME composition / unknown focus) remains a real-device step,
 // because injected synthetic input is LLKHF_INJECTED and is correctly rejected by the native
@@ -22,6 +29,9 @@
 //
 // Returns exit code 0 when every class matches, 1 otherwise. Run with:
 //   node scripts/probe-keyboard-focus-context.js
+// The empty GUI test windows are opened by a separate PowerShell process, so this probe does not
+// need Electron; it also runs under `electron.exe --no-sandbox scripts/probe-keyboard-focus-context.js`
+// (the Electron host is quit explicitly below, see exitElectronHarness).
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -105,6 +115,23 @@ function fail(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// The probe is Node-hosted by design, but it may be launched through the Electron harness
+// (`electron.exe --no-sandbox scripts/probe-keyboard-focus-context.js`). The Electron browser
+// process keeps its message loop alive after the entry script finishes, so the probe would never
+// report its exit code; quit it explicitly after letting the summary flush. In plain Node this is
+// a no-op because Node exits on its own.
+function exitElectronHarness() {
+  if (!process.versions.electron) return
+  setTimeout(() => {
+    const code = process.exitCode || 0
+    try {
+      require('electron').app.exit(code)
+    } catch {
+      process.exit(code)
+    }
+  }, 250)
 }
 
 async function waitFor(predicate, timeoutMs, label) {
@@ -229,18 +256,102 @@ async function main() {
         },
         expected: ['safe']
       },
+      // P1-03: provider-query failures are tri-state. The focus/control-type/password reads
+      // succeeded and the control type is non-text, so before the fix these payloads reached
+      // safe_focus; now they must be unknown with the stable reason.
+      {
+        label: 'evidence: ValuePattern provider query failed',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, valuePatternQueryFailed: true },
+        expected: ['unknown'],
+        expectedReason: 'value_pattern_query_failed'
+      },
+      {
+        label: 'evidence: TextPattern provider query failed',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, textPatternQueryFailed: true },
+        expected: ['unknown'],
+        expectedReason: 'text_pattern_query_failed'
+      },
+      {
+        label: 'evidence: focused-element native handle read failed',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, focusHandleReadFailed: true },
+        expected: ['unknown'],
+        expectedReason: 'focus_handle_read_failed'
+      },
+      {
+        label: 'evidence shorthand: valuePatternQueryFailed',
+        evidence: { focus: 'valuePatternQueryFailed' },
+        expected: ['unknown'],
+        expectedReason: 'value_pattern_query_failed'
+      },
+      {
+        label: 'evidence shorthand: textPatternQueryFailed',
+        evidence: { focus: 'textPatternQueryFailed' },
+        expected: ['unknown'],
+        expectedReason: 'text_pattern_query_failed'
+      },
+      {
+        label: 'evidence shorthand: focusHandleReadFailed',
+        evidence: { focus: 'focusHandleReadFailed' },
+        expected: ['unknown'],
+        expectedReason: 'focus_handle_read_failed'
+      },
       { label: 'evidence shorthand: containerOnly', evidence: { focus: 'containerOnly' }, expected: ['unknown'] },
       { label: 'evidence shorthand: valueReadOnlyUnknown', evidence: { focus: 'valueReadOnlyUnknown' }, expected: ['unknown'] }
     ]
-    for (const { label, evidence, expected } of evidenceExpectations) {
+    for (const { label, evidence, expected, expectedReason } of evidenceExpectations) {
       const startedAt = process.hrtime.bigint()
       const verdict = addon.__testClassifyKeyboardFocus(evidence)
       const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6
-      results.push({ label, expected, elapsedMs: Math.round(elapsedMs), ...verdict })
-      const ok = expected.includes(verdict.classification)
-      console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected.join('|')} actual=${verdict.classification} ` +
+      results.push({ label, expected, expectedReason: expectedReason || '', elapsedMs: Math.round(elapsedMs), ...verdict })
+      const ok = expected.includes(verdict.classification) && (!expectedReason || verdict.reason === expectedReason)
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected.join('|')}` +
+        `${expectedReason ? ` reason=${expectedReason}` : ''} actual=${verdict.classification} ` +
         `reason=${verdict.reason} elapsed=${Math.round(elapsedMs)}ms`)
-      if (!ok) fail(`${label} classified as ${verdict.classification} (expected ${expected.join('|')})`)
+      if (!ok) {
+        fail(`${label} classified as ${verdict.classification} reason=${verdict.reason} (expected ${expected.join('|')}` +
+          `${expectedReason ? ` reason=${expectedReason}` : ''})`)
+      }
+    }
+
+    // P1-03: a shortcut must never cross from a focus whose UIA provider query failed. This is
+    // the pure-policy equivalent of the final IPC/event-track delta being zero: the key policy
+    // still recognizes Ctrl+V, but the combined bridge rejects it as unknown.
+    const comboFailureCases = [
+      ['valuePatternQueryFailed', 'value_pattern_query_failed'],
+      ['textPatternQueryFailed', 'text_pattern_query_failed'],
+      ['focusHandleReadFailed', 'focus_handle_read_failed']
+    ]
+    for (const [field, expectedReason] of comboFailureCases) {
+      const focusEvidence = {
+        foregroundAlive: true,
+        foregroundIsCurrent: true,
+        elementAvailable: true,
+        focusIdentityConfirmed: true,
+        [field]: true
+      }
+      const startedAt = process.hrtime.bigint()
+      const verdict = addon.__testClassifyKeyboardCombo({
+        vkCode: 0x56,
+        scanCode: 0x2f,
+        modifiers: 2, // Ctrl
+        focus: focusEvidence
+      })
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6
+      const ok = verdict.accepted === false && verdict.context === 'unknown' &&
+        verdict.reason === expectedReason && verdict.combo === 'Ctrl+V'
+      results.push({
+        label: `combo evidence: ${field}`,
+        expected: ['accepted=false context=unknown'],
+        expectedReason,
+        elapsedMs: Math.round(elapsedMs),
+        ...verdict
+      })
+      console.log(`${ok ? 'PASS' : 'FAIL'} combo evidence: ${field}: accepted=${verdict.accepted} ` +
+        `context=${verdict.context} reason=${verdict.reason} combo=${verdict.combo} elapsed=${Math.round(elapsedMs)}ms`)
+      if (!ok) {
+        fail(`combo evidence: ${field} accepted=${verdict.accepted} context=${verdict.context} ` +
+          `reason=${verdict.reason} (expected accepted=false context=unknown reason=${expectedReason})`)
+      }
     }
 
     // The production path: classify whatever currently has focus. This is diagnostic only (the
@@ -276,5 +387,5 @@ async function main() {
 main().catch((error) => {
   fail(error?.message || String(error))
   process.exitCode = 1
-})
+}).finally(exitElectronHarness)
 

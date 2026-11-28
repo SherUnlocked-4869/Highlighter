@@ -2211,7 +2211,11 @@ long ReadSelfTestLong(const Napi::Object &object, const char *name, long fallbac
  * @note Legacy mirrors (hasWritableValue/textPatternReadOnly/textPatternWritable) are translated
  * into the value-domain fields (presence + known + value) so the policy only ever consumes the
  * new representation. A pattern that is present but whose read-only property is unknown stays
- * present+unknown and therefore fails closed.
+ * present+unknown and therefore fails closed. P1-03: the injected `valuePatternQueryFailed` /
+ * `textPatternQueryFailed` / `focusHandleReadFailed` booleans are the exact evidence the production
+ * collector produces when the corresponding provider query fails (as opposed to S_OK+NULL, which
+ * means "positively not supported"); they default to false so an object-shaped healthy surface is
+ * unchanged.
  */
 void ReadSelfTestFocusEvidenceFields(const Napi::Object &focus, highlighter::KeyboardFocusEvidence &evidence,
                                      bool defaultHealthy)
@@ -2264,6 +2268,12 @@ void ReadSelfTestFocusEvidenceFields(const Napi::Object &focus, highlighter::Key
         evidence.textPatternReadOnlyKnown = true;
         evidence.textPatternReadOnly = false;
     }
+    // P1-03 tri-state failure flags default to false, so a healthy object-shaped surface with
+    // positively-not-supported patterns is unchanged; only an explicit injection models a failed
+    // provider query or focus-owner handle read.
+    evidence.valuePatternQueryFailed = ReadSelfTestBoolean(focus, "valuePatternQueryFailed", false);
+    evidence.textPatternQueryFailed = ReadSelfTestBoolean(focus, "textPatternQueryFailed", false);
+    evidence.focusHandleReadFailed = ReadSelfTestBoolean(focus, "focusHandleReadFailed", false);
 }
 
 /**
@@ -2280,7 +2290,11 @@ void ReadSelfTestFocusEvidenceFields(const Napi::Object &focus, highlighter::Key
  * can only prove a container; "valueReadOnlyUnknown"/"textReadOnlyUnknown" model a present pattern
  * whose read-only property could not be read (P1-3: must be Unknown); "textControlWithoutEvidence"
  * is a Document/Text control with no read-only answer; "virtualPasswordSubcontrol" is a password
- * field behind an unconfirmed container; "unknown" hides the element.
+ * field behind an unconfirmed container; "valuePatternQueryFailed"/"textPatternQueryFailed" model
+ * a GetCurrentPatternAs that returned a failed HRESULT (P1-03: a provider error, not the S_OK+NULL
+ * "positively not supported" answer, so it must be Unknown); "focusHandleReadFailed" models a
+ * failed get_CurrentNativeWindowHandle on the focus owner (P1-03: Unknown, never the process-
+ * identity fallback used for a successful empty handle); "unknown" hides the element.
  */
 bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardFocusEvidence &evidence)
 {
@@ -2368,6 +2382,24 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
             evidence.textPatternReadOnlyKnown = false;
             return true;
         }
+        // P1-03: a failed provider query is not a negative answer. These shorthands model the exact
+        // production evidence for a failed GetCurrentPatternAs / get_CurrentNativeWindowHandle on
+        // an otherwise healthy, focus-identity-confirmed non-text surface; they must be Unknown.
+        if (focus == "valuePatternQueryFailed")
+        {
+            evidence.valuePatternQueryFailed = true;
+            return true;
+        }
+        if (focus == "textPatternQueryFailed")
+        {
+            evidence.textPatternQueryFailed = true;
+            return true;
+        }
+        if (focus == "focusHandleReadFailed")
+        {
+            evidence.focusHandleReadFailed = true;
+            return true;
+        }
         if (focus == "textControlWithoutEvidence" || focus == "textControlUnknown")
         {
             evidence.focusIdentityConfirmed = true;
@@ -2429,7 +2461,10 @@ Napi::Value SelfTestClassifyClipboardCopyTarget(const Napi::CallbackInfo &info)
  * @return { accepted, combo, reason, context }. When the evidence carries a `focus` description
  * (object or class-name shorthand) the trusted focus classification is applied too, so
  * `accepted` is true only for a grammar-valid combo pressed on a positively safe surface.
- * Omitting `focus` keeps the historical key-policy-only probe.
+ * Omitting `focus` keeps the historical key-policy-only probe. P1-03: a focus object may also
+ * carry `valuePatternQueryFailed`/`textPatternQueryFailed`/`focusHandleReadFailed`; the same pure
+ * parser/policy consumes them, so a shortcut on a focus whose provider query failed is rejected
+ * with `accepted:false` and `context:"unknown"` (the final IPC/event-track delta is zero).
  */
 Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
 {
@@ -2478,11 +2513,11 @@ Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
  *          focusIdentityConfirmed, isPassword, isTextEditControl, isTextControlType,
  *          valuePatternPresent, valueReadOnlyKnown, valueReadOnly, textPatternPresent,
  *          textPatternReadOnlyKnown, textPatternReadOnly, textPatternWritable, imeComposing,
- *          probeTimedOut }.
+ *          probeTimedOut, valuePatternQueryFailed, textPatternQueryFailed, focusHandleReadFailed }.
  * @note Two input shapes are accepted: a top-level evidence object (the historical shape, whose
  * defaults fail closed) and a `focus` object or class-name shorthand (the same parser as the
- * combo bridge). The echoed value-domain fields let a test prove exactly which evidence drove
- * the decision.
+ * combo bridge). The echoed value-domain and P1-03 tri-state failure fields let a test prove
+ * exactly which evidence drove the decision.
  */
 Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
 {
@@ -2522,6 +2557,10 @@ Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
     result.Set("textPatternWritable", Napi::Boolean::New(env, evidence.textPatternWritable));
     result.Set("imeComposing", Napi::Boolean::New(env, evidence.imeComposing));
     result.Set("probeTimedOut", Napi::Boolean::New(env, evidence.probeTimedOut));
+    // P1-03: echo the tri-state query failures so a test can prove the policy consumed them.
+    result.Set("valuePatternQueryFailed", Napi::Boolean::New(env, evidence.valuePatternQueryFailed));
+    result.Set("textPatternQueryFailed", Napi::Boolean::New(env, evidence.textPatternQueryFailed));
+    result.Set("focusHandleReadFailed", Napi::Boolean::New(env, evidence.focusHandleReadFailed));
     return result;
 }
 

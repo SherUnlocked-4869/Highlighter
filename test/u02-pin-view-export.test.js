@@ -573,6 +573,117 @@ test('draw: measured wrapped/vertical OCR is painted per measured glyph (P2-04)'
   assert.equal(fallbackTexts[0].text, 'legacy')
 })
 
+// P2-02 (re-review): a vertical-rl block sets horizontal-script graphemes sideways. The painter
+// must rotate exactly those 90° clockwise around their measured centre; CJK stays upright.
+test('draw: vertical sideways glyphs are rotated, upright glyphs are not (P2-02)', () => {
+  const block = {
+    text: 'I中A',
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 200 }, { x: 20, y: 200 }]
+  }
+  const layout = measuredEntry(0, {
+    width: 40,
+    height: 180,
+    centerX: 40,
+    centerY: 100,
+    vertical: true,
+    fontSize: 28.7,
+    lines: [{
+      text: 'I中A',
+      x: 0,
+      y: 0,
+      width: 36,
+      height: 80,
+      glyphs: [
+        { text: 'I', x: 0, y: -30, width: 36, height: 8.45, sideways: true },
+        { text: '中', x: 0, y: 0, width: 36, height: 28.7, sideways: false },
+        { text: 'A', x: 0, y: 25, width: 36, height: 20.2, sideways: true }
+      ]
+    }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, translated: true, blocks: [block], imageWidth: 400, imageHeight: 300, layout: [layout] }
+  })
+  assert.equal(plan.ok, true)
+  assert.deepEqual(plan.ocrBlocks[0].lines[0].glyphs.map((glyph) => glyph.sideways), [true, false, true],
+    'the measured orientation flag reaches the export plan')
+  const context = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  const ops = context.ops
+  const fillIndexes = ops.map((op, index) => (op.op === 'fillText' ? index : -1)).filter((index) => index >= 0)
+  assert.equal(fillIndexes.length, 3)
+  // Sideways glyph: save -> translate(centre) -> rotate(+90° clockwise) -> fillText(0, y) -> restore.
+  for (const [index, fillIndex] of fillIndexes.entries()) {
+    const glyph = plan.ocrBlocks[0].lines[0].glyphs[index]
+    const op = ops[fillIndex]
+    assert.equal(op.text, glyph.text)
+    if (glyph.sideways === true) {
+      assert.deepEqual(ops[fillIndex - 3], { op: 'save' }, `${glyph.text}: rotation is scoped`)
+      assert.equal(ops[fillIndex - 2].op, 'translate')
+      assert.equal(ops[fillIndex - 2].x, glyph.x)
+      assert.equal(ops[fillIndex - 2].y, glyph.y)
+      assert.equal(ops[fillIndex - 1].op, 'rotate')
+      assert.equal(ops[fillIndex - 1].angle, Math.PI / 2, `${glyph.text}: sideways means 90° clockwise`)
+      assert.equal(op.x, 0, `${glyph.text}: painted at the rotated centre`)
+      assert.equal(ops[fillIndex + 1].op, 'restore')
+    } else {
+      assert.equal(op.x, glyph.x, `${glyph.text}: upright glyph keeps its measured centre`)
+      assert.equal(op.y, glyph.y)
+      const previous = ops[fillIndex - 1]
+      assert.ok(!(previous && previous.op === 'rotate' && Math.abs(previous.angle - Math.PI / 2) < 1e-9),
+        `${glyph.text}: no sideways rotation`)
+    }
+  }
+})
+
+// P2-02: the browser cannot join a ZWJ emoji sequence vertically; it stacks the parts inside the
+// measured column advance. The painter reproduces that stack instead of collapsing it to one run.
+test('draw: a stacked upright ZWJ emoji is painted as ordered parts in its measured slots (P2-02)', () => {
+  const block = {
+    text: '👩‍💻',
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 200 }, { x: 20, y: 200 }]
+  }
+  const layout = measuredEntry(0, {
+    width: 40,
+    height: 180,
+    centerX: 40,
+    centerY: 100,
+    vertical: true,
+    fontSize: 28.7148,
+    lines: [{
+      text: '👩‍💻',
+      x: 0,
+      y: 0,
+      width: 36,
+      height: 76.8,
+      glyphs: [{ text: '👩‍💻', x: 0, y: 0, width: 36, height: 76.8, sideways: false }]
+    }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, translated: false, blocks: [block], imageWidth: 400, imageHeight: 300, layout: [layout] }
+  })
+  const context = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['👩', '💻'], 'the two ZWJ parts are painted in order')
+  // Two equal slots spanning the measured 76.8 px advance: centres at -19.2 and +19.2.
+  assert.ok(Math.abs(texts[0].y - (-19.2)) <= 0.01, `first slot centre (${texts[0].y})`)
+  assert.ok(Math.abs(texts[1].y - 19.2) <= 0.01, `second slot centre (${texts[1].y})`)
+  assert.ok(texts[0].x === 0 && texts[1].x === 0, 'both parts stay in the measured column')
+  assert.equal(
+    context.ops.filter((entry) => entry.op === 'rotate' && Math.abs(entry.angle - Math.PI / 2) < 1e-9).length,
+    0,
+    'emoji stay upright (no sideways rotation; the block itself has a zero-angle transform)'
+  )
+})
+
 test('draw: an authoritative measurement with no visible glyphs paints the chip only (P2-04)', () => {
   // The live chip's overflow:hidden clipped every glyph away (e.g. the vertical source block
   // whose oversized line-height pushes its column outside the chip). The export must match

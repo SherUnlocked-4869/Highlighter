@@ -1190,8 +1190,10 @@ test('global shortcut capture is a separate session-only opt-in', async () => {
   assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'and consumes it after the start')
 
   // P1-01 review: focusing the running bar is NOT a new take, and a cancelled region overlay is
-  // NOT a take either. Both must keep the one-shot opt-in armed; only a created receipt consumes
-  // it. These are the three workbench start state transitions the review asked to cover.
+  // NOT a take either. Both must keep the one-shot opt-in armed; a successful start consumes it
+  // (display/window still answer the legacy `{ok:true}` shape, the region flow answers
+  // `created:true|false`). These are the three workbench start state transitions the review
+  // asked to cover.
   queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].onclick()
   assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true')
   nextStartResult = { ok: true, focused: true }

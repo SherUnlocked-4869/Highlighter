@@ -43,6 +43,15 @@ function clampInteger(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.round(number)))
 }
 
+// P2-03: the one readiness predicate every JS entry point shares. The Rust status
+// protocol reports whether *this round's* query probe answered (`queryAnswered`);
+// the display snapshot can keep `dbLoaded: true` for a live instance whose query
+// channel went silent, so `running && dbLoaded` is not enough. A snapshot that
+// lacks the field (an older sidecar) fails closed — the sidecar ships with the app.
+function snapshotIsReady(snapshot) {
+  return snapshot?.running === true && snapshot?.dbLoaded === true && snapshot?.queryAnswered === true
+}
+
 class EverythingService {
   constructor(options = {}) {
     this.sidecarPath = options.sidecarPath
@@ -82,6 +91,7 @@ class EverythingService {
       messageKey: '',
       running: false,
       dbLoaded: false,
+      queryAnswered: false,
       version: null,
       managedByHighlighter: false,
       available: fs.existsSync(this.sidecarPath)
@@ -103,6 +113,7 @@ class EverythingService {
       messageKey: 'main.everything.ready',
       running: true,
       dbLoaded: true,
+      queryAnswered: true,
       version: 'e2e',
       probeTotal: 1,
       managedByHighlighter: false,
@@ -126,7 +137,10 @@ class EverythingService {
         const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS)
         this.lastStatusProbeAt = Date.now()
         const running = !!snapshot?.running
-        const ready = running && !!snapshot?.dbLoaded
+        // P2-03: the shared readiness predicate. An index-loaded but query-silent
+        // instance keeps `running && dbLoaded` yet must stay in "waiting" (and never
+        // seed the ready cache) until a round answers on the query channel.
+        const ready = snapshotIsReady(snapshot)
         this.applySidecarStatus(snapshot, {
           managedByHighlighter: !!this.managedEverything,
           phase: ready ? 'ready' : (running ? 'waiting' : 'idle'),
@@ -317,6 +331,10 @@ class EverythingService {
     return this.setStatus({
       running: !!status?.running,
       dbLoaded: !!status?.dbLoaded,
+      // P2-03: copy this round's query-channel answer into the published status.
+      // Unknown/missing means "not answered" so readiness can never be inferred
+      // from a display snapshot alone.
+      queryAnswered: status?.queryAnswered === true,
       version: status?.version ?? null,
       ...patch
     })
@@ -325,7 +343,10 @@ class EverythingService {
   async waitReady(timeoutMs = READY_TIMEOUT_MS) {
     const result = await this.request({ action: 'wait-ready', timeoutMs }, timeoutMs + 10000)
     this.applySidecarStatus(result?.status, { managedByHighlighter: !!this.managedEverything })
-    return result?.ready === true
+    // P2-03: accept the sidecar's ready flag only together with the shared JS
+    // predicate, so a sidecar that predates `queryAnswered` fails closed instead of
+    // reporting ready from `dbLoaded` alone.
+    return result?.ready === true && snapshotIsReady(this.status)
   }
 
   async spawnBundledEverything() {
@@ -367,7 +388,9 @@ class EverythingService {
 
   async ensureReadyInternal(options = {}) {
     const timeoutMs = clampInteger(options.timeoutMs, 3000, 120000, READY_TIMEOUT_MS)
-    if (this.status.phase === 'ready' && Date.now() - (this.lastReadyAt || 0) < READY_CACHE_MS) {
+    // P2-03: the 2 s ready cache is only a shortcut for a state the shared predicate
+    // already blessed; re-check it so a stale phase cannot bypass the round answer.
+    if (this.status.phase === 'ready' && snapshotIsReady(this.status) && Date.now() - (this.lastReadyAt || 0) < READY_CACHE_MS) {
       return this.getStatus()
     }
     await this.ensureStarted()
@@ -403,7 +426,13 @@ class EverythingService {
       throw new Error(message)
     }
 
-    if (snapshot.running && snapshot.dbLoaded) {
+    // P2-03: the same shared predicate as refreshStatus. A query-silent but
+    // index-loaded instance keeps `running:true, dbLoaded:true` in the display
+    // snapshot but is not ready: it must land in "waiting" (never set `lastReadyAt`)
+    // and fall through to wait-ready, whose Rust predicate re-selects an instance
+    // that answers the query channel. An answering instance with an empty index is
+    // ready (`probeTotal: 0` is not a blocker).
+    if (snapshotIsReady(snapshot)) {
       this.lastReadyAt = Date.now()
       this.setStatus({ phase: 'ready', message: t('main.everything.ready'), messageKey: 'main.everything.ready' })
       return this.getStatus()
@@ -465,6 +494,12 @@ class EverythingService {
     if (existing) return existing
 
     await this.ensureReady()
+    // P2-03: ensureReady() only resolves after the shared predicate holds, but
+    // re-assert it here so no future shortcut (including the ready cache) can send a
+    // query to an instance whose query channel stayed silent this round.
+    if (!snapshotIsReady(this.status)) {
+      throw new Error('Everything 组件尚未就绪')
+    }
     // Another caller may have created the identical request while this one
     // waited for readiness — coalesce onto it instead of duplicating work.
     const coalesced = this.inFlight.get(cacheKey)
@@ -556,6 +591,7 @@ class EverythingService {
       messageKey: '',
       running: false,
       dbLoaded: false,
+      queryAnswered: false,
       managedByHighlighter: !!this.managedEverything
     })
   }
@@ -586,6 +622,7 @@ class EverythingService {
       messageKey: '',
       running: false,
       dbLoaded: false,
+      queryAnswered: false,
       managedByHighlighter: false
     })
     const stoppedManaged = await managedStop
@@ -613,6 +650,7 @@ class EverythingService {
 
 module.exports = {
   EverythingService,
+  snapshotIsReady,
   SORT_MODES,
   EVERYTHING_DOWNLOAD_URL
 }

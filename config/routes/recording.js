@@ -292,6 +292,14 @@ function buildRecordingStartPayload(choices) {
 // {ok:true, focused:true} when the repeat entry only brought the running bar forward, and
 // {ok:true, created:false} when the region overlay was cancelled/replaced. Neither created a
 // new recording, so neither may consume the opt-in.
+//
+// The exact guarantee (corrected after the 2026-11-28 re-review): this predicate consumes the
+// choice for every response EXCEPT the explicit negatives above. Only the region flow carries a
+// `created` field today (created:true on a take, created:false on a cancellation); display and
+// window mode still answer the legacy `{ok:true}` shape, so requiring `created:true` here would
+// silently stop consuming the choice in those modes. A missing/empty result is treated as a
+// started take because the channel resolved without refusing it. The delivery note must describe
+// this predicate, not the stronger "only consumes on an explicit created:true" wording.
 function recordingStartCreatedRecording(result) {
   if (result && result.ok === false) return false
   if (result && result.focused === true) return false
