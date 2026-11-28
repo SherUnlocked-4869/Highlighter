@@ -200,10 +200,10 @@ node scripts/probe-pin-screen-diff.js   # ✔ DEV-08 采用门禁 {adopt:true, r
 
 ### 7.1 独立复核与收紧（2026-11-28，跟进）
 
-首轮修复提交后由独立复核代理（新上下文）按复核清单逐条对抗验证：11/11 无 FAIL（7 PASS / 4 PASS-WITH-NOTE），
+首轮修复提交后由独立复核代理（新上下文）按复核清单逐条对抗验证：11/11 无 FAIL（6 PASS / 5 PASS-WITH-NOTE），
 并在 `b84eeba` 工作树上独立复现了 P2-01 27/28、P1-03 入口 2/2、无 context Ctrl+V 被接受、同源 90 ms 被并成 1、
 n05 5 失败、u02 view export 7 失败、ocr-service 2 失败、shared export options 2 失败，以及 P1-01/P2-05 的真实探针数字。
-其指出的问题随后收紧为三个提交：`20e686b`（P1-02 可写 TextPattern 判据 + 分类后焦点复查 + own-process 注释更正，
+其指出的 5 处问题随后收紧为三个提交：`20e686b`（P1-02 可写 TextPattern 判据 + 分类后焦点复查 + own-process 注释更正，
 新 build-id `hl_7a937464…`）、`32dfba0`（P2-03 显示器计划失败可重试并补“消失→恢复同会话续采”用例）、
 `a23acc7`（P2-05 截断提示仅在开关开启时显示、dropped 区间 null 哨兵）。其余为非本次回归的边界与真机项，
 已登记在[修复记录](2026-11-28-review-follow-up-fix-record.md) §7/§8（含 P2-05 64 标签×500 窗口的命令行长边界、
