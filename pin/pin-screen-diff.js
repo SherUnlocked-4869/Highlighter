@@ -1,44 +1,29 @@
 'use strict'
 
 // N05 / DEV-08 (docs/plans/2026-11-28-review-optimization-follow-up-tasks.md):
-// EXPERIMENTAL prototype for "real screen pixels under a pin" comparison.
+// real screen pixels under a pin, measured and ADOPTED 2026-11-28.
 //
-// This module is deliberately NOT wired into any user surface. The plan's first
-// deliverable is to prove, on a real Windows/DPI host, that the pixels under a pin can
-// be captured WITHOUT capturing the pin window itself. That cannot be proven in node
-// tests or from a confined automation host, so the agreement is:
-//   * the pure planning/measurement seams live here and are unit-tested;
-//   * the main process gets an experiment-only sampler (main/domains/pin/index.js,
-//     `screenDiffPrototype`) that is never reached from the context menu, tray or
-//     keyboard;
-//   * `pin/pin.js` keeps the existing flash mode as the default and does not consume
-//     any diff frame until a real probe passes the adoption gate below.
+// Evidence: docs/plans/2026-11-28-dev08-screen-diff-measurement.md plus the reproducible
+// probe in scripts/probe-pin-screen-diff.js. On the target Windows host a window with
+// content protection enabled stays visible on screen but is absent from desktopCapturer
+// frames (0/30 protected frames contained its colour; ~0.986 with protection off),
+// including two stacked pins and a display with a negative DIP origin. Flash and
+// difference remain the defaults; the product exposes this as an explicit per-pin opt-in
+// in the context menu ("real pixel compare"), and the side effect (that pin is excluded
+// from screenshots/recordings while the mode runs) is stated there.
 //
-// Capture model (Windows):
-//   * the pin window is temporarily given content protection
-//     (Electron setContentProtection -> SetWindowDisplayAffinity). With
-//     WDA_EXCLUDEFROMCAPTURE the window stays visible on screen but is absent from
-//     screen-capture APIs, so a desktopCapturer thumbnail of the display shows what is
-//     behind it. Older Electron/Windows builds map this to WDA_MONITOR, which paints a
-//     black rectangle instead - that difference is exactly what the real probe must
-//     record, because a black result is unusable for a pixel diff.
-//   * the capture rectangle is derived from the pin's IMAGE box in DIP, intersected
-//     with the display it lives on, and converted to that display's PHYSICAL pixels
-//     (`(dip - display.bounds.origin) * scaleFactor`). Multi-screen, mixed DPI and
-//     negative coordinates all fall out of that one origin subtraction.
-//   * frames are bounded by pixels/bytes, one in flight, at most 1 Hz, and every frame
-//     buffer is released after the comparison. Any failure stops the experiment.
+// This module is the side-effect-free planning/measurement seam shared by the product and
+// the probe:
+//   * DIP -> display-local PHYSICAL capture rectangle (multi-screen, mixed DPI, rotation,
+//     negative coordinates, edge clamping, pixel budget);
+//   * desktopCapturer source choice by display_id with a bounded fallback;
+//   * BGRA -> RGBA normalisation for nativeImage.toBitmap();
+//   * RGBA diff + nearest-neighbour resampling for alignment checks;
+//   * a bounded 1 Hz / one-in-flight / failure-capped sampler;
+//   * the adoption gate (measured exclusion + alignment + budget + rate).
 //
-// What "proven" means (adoption gate):
-//   * exclusion: with the pin showing a known changing overlay, consecutive screen
-//     samples of the pin area must NOT track that overlay (self-capture ratio below
-//     SELF_CAPTURE_MAX_RATIO is evidence AGAINST the pin being captured);
-//   * alignment: the captured screen region must align with the pin's rendered view
-//     (the DEV-02 offscreen composition at the same physical size) within
-//     ALIGNMENT_TOLERANCE_RATIO of strongly differing pixels for an unchanged design;
-//   * budget: max frame bytes observed <= MAX_CAPTURE_BYTES and no sample above 1 Hz.
-// When any criterion is missing the conclusion is REJECT: ship the documented
-// experimental path plus rollback and keep flash mode.
+// The product session lives in main/domains/pin/index.js (startRealPixelCompare); the
+// renderer display math lives in pin/pin-diff-view.js.
 
 ;(function exposePinScreenDiff(root, factory) {
   const api = factory()
@@ -253,6 +238,39 @@
     }
   }
 
+  // Electron's nativeImage.toBitmap() is BGRA on Windows. The diff API is RGBA, and the
+  // screen capture's alpha channel is meaningless (0 or 255 depending on the compositor),
+  // so normalisation swaps R/B and forces opaque. A fresh buffer keeps the frame a single
+  // owned allocation that can be dropped right after it is delivered.
+  function bgraToRgba(pixels) {
+    if (!pixels || typeof pixels.length !== 'number' || pixels.length % 4 !== 0) return null
+    const source = pixels instanceof Uint8Array ? pixels : Uint8Array.from(pixels)
+    const out = new Uint8Array(source.length)
+    for (let offset = 0; offset < source.length; offset += 4) {
+      out[offset] = source[offset + 2]
+      out[offset + 1] = source[offset + 1]
+      out[offset + 2] = source[offset]
+      out[offset + 3] = 255
+    }
+    return out
+  }
+
+  // Pick the desktopCapturer source for one display. display_id is the authoritative
+  // match; the bounded fallback is the first source with real pixels (Electron may omit
+  // display_id on some platforms/driver combinations). Returns null if nothing usable.
+  function pickScreenSource(sources, displayId) {
+    const usable = (entry) => {
+      if (!entry || !entry.thumbnail) return false
+      const thumbnail = entry.thumbnail
+      return !(typeof thumbnail.isEmpty === 'function' && thumbnail.isEmpty())
+    }
+    const list = Array.isArray(sources) ? sources.filter(usable) : []
+    if (!list.length) return null
+    const matched = list.find((entry) => displayId != null && String(entry.display_id ?? '') === String(displayId))
+    if (matched) return { source: matched, matched: true }
+    return { source: list[0], matched: false }
+  }
+
   // Frame-rate / in-flight / byte budget state machine. Everything is injected so node
   // tests drive a fake clock and fake capture promises. The experiment aborts after
   // MAX_CONSECUTIVE_FAILURES failures instead of retrying forever.
@@ -384,6 +402,8 @@
     normalizeRotation,
     normalizeDisplays,
     pickDisplay,
+    pickScreenSource,
+    bgraToRgba,
     planScreenCapture,
     resampleRgba,
     diffRgba,

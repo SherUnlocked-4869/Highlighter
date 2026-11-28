@@ -60,6 +60,15 @@ body.onion-flash .pin-surface{animation:pin-onion-flash 1s step-end infinite}
 /* N05: one transient operation toast for the onion modes and the workspace actions. */
 #pinToast{position:fixed;z-index:5;left:50%;bottom:34px;max-width:calc(100% - 16px);transform:translateX(-50%);padding:5px 10px;border-radius:6px;color:#fff;background:rgba(20,20,22,.86);font:12px/1.35 system-ui,sans-serif;text-align:center;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #pinToast[hidden]{display:none}
+/* DEV-08: opt-in real-pixel compare. The mask canvas is positioned over the captured
+   screen rect (in-window CSS coordinates) and scaled from the bounded comparison grid;
+   the badge names the changed ratio or says there is no change. Neither element is part
+   of the pinned picture: exports/copy/save read the stored PNG bytes or the offscreen
+   re-composition, and windows snapshots copy that same picture. */
+#pinDiffOverlay{position:fixed;z-index:2;pointer-events:none;border-radius:2px;image-rendering:pixelated}
+#pinDiffOverlay[hidden]{display:none}
+#pinDiffBadge{position:fixed;z-index:4;left:50%;bottom:8px;max-width:calc(100% - 16px);transform:translateX(-50%);padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.88);font:12px/1.35 system-ui,sans-serif;white-space:nowrap;pointer-events:none;overflow:hidden;text-overflow:ellipsis}
+#pinDiffBadge[hidden]{display:none}
 /* N05: inline naming overlay for a workspace snapshot. It is the pin window's only
    text input; `hidden` keeps it out of the click-through hit test until opened. */
 #pinWorkspaceNaming{position:fixed;z-index:6;left:50%;top:50%;width:min(320px,calc(100% - 16px));transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:8px;color:#fff;background:rgba(28,29,34,.97);box-shadow:0 8px 28px rgba(0,0,0,.42);font:12px/1.35 system-ui,sans-serif;pointer-events:auto;user-select:none}

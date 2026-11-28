@@ -1,14 +1,15 @@
 'use strict'
 
 // N05 / DEV-08 (docs/plans/2026-11-28-review-optimization-follow-up-tasks.md):
-// EXPERIMENTAL real-screen pixel diff for the pin onion comparison.
+// real-screen pixel diff for the pin onion comparison (adopted 2026-11-28).
 //
-// This prototype is intentionally NOT user-visible: the plan's gate is to prove, on the
-// target Windows/DPI host, that the pixels under a pin can be captured while EXCLUDING the
-// pin window itself. These tests cover the pure planning/measurement seams and the
-// experiment-only main-process sampler; they cannot prove exclusion or alignment, so the
-// final section asserts the shipped flash mode is still the default and nothing consumes
-// diff frames. The real-window probe remains root's job.
+// The plan's gate was to prove, on the target Windows/DPI host, that the pixels under a pin
+// can be captured while EXCLUDING the pin window itself. That evidence is in
+// docs/plans/2026-11-28-dev08-screen-diff-measurement.md (probe:
+// scripts/probe-pin-screen-diff.js), so the mode is now an explicit user opt-in. These
+// tests cover the pure planning/measurement seams, the bounded sampler and the display
+// math; the shipped flash mode stays the default and only an explicit menu click starts
+// real-pixel sampling.
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
@@ -252,22 +253,52 @@ test('adoption: only measured exclusion+alignment+budget+rate may adopt', () => 
 })
 
 // ---------------------------------------------------------------------------
-// 5. Main-process experiment-only sampler (fake Electron touch points).
+// ---------------------------------------------------------------------------
+// 5. Product wiring: opt-in real-pixel compare (adopted 2026-11-28).
 // ---------------------------------------------------------------------------
 
-function createExperimentHarness() {
+function createScreenDiffHarness(options = {}) {
   const protectionCalls = []
-  const capturedFrames = []
+  const capturedThumbnails = []
+  const sends = []
+  const events = {}
+  const menus = []
   const win = {
-    _pinData: { rotation: 0 },
-    isDestroyed: () => false,
+    _pinData: null,
+    _destroyed: false,
+    isDestroyed: () => win._destroyed,
     isVisible: () => true,
-    getBounds: () => ({ x: 0, y: 0, width: 400, height: 200 }),
-    setContentProtection: (enabled) => protectionCalls.push(enabled)
+    getBounds: () => ({ x: 100, y: 50, width: 400, height: 200 }),
+    getContentBounds: () => ({ x: 100, y: 50, width: 400, height: 200 }),
+    setBounds: () => {},
+    setPosition: () => {},
+    setContentSize: () => {},
+    setAlwaysOnTop: () => {},
+    setOpacity: () => {},
+    setIgnoreMouseEvents: () => {},
+    show: () => {},
+    showInactive: () => {},
+    hide: () => {},
+    moveTop: () => {},
+    focus: () => {},
+    close: () => {},
+    loadFile: () => undefined,
+    destroy: () => { win._destroyed = true },
+    setContentProtection: options.noProtection === true ? undefined : (enabled) => protectionCalls.push(enabled),
+    on: (event, callback) => {
+      events[event] = callback
+      if (event === 'closed') win._closed = callback
+    },
+    removeListener: (event, callback) => { if (events[event] === callback) delete events[event] },
+    webContents: {
+      isDestroyed: () => false,
+      send: (channel, payload) => sends.push({ channel, payload })
+    }
   }
-  const desktopCapturer = {
+  const handlers = new Map()
+  const desktopCapturer = options.desktopCapturer || {
     getSources: async ({ thumbnailSize }) => {
-      capturedFrames.push(thumbnailSize)
+      capturedThumbnails.push(thumbnailSize)
       return [{
         display_id: '1',
         thumbnail: {
@@ -281,81 +312,347 @@ function createExperimentHarness() {
       }]
     }
   }
+  const { createPinDomain } = require('../main/domains/pin')
   const domain = createPinDomain({
-    BrowserWindow: { fromWebContents: () => null },
+    BrowserWindow: { fromWebContents: () => win },
     clipboard: { writeImage: () => {} },
-    nativeImage: { createFromBuffer: () => ({ getSize: () => ({ width: 400, height: 200 }) }) },
+    nativeImage: {
+      createFromBuffer: () => ({ getSize: () => ({ width: 400, height: 200 }), isEmpty: () => false })
+    },
     screen: {
       getAllDisplays: () => [DISPLAY_PRIMARY],
       getDisplayMatching: () => DISPLAY_PRIMARY,
       getDisplayNearestPoint: () => DISPLAY_PRIMARY,
       getCursorScreenPoint: () => ({ x: 0, y: 0 })
     },
-    Menu: { buildFromTemplate: () => ({ popup: () => {} }) },
+    Menu: {
+      buildFromTemplate: (template) => {
+        menus.push(template)
+        return { popup: () => {} }
+      }
+    },
     path,
     rootDirectory: ROOT,
-    createLocalWindow: () => ({ isDestroyed: () => false, on: () => {}, webContents: { on: () => {} } }),
+    createLocalWindow: () => win,
     getSettings: () => ({ fixedContent: { opacity: 1 }, plugins: {}, pinned: {} }),
     saveImageBuffer: async () => '',
     createRecognitionWindow: () => {},
     recognizePin: () => {},
-    pinImages: { add: () => 1, read: async () => ({ bytes: Buffer.from([1]), mime: 'image/png' }), retain: () => true, release: () => {}, stats: () => ({}) },
+    pinImages: {
+      add: () => 1,
+      read: async () => ({ bytes: Buffer.from([1]), mime: 'image/png' }),
+      retain: () => true,
+      release: () => {},
+      stats: () => ({})
+    },
     getCreateCaptureWindow: () => async () => null,
     screenDiffDesktopCapturer: desktopCapturer,
+    realDiffIntervalMs: options.intervalMs || 250,
     log: () => {},
-    ipcMain: { on: () => {} }
+    ipcMain: { on: (channel, handler) => { handlers.set(channel, handler) } }
   })
-  return { domain, win, protectionCalls, capturedFrames }
+  return { domain, win, protectionCalls, capturedThumbnails, sends, events, menus, handlers }
 }
 
-test('experiment sampler: content protection toggles per frame and the frame is summary-only', async () => {
-  const harness = createExperimentHarness()
-  const sampler = harness.domain.createScreenDiffSampler({
-    win: harness.win,
-    intervalMs: 250,
-    imageBounds: { x: 0, y: 0, width: 400, height: 200 }
+const ORIGINAL = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4, 5])
+
+test('product: start/stop toggles content protection exactly once per transition', async () => {
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', {
+    x: 0, y: 0, width: 400, height: 200
   })
-  assert.equal(sampler.ok, true)
-  const frame = await sampler.sample()
+  assert.equal(started.ok, true)
+  assert.equal(started.mode, 'real-diff')
+  assert.equal(win._onionMode, 'real-diff')
+  assert.deepEqual(harness.protectionCalls, [true], 'protection on for the whole session')
+  assert.ok(harness.sends.some(({ channel, payload }) => channel === 'pin:onion-mode' && payload.mode === 'real-diff'))
+
+  const frame = await started.sampleNow()
   assert.equal(frame.ok, true)
-  assert.equal(frame.width, 400)
-  assert.equal(frame.height, 200)
-  assert.equal(frame.bytes, 400 * 200 * 4)
-  // Content protection was enabled for the capture and restored OFF afterwards.
+  const delivered = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')
+  assert.equal(delivered.length, 1)
+  const payload = delivered[0].payload
+  assert.equal(payload.width, 400)
+  assert.equal(payload.height, 200)
+  assert.equal(payload.pixels.length, 400 * 200 * 4)
+  assert.deepEqual(payload.dipRect, { x: 100, y: 50, width: 400, height: 200 })
+  assert.equal(payload.scaleFactor, 1)
+
+  const stopped = harness.domain.applyOnionModeSelection(win, 'off')
+  assert.equal(stopped.ok, true)
+  assert.equal(win._onionMode, 'off')
+  assert.deepEqual(harness.protectionCalls, [true, false], 'protection restored on stop')
+  assert.ok(harness.sends.some(({ channel, payload }) => channel === 'pin:onion-mode' && payload.mode === 'off'))
+  assert.equal(win._realPixelCompare, null)
+})
+
+test('product: closing or hiding the pin stops sampling and restores protection', async () => {
+  // Close while active.
+  const closing = createScreenDiffHarness()
+  const closingWin = closing.domain.createPinWindow(ORIGINAL, {})
+  closing.domain.applyOnionModeSelection(closingWin, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  assert.deepEqual(closing.protectionCalls, [true])
+  closing.events.closed()
+  assert.deepEqual(closing.protectionCalls, [true, false])
+  assert.equal(closingWin._realPixelCompare, null)
+
+  // Hide while active (workspace suspend / tray hide).
+  const hiding = createScreenDiffHarness()
+  const hidingWin = hiding.domain.createPinWindow(ORIGINAL, {})
+  hiding.domain.applyOnionModeSelection(hidingWin, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  hiding.events.hide()
+  assert.deepEqual(hiding.protectionCalls, [true, false])
+  assert.equal(hidingWin._realPixelCompare, null)
+  assert.ok(hiding.sends.some(({ channel, payload }) => channel === 'pin:onion-mode' && payload.reason === 'hidden'))
+})
+
+test('product: sampler is rate limited, single-flight and stops after the failure cap', async () => {
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  const first = await started.sampleNow()
+  assert.equal(first.ok, true)
+  const second = await started.sampleNow()
+  assert.equal(second.ok, false)
+  assert.equal(second.code, 'RATE_LIMITED')
+  assert.equal(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length, 1)
+  win._closed()
+  // A failing capture stops the session after three consecutive failures.
+  let attempts = 0
+  const failing = createScreenDiffHarness({
+    desktopCapturer: {
+      getSources: async () => { attempts += 1; throw new Error('capture unavailable') }
+    }
+  })
+  const failingWin = failing.domain.createPinWindow(ORIGINAL, {})
+  const failingStart = failing.domain.applyOnionModeSelection(failingWin, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 300))
+  await failingStart.sampleNow()
+  await pause()
+  await failingStart.sampleNow()
+  await pause()
+  await failingStart.sampleNow()
+  assert.equal(attempts, 3)
+  assert.equal(failingWin._realPixelCompare, null)
+  assert.deepEqual(failing.protectionCalls, [true, false])
+  assert.ok(failing.sends.some(({ channel, payload }) => channel === 'pin:onion-mode' && payload.mode === 'off' && payload.reason === 'FAILURE_LIMIT'))
+})
+
+test('product: refuses without content protection, and the menu offers the opt-in with its side effect', async () => {
+  const bare = createScreenDiffHarness({ noProtection: true })
+  const bareWin = bare.domain.createPinWindow(ORIGINAL, {})
+  assert.deepEqual(
+    bare.domain.applyOnionModeSelection(bareWin, 'real-diff', { x: 0, y: 0, width: 400, height: 200 }),
+    { ok: false, code: 'NO_CONTENT_PROTECTION' }
+  )
+  assert.equal(bareWin._onionMode, 'off')
+
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  harness.handlers.get('pin:context-menu')({ sender: win.webContents })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const { t } = require('../main/services/i18n-bootstrap')
+  const template = harness.menus.at(-1)
+  const onionMenu = template.find((item) => item.label === t('pin.onion.menu-label'))
+  assert.ok(onionMenu, 'the context menu has an onion/compare submenu')
+  assert.ok(Array.isArray(onionMenu.submenu))
+  const labels = onionMenu.submenu.map((item) => item.label)
+  for (const key of ['pin.onion.mode-off', 'pin.onion.mode-difference', 'pin.onion.mode-flash', 'pin.onion.mode-real-diff']) {
+    assert.ok(labels.includes(t(key)), `${key} present`)
+  }
+  const realDiff = onionMenu.submenu.find((item) => item.label === t('pin.onion.mode-real-diff'))
+  assert.equal(realDiff.type, 'radio')
+  assert.equal(realDiff.checked, false, 'real-pixel compare is opt-in, off by default')
+  const sideEffect = onionMenu.submenu.find((item) => item.label === t('pin.onion.real-diff.side-effect'))
+  assert.ok(sideEffect && sideEffect.enabled === false, 'the capture-exclusion side effect is disclosed')
+  // The shipped flash mode remains the default: stopping the new mode leaves mode off.
+  harness.domain.applyOnionModeSelection(win, 'flash')
+  assert.equal(win._onionMode, 'flash')
+  harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  harness.domain.applyOnionModeSelection(win, 'off')
+  assert.equal(win._onionMode, 'off')
+  win._closed()
+})
+
+test('product: the renderer onion-state envelope is bounded and updates the menu mirror', () => {
+  const pinDomain = require('../main/domains/pin')
+  assert.deepEqual(pinDomain.ONION_MODES, ['off', 'difference', 'flash', 'real-diff'])
+  assert.deepEqual(pinDomain.normalizeOnionStateCommand({ type: 'onion-state', mode: 'flash' }), {
+    type: 'onion-state', mode: 'flash'
+  })
+  assert.equal(pinDomain.normalizeOnionStateCommand({ type: 'onion-state', mode: 'bogus' }), null)
+  assert.equal(pinDomain.normalizeOnionStateCommand({ type: 'workspace-save', name: 'x' }), null)
+  assert.equal(pinDomain.normalizeOnionStateCommand(null), null)
+
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  assert.equal(win._onionMode, 'off')
+  harness.handlers.get('pin:context-menu')({ sender: win.webContents }, null, { type: 'onion-state', mode: 'difference' })
+  assert.equal(win._onionMode, 'difference')
+  // A renderer echo that leaves real-diff while the sampler runs stops the sampler.
+  harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  assert.deepEqual(harness.protectionCalls, [true])
+  harness.handlers.get('pin:context-menu')({ sender: win.webContents }, null, { type: 'onion-state', mode: 'off' })
+  assert.equal(win._realPixelCompare, null)
   assert.deepEqual(harness.protectionCalls, [true, false])
-  assert.deepEqual(harness.capturedFrames[0], { width: 1920, height: 1080 })
-  // The sampler keeps numbers only, never the bitmap.
-  assert.equal(sampler.getStats().frames, 1)
-  assert.equal(sampler.getStats().maxBytesSeen, 400 * 200 * 4)
-  sampler.stop('probe-done')
-  assert.equal(sampler.getStats().stopped, true)
-})
-
-test('experiment sampler: refuses without a window or a content-protection setter', () => {
-  const harness = createExperimentHarness()
-  assert.deepEqual(harness.domain.createScreenDiffSampler({ win: null }), { ok: false, code: 'NO_WINDOW' })
-  const bare = { ...harness.win, setContentProtection: undefined }
-  assert.deepEqual(harness.domain.createScreenDiffSampler({ win: bare }), { ok: false, code: 'NO_CONTENT_PROTECTION' })
+  win._closed()
 })
 
 // ---------------------------------------------------------------------------
-// 6. Not wired: the shipped flash mode stays the default.
+// 6. BGRA normalisation, display wiring and the unchanged flash default.
 // ---------------------------------------------------------------------------
 
-test('wiring: the prototype is not reachable from any user surface', () => {
+test('bgraToRgba swaps channels and forces opaque pixels; bad lengths are refused', () => {
+  const bgra = Uint8Array.from([10, 20, 30, 0, 40, 50, 60, 77])
+  assert.deepEqual([...diff.bgraToRgba(bgra)], [30, 20, 10, 255, 60, 50, 40, 255])
+  assert.equal(diff.bgraToRgba(new Uint8Array([1, 2, 3])), null)
+  assert.equal(diff.bgraToRgba(null), null)
+})
+
+test('pickScreenSource prefers the display_id match and falls back only to usable sources', () => {
+  const usable = (displayId) => ({ display_id: displayId, thumbnail: { isEmpty: () => false } })
+  const empty = { display_id: '9', thumbnail: { isEmpty: () => true } }
+  const matched = diff.pickScreenSource([empty, usable('7'), usable('9')], '7')
+  assert.equal(matched.matched, true)
+  assert.equal(matched.source.display_id, '7')
+  const fallback = diff.pickScreenSource([empty, usable('7')], 'unknown')
+  assert.equal(fallback.matched, false)
+  assert.equal(fallback.source.display_id, '7')
+  assert.equal(diff.pickScreenSource([], '7'), null)
+  assert.equal(diff.pickScreenSource([empty], '9'), null)
+})
+
+test('wiring: the opt-in diff mode is reachable, bounded, and flash stays the default', () => {
   const pinScript = read('pin', 'pin.js')
   const pinHtml = read('pin', 'pin.html')
   const pinCss = read('pin', 'pin.css')
   const pinDomainSource = read('main', 'domains', 'pin', 'index.js')
-  // The renderer never loads or consumes the diff module; flash/difference are unchanged.
+  const preload = read('preload-pin.js')
+  // The renderer loads the bounded diff-display contract before pin.js.
+  assert.ok(pinHtml.indexOf('pin-diff-view.js') > 0)
+  assert.ok(pinHtml.indexOf('pin-diff-view.js') < pinHtml.indexOf('<script src="pin.js">'))
   assert.doesNotMatch(pinHtml, /pin-screen-diff/)
-  assert.doesNotMatch(pinScript, /pinScreenDiff|screenDiff|screenPixels/)
+  assert.match(pinScript, /applyRealDiffMode/)
+  assert.match(pinScript, /onScreenDiffFrame/)
+  assert.match(pinScript, /buildDiffMask/)
+  assert.match(pinScript, /teardownRealDiffDisplay/)
+  assert.match(pinScript, /diffViewApi\.diffBadge\(diff\)/)
+  assert.match(read('pin', 'pin-diff-view.js'), /pin\.onion\.real-diff\.changed/)
+  assert.match(pinCss, /#pinDiffOverlay\{position:fixed/)
+  assert.match(pinCss, /#pinDiffBadge\{position:fixed/)
+  // Shipped flash/difference stay untouched and are still renderer-only defaults.
   assert.match(pinCss, /body\.onion-flash \.pin-surface\{animation:pin-onion-flash/)
   assert.match(pinScript, /TOGGLE_FLASH: 'toggle-flash'/)
-  // The context menu has no screen-diff entry: the experiment is driven by the probe only.
-  assert.doesNotMatch(pinDomainSource, /label: t\('pin\.screen-diff/)
-  assert.match(pinDomainSource, /EXPERIMENT-ONLY/)
-  // The experimental module stays a separate UMD contract (node-testable) and is not
-  // referenced from preload-pin.js either - no IPC surface was added for it.
-  assert.doesNotMatch(read('preload-pin.js'), /screenDiff|screen-diff/)
+  assert.match(pinDomainSource, /label: t\('pin\.onion\.menu-label'\)/)
+  assert.match(pinDomainSource, /label: t\('pin\.onion\.real-diff\.side-effect'\)/)
+  assert.doesNotMatch(pinDomainSource, /EXPERIMENT-ONLY/)
+  // Main -> renderer messages only; the preload sends the mode echo through the existing
+  // pin:context-menu envelope, so the frozen IPC surface is unchanged.
+  assert.match(preload, /onionState: \(value\) =>/)
+  assert.match(preload, /ipcRenderer\.send\('pin:context-menu', null, normalized\)/)
+  assert.match(preload, /onScreenDiffFrame/)
+  const channels = [...preload.matchAll(/ipcRenderer\.(?:invoke|send)\('([^']+)'/g)].map((match) => match[1])
+  assert.equal(channels.filter((channel) => /screen-diff|onion/i.test(channel)).length, 0)
+  // The view-export composition never draws the diff overlay (it is not in the plan).
+  const pinViewExport = read('pin', 'pin-view-export.js')
+  assert.doesNotMatch(pinViewExport, /pinDiffOverlay|screenDiff/)
+  // The diff display math is a separate UMD contract, node-testable without a GUI.
+  assert.match(read('pin', 'pin-diff-view.js'), /planDiffOverlay/)
+})
+// ---------------------------------------------------------------------------
+// 7. Preload bridges: bounded frame/state validation, no new IPC channel.
+// ---------------------------------------------------------------------------
+
+function loadPinPreload() {
+  const fs = require('node:fs')
+  const vm = require('node:vm')
+  const sent = []
+  const listeners = new Map()
+  let exposed = null
+  const sandbox = {
+    require: (name) => {
+      if (name !== 'electron') throw new Error(`unexpected require ${name}`)
+      return {
+        contextBridge: { exposeInMainWorld: (apiName, api) => { exposed = { apiName, api } } },
+        ipcRenderer: {
+          send: (...args) => sent.push(args),
+          invoke: async () => null,
+          on: (channel, handler) => listeners.set(channel, handler),
+          removeListener: (channel) => listeners.delete(channel)
+        }
+      }
+    },
+    module: { exports: {} },
+    exports: {},
+    ArrayBuffer,
+    Uint8Array,
+    Buffer,
+    setTimeout,
+    clearTimeout
+  }
+  vm.runInNewContext(fs.readFileSync(path.join(ROOT, 'preload-pin.js'), 'utf8'), sandbox, { filename: 'preload-pin.js' })
+  return { api: exposed.api, sent, listeners }
+}
+
+test('preload: onion state and diff frames are validated before they cross IPC', () => {
+  const { api, sent, listeners } = loadPinPreload()
+  // The renderer's mode echo rides the existing pin:context-menu envelope.
+  assert.equal(api.onionState({ type: 'onion-state', mode: 'real-diff' }), true)
+  assert.equal(sent.at(-1)[0], 'pin:context-menu')
+  assert.equal(sent.at(-1)[1], null)
+  assert.equal(sent.at(-1)[2].type, 'onion-state')
+  assert.equal(sent.at(-1)[2].mode, 'real-diff')
+  assert.equal(api.onionState({ type: 'onion-state', mode: 'made-up' }), false)
+  assert.equal(api.onionState({ type: 'view-export-result', mode: 'flash' }), false)
+  assert.equal(api.onionState(null), false)
+
+  // Main -> renderer commands accept only the shipped vocabulary.
+  const commands = []
+  api.onOnionCommand((command) => commands.push(command))
+  api.onOnionMode(({ mode, reason }) => commands.push({ mode, reason }))
+  const handlers = listeners
+  handlers.get('pin:onion-command')({}, { action: 'toggle-flash' })
+  handlers.get('pin:onion-command')({}, { action: 'run-arbitrary-code' })
+  handlers.get('pin:onion-mode')({}, { mode: 'real-diff', reason: 'hidden' })
+  handlers.get('pin:onion-mode')({}, { mode: 'bogus', reason: 'x'.repeat(200) })
+  assert.equal(commands.length, 3)
+  assert.equal(commands[0].action, 'toggle-flash')
+  assert.equal(commands[1].mode, 'real-diff')
+  assert.equal(commands[1].reason, 'hidden')
+  assert.equal(commands[2].mode, 'off')
+  assert.equal(commands[2].reason, '')
+  assert.ok(!commands.some((command) => command.action === 'run-arbitrary-code'))
+
+  // Frames are bounded: dimensions, byte length and rectangle shape.
+  const frames = []
+  api.onScreenDiffFrame((frame) => frames.push(frame))
+  const pixels = new Uint8Array(2 * 1 * 4)
+  handlers.get('pin:screen-diff-frame')({}, {
+    sequence: 3,
+    width: 2,
+    height: 1,
+    dipRect: { x: 10, y: 20, width: 2, height: 1 },
+    scaleFactor: 1.25,
+    pixels
+  })
+  assert.equal(frames.length, 1)
+  assert.equal(frames[0].width, 2)
+  assert.equal(frames[0].height, 1)
+  assert.equal(frames[0].pixels, pixels)
+  assert.equal(frames[0].dipRect.x, 10)
+  assert.equal(frames[0].dipRect.y, 20)
+  assert.equal(frames[0].dipRect.width, 2)
+  assert.equal(frames[0].dipRect.height, 1)
+  assert.equal(frames[0].scaleFactor, 1.25)
+  // Wrong byte length, absurd dimensions and a non-buffer payload are dropped.
+  handlers.get('pin:screen-diff-frame')({}, { width: 2, height: 1, pixels: new Uint8Array(3) })
+  handlers.get('pin:screen-diff-frame')({}, { width: 20000, height: 2, pixels: new Uint8Array(20000 * 2 * 4) })
+  handlers.get('pin:screen-diff-frame')({}, { width: 2, height: 1, pixels: 'nope' })
+  assert.equal(frames.length, 1)
+  // No dedicated channel names were added to the frozen surface.
+  const fs = require('node:fs')
+  const channels = [...fs.readFileSync(path.join(ROOT, 'preload-pin.js'), 'utf8').matchAll(/ipcRenderer\.(?:send|invoke)\('([^']+)'/g)]
+    .map((match) => match[1])
+  assert.equal(channels.filter((channel) => /screen-diff|onion/i.test(channel)).length, 0)
 })

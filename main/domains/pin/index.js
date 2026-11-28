@@ -47,9 +47,9 @@ const {
 // same shared contract the history "continue editing" path persists, so the coordinate
 // transforms and the validator are defined once for both ends (renderer and main).
 const captureDocument = require('../../../shared/capture-document')
-// N05 / DEV-08: pure planning/measurement seams for the EXPERIMENTAL real-screen diff.
+// N05 / DEV-08: pure planning/measurement seams for the real-screen diff (adopted).
 // Requiring the renderer directory from main is deliberate: the module is UMD and has no
-// DOM/Electron dependency, and keeping ONE implementation is what lets the prototype's
+// DOM/Electron dependency, and keeping ONE implementation is what lets the capture
 // pixel math be unit-tested without a GUI.
 const pinScreenDiff = require('../../../pin/pin-screen-diff')
 
@@ -211,6 +211,30 @@ function viewExportResultCode(code) {
     default:
       return 'RENDER_FAILED'
   }
+}
+
+// ---------------------------------------------------------------------------
+// N05 / DEV-08 (adopted 2026-11-28): onion-skin compare modes, including the opt-in
+// "real pixel compare" that samples the screen pixels under the pin.
+//
+// The renderer already owns difference/flash locally (Ctrl+Shift+D/F). The context menu
+// can drive those too, so the renderer reports its authoritative mode back through the
+// same bounded command envelope the workspace actions use (no new IPC channel):
+//   { type: 'onion-state', mode: 'off' | 'difference' | 'flash' | 'real-diff' }
+// Main only mirrors the mode for the menu radio items; the real-pixel sampler is owned by
+// the main process (start/stop below) because it needs desktopCapturer and content
+// protection.
+// ---------------------------------------------------------------------------
+const ONION_MODES = Object.freeze(['off', 'difference', 'flash', 'real-diff'])
+const ONION_MODE_SET = new Set(ONION_MODES)
+const DEFAULT_REAL_DIFF_INTERVAL_MS = 1000
+
+function normalizeOnionStateCommand(command) {
+  if (!command || typeof command !== 'object') return null
+  if (command.type !== 'onion-state') return null
+  const mode = typeof command.mode === 'string' && ONION_MODE_SET.has(command.mode) ? command.mode : ''
+  if (!mode) return null
+  return { type: 'onion-state', mode }
 }
 
 
@@ -1073,20 +1097,34 @@ function createPinDomain(deps) {
   }
 
   // -------------------------------------------------------------------------
-  // N05 / DEV-08: EXPERIMENT-ONLY real-screen diff prototype.
+  // N05 / DEV-08: opt-in "real pixel compare" (ADOPTED 2026-11-28).
   //
-  // DO NOT WIRE THIS INTO A USER SURFACE. The plan requires the exclusion and alignment
-  // to be PROVEN on the target Windows/DPI host first; until the adoption gate in
-  // pin/pin-screen-diff.js passes with measured numbers, the shipped flash mode stays the
-  // default and the pin renderer consumes no diff frames. This block exists so the real
-  // probe has one owner for: the physical-pixel capture rectangle (multi-screen, mixed
-  // DPI, negative coordinates, rotation), the temporary content-protection exclusion, the
-  // bounded 1 Hz sampler and the memory release after each frame.
+  // Evidence: docs/plans/2026-11-28-dev08-screen-diff-measurement.md and the reproducible
+  // probe in scripts/probe-pin-screen-diff.js. On this Windows host a protected window
+  // stays visible but is absent from desktopCapturer frames (0/30 protected frames
+  // contained its colour, ~0.986 with protection off), including two stacked pins and the
+  // secondary display's negative-origin edge.
+  //
+  // The main process owns the sampling session because it needs desktopCapturer and
+  // content protection:
+  //   start -> remember the previous protection state, enable exclusion for the whole
+  //            session, sample at most 1 Hz (one in flight, bounded pixels/bytes) and send
+  //            one RGBA frame per tick;
+  //   stop  -> restore the previous protection state, clear the timer, drop every frame.
+  // The renderer diffs each frame against its OWN offscreen current-view composition
+  // (pin/pin-view-export.js + pin/pin-diff-view.js); frames are memory-only and never
+  // reach workspace snapshots, recovery tickets or history.
   // -------------------------------------------------------------------------
   const injectedDesktopCapturer = deps.screenDiffDesktopCapturer || null
   const injectedSetContentProtection = typeof deps.setContentProtection === 'function'
     ? deps.setContentProtection
     : null
+  const realDiffIntervalMs = Number.isFinite(Number(deps.realDiffIntervalMs)) && Number(deps.realDiffIntervalMs) >= 250
+    ? Number(deps.realDiffIntervalMs)
+    : DEFAULT_REAL_DIFF_INTERVAL_MS
+  const realDiffMaxPixels = Number.isFinite(Number(deps.realDiffMaxPixels)) && Number(deps.realDiffMaxPixels) > 0
+    ? Math.min(Number(deps.realDiffMaxPixels), pinScreenDiff.MAX_CAPTURE_PIXELS)
+    : pinScreenDiff.MAX_CAPTURE_PIXELS
 
   function contentProtectionSetter(win) {
     if (injectedSetContentProtection) return (enabled) => injectedSetContentProtection(win, enabled)
@@ -1094,8 +1132,24 @@ function createPinDomain(deps) {
     return null
   }
 
-  // One frame, no retention: the bitmap is returned to the caller and dropped from this
-  // module immediately (the sampler never stores pixels; only numeric stats survive).
+  // The last protection value THIS domain set. Electron has no getter for content
+  // protection, so the prior state can only be what we recorded before enabling; the
+  // shipped product never sets it anywhere else. Documented in the measurement note.
+  function setPinContentProtection(win, enabled) {
+    const setter = contentProtectionSetter(win)
+    if (!setter) return false
+    try {
+      setter(enabled === true)
+    } catch (error) {
+      log('Pin content protection failed:', error.message)
+      return false
+    }
+    win._pinContentProtection = enabled === true
+    return true
+  }
+
+  // One frame, no retention: the BGRA bitmap is returned to the caller and dropped from
+  // this module immediately (the sampler keeps only numeric stats).
   async function captureScreenUnderPin(win, imageBounds = {}) {
     if (!win || win.isDestroyed() || !win._pinData) return { ok: false, code: 'NO_WINDOW' }
     if (typeof win.isVisible === 'function' && !win.isVisible()) return { ok: false, code: 'HIDDEN' }
@@ -1116,12 +1170,11 @@ function createPinDomain(deps) {
     } catch (error) {
       return { ok: false, code: 'CAPTURE_THREW', message: error.message }
     }
-    if (!Array.isArray(sources) || !sources.length) return { ok: false, code: 'NO_SOURCES' }
-    const source = sources.find((entry) => String(entry?.display_id ?? '') === String(plan.display.id ?? '')) || sources[0]
-    const thumbnail = source?.thumbnail
-    if (!thumbnail || (typeof thumbnail.isEmpty === 'function' && thumbnail.isEmpty())) {
-      return { ok: false, code: 'NO_THUMBNAIL' }
-    }
+    // display_id is the authoritative match; the bounded fallback is the first usable
+    // source (some drivers omit display_id). The probe reports which path was taken.
+    const picked = pinScreenDiff.pickScreenSource(sources, plan.display.id)
+    if (!picked) return { ok: false, code: 'NO_SOURCES' }
+    const thumbnail = picked.source.thumbnail
     let cropped = null
     try {
       cropped = typeof thumbnail.crop === 'function' ? thumbnail.crop(plan.physicalRect) : null
@@ -1132,45 +1185,187 @@ function createPinDomain(deps) {
       return { ok: false, code: 'EMPTY_FRAME' }
     }
     const size = typeof cropped.getSize === 'function' ? cropped.getSize() : plan.physicalRect
+    // toBitmap() (not the deprecated getBitmap()) returns BGRA on Windows.
     const bytes = typeof cropped.toBitmap === 'function' ? cropped.toBitmap() : null
     if (!bytes || !size?.width || !size?.height || bytes.length !== size.width * size.height * 4) {
       return { ok: false, code: 'FRAME_BUDGET' }
     }
-    return { ok: true, pixels: bytes, width: size.width, height: size.height, bytes: bytes.length, plan }
+    return {
+      ok: true,
+      pixels: bytes,
+      width: size.width,
+      height: size.height,
+      bytes: bytes.length,
+      sourceMatched: picked.matched,
+      plan
+    }
   }
 
-  // The prototype's public surface (returned to the probe, NOT to any menu). `createSampler`
-  // toggles content protection around every frame so the pin window cannot capture itself,
-  // enforces 1 Hz/one-in-flight and reports only numbers.
-  function createScreenDiffSampler(options = {}) {
-    const settings = options && typeof options === 'object' ? options : {}
-    const win = settings.win
-    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) {
+  function stopRealPixelCompare(win, reason = 'off', options = {}) {
+    const session = win?._realPixelCompare
+    if (!session) return false
+    win._realPixelCompare = null
+    try { session.sampler.stop(reason) } catch {}
+    if (session.timer) clearInterval(session.timer)
+    if (typeof win.removeListener === 'function' && session.onHide) {
+      try { win.removeListener('hide', session.onHide) } catch {}
+    }
+    if (win._onionMode === 'real-diff') win._onionMode = 'off'
+    // Restore the recorded prior state (the product only ever enables it here).
+    setPinContentProtection(win, session.priorProtection === true)
+    if (options.notify !== false && win && typeof win.isDestroyed === 'function' && !win.isDestroyed()) {
+      sendToRenderer(win, 'pin:onion-mode', { mode: 'off', reason })
+    }
+    log('Pin real-pixel compare stopped:', reason)
+    return true
+  }
+
+  function startRealPixelCompare(win, imageBounds = {}) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData) {
       return { ok: false, code: 'NO_WINDOW' }
     }
+    if (win._realPixelCompare) stopRealPixelCompare(win, 'restart', { notify: false })
     const setter = contentProtectionSetter(win)
     if (!setter) return { ok: false, code: 'NO_CONTENT_PROTECTION' }
-    const sampler = pinScreenDiff.createDiffSampler({
-      intervalMs: settings.intervalMs,
-      maxPixels: settings.maxPixels,
-      captureFrame: async () => {
-        // The window is visible during the capture (content protection hides it from the
-        // capture API, not from the screen); it is restored off afterwards because the
-        // shipped product never keeps content protection enabled.
-        try {
-          setter(true)
-          return await captureScreenUnderPin(win, settings.imageBounds || {})
-        } finally {
-          try { setter(false) } catch {}
-        }
-      },
-      onFrame: settings.onFrame
-    })
-    const stop = (code) => {
-      sampler.stop(code)
-      return sampler.getStats()
+    // The comparison region is the PIN WINDOW's content box: "the pixels under the pin"
+    // means everything the window covers, which also makes a long capture (scrolling
+    // inside the window) and a moved window work without re-reading renderer geometry.
+    // `getContentBounds` is the precise call for these frameless content-sized windows;
+    // `getBounds` is the fallback for a test fake that only implements the latter.
+    const windowBounds = typeof win.getContentBounds === 'function' ? win.getContentBounds() : win.getBounds()
+    const relativeBounds = {
+      x: 0,
+      y: 0,
+      width: Math.max(1, Math.round(Number(windowBounds?.width) || Number(imageBounds?.width) || 1)),
+      height: Math.max(1, Math.round(Number(windowBounds?.height) || Number(imageBounds?.height) || 1))
     }
-    return { ok: true, sample: () => sampler.sample(), stop, getStats: () => sampler.getStats(), sampler }
+    const session = {
+      imageBounds: relativeBounds,
+      priorProtection: win._pinContentProtection === true,
+      frames: 0,
+      failures: 0,
+      lastStats: null,
+      timer: null,
+      onHide: null,
+      sampler: null,
+      sampleOnce: null
+    }
+    // Protection is enabled for the WHOLE session: the exclusion must hold at the instant
+    // the compositor serves the capture, and the menu copy discloses the side effect.
+    if (!setPinContentProtection(win, true)) return { ok: false, code: 'NO_CONTENT_PROTECTION' }
+    const deliverFrame = (frame) => {
+      if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return false
+      if (win._realPixelCompare !== session) return false
+      const rgba = pinScreenDiff.bgraToRgba(frame.pixels)
+      if (!rgba || rgba.length !== frame.width * frame.height * 4) return false
+      frame.rgba = rgba
+      session.frames += 1
+      return sendToRenderer(win, 'pin:screen-diff-frame', {
+        sequence: session.frames,
+        width: frame.width,
+        height: frame.height,
+        dipRect: frame.plan?.dipRect || null,
+        scaleFactor: frame.plan?.scaleFactor || 1,
+        pixels: rgba
+      })
+    }
+    let sampleOnce = null
+    const sampler = pinScreenDiff.createDiffSampler({
+      intervalMs: realDiffIntervalMs,
+      maxPixels: realDiffMaxPixels,
+      captureFrame: async () => {
+        const frame = await captureScreenUnderPin(win, session.imageBounds)
+        if (!frame.ok) return frame
+        // The BGRA bitmap is converted once, delivered to the renderer, and then dropped:
+        // the sampler keeps no reference to any frame, only numeric stats.
+        const delivered = deliverFrame(frame)
+        return {
+          ok: delivered,
+          code: delivered ? '' : 'DELIVERY_FAILED',
+          pixels: delivered ? frame.rgba : null,
+          width: frame.width,
+          height: frame.height
+        }
+      }
+    })
+    session.sampler = sampler
+    sampleOnce = async () => {
+      if (win._realPixelCompare !== session) return { ok: false, code: 'STOPPED' }
+      const result = await sampler.sample()
+      if (win._realPixelCompare !== session) return result
+      const stats = sampler.getStats()
+      session.lastStats = stats
+      if (stats.stopped) {
+        stopRealPixelCompare(win, stats.stopCode || 'failure-limit')
+        return result
+      }
+      if (!result.ok && result.code !== 'BUSY' && result.code !== 'RATE_LIMITED') session.failures += 1
+      return result
+    }
+    session.sampleOnce = sampleOnce
+    win._realPixelCompare = session
+    win._onionMode = 'real-diff'
+    // A hidden pin (workspace suspend, tray hide) cannot show a diff: stop and release.
+    session.onHide = () => stopRealPixelCompare(win, 'hidden')
+    if (typeof win.on === 'function') win.on('hide', session.onHide)
+    if (typeof setInterval === 'function') {
+      session.timer = setInterval(() => { void sampleOnce().catch(() => {}) }, realDiffIntervalMs)
+      if (typeof session.timer?.unref === 'function') session.timer.unref()
+    }
+    sendToRenderer(win, 'pin:onion-mode', { mode: 'real-diff' })
+    log('Pin real-pixel compare started:', relativeBounds)
+    return {
+      ok: true,
+      mode: 'real-diff',
+      sampleNow: sampleOnce,
+      getStats: () => sampler.getStats(),
+      stop: (reason) => stopRealPixelCompare(win, reason)
+    }
+  }
+
+  // Send a mode request to the renderer for the locally-owned onion modes. The renderer
+  // answers with an onion-state envelope (availability may downgrade the request).
+  function requestOnionMode(win, target) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData) {
+      return { ok: false, code: 'NO_WINDOW' }
+    }
+    // Leaving the real-pixel mode is an explicit mode change: tell the renderer so its
+    // overlay is torn down and its badge does not keep the stale ratio.
+    if (win._realPixelCompare) stopRealPixelCompare(win, 'mode-change')
+    const mode = ONION_MODE_SET.has(target) ? target : 'off'
+    win._onionMode = mode
+    const action = mode === 'off' ? 'off' : mode === 'difference' ? 'toggle-difference' : 'toggle-flash'
+    sendToRenderer(win, 'pin:onion-command', { action })
+    return { ok: true, mode }
+  }
+
+  // Context-menu entry point for the whole submenu (also the direct test seam).
+  function applyOnionModeSelection(win, target, imageBounds = {}) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData) {
+      return { ok: false, code: 'NO_WINDOW' }
+    }
+    if (target === 'real-diff') {
+      if (win._realPixelCompare) {
+        stopRealPixelCompare(win, 'menu-off')
+        return { ok: true, mode: 'off' }
+      }
+      // The real-pixel overlay replaces the local onion classes; clear them first.
+      if (win._onionMode === 'difference' || win._onionMode === 'flash') {
+        sendToRenderer(win, 'pin:onion-command', { action: 'off' })
+      }
+      return startRealPixelCompare(win, imageBounds)
+    }
+    return requestOnionMode(win, target)
+  }
+
+  // Renderer's authoritative echo (also fired by its Ctrl+Shift+D/F shortcuts).
+  function applyOnionState(win, state) {
+    if (!win?._pinData) return { status: 'ignored' }
+    if (state.mode !== 'real-diff' && win._realPixelCompare) {
+      stopRealPixelCompare(win, 'renderer-mode-off', { notify: false })
+    }
+    win._onionMode = state.mode
+    return { status: 'ok', mode: state.mode }
   }
 
   // pdf-export.js owns paper math, print options and the save dialog/file write;
@@ -2254,6 +2449,10 @@ function createPinDomain(deps) {
     // before the workspace normaliser, which only understands its own command types.
     const viewExportCommand = normalizeViewExportCommand(command)
     if (viewExportCommand) return handlePinViewExportResult(win, viewExportCommand)
+    // DEV-08: the pin renderer reports its authoritative onion mode (its Ctrl+Shift+D/F
+    // shortcuts can change it without the menu). Same bounded envelope, no new channel.
+    const onionState = normalizeOnionStateCommand(command)
+    if (onionState) return applyOnionState(win, onionState)
     const workspaceCommand = normalizeWorkspaceCommand(command)
     if (workspaceCommand) return runWorkspaceCommand(win, workspaceCommand)
     const bounds = imageBounds && typeof imageBounds === 'object' ? imageBounds : {}
@@ -2342,6 +2541,41 @@ function createPinDomain(deps) {
           checked: (win._pinData.clickThrough === true) === enabled,
           click: () => setPinClickThrough(win, enabled)
         }))
+      },
+      {
+        // DEV-08: onion-skin comparison, opt-in per pin. Difference and flash are the
+        // shipped renderer-only modes; "real pixel compare" is the new experimental
+        // adoption that samples the screen UNDER this pin (the pin itself is excluded
+        // from captures while it runs, which the hint row states).
+        label: t('pin.onion.menu-label'),
+        submenu: [
+          {
+            label: t('pin.onion.mode-off'),
+            type: 'radio',
+            checked: (win._onionMode || 'off') === 'off',
+            click: () => applyOnionModeSelection(win, 'off', bounds)
+          },
+          {
+            label: t('pin.onion.mode-difference'),
+            type: 'radio',
+            checked: win._onionMode === 'difference',
+            click: () => applyOnionModeSelection(win, 'difference', bounds)
+          },
+          {
+            label: t('pin.onion.mode-flash'),
+            type: 'radio',
+            checked: win._onionMode === 'flash',
+            click: () => applyOnionModeSelection(win, 'flash', bounds)
+          },
+          { type: 'separator' },
+          {
+            label: t('pin.onion.mode-real-diff'),
+            type: 'radio',
+            checked: win._onionMode === 'real-diff',
+            click: () => applyOnionModeSelection(win, 'real-diff', bounds)
+          },
+          { label: t('pin.onion.real-diff.side-effect'), enabled: false }
+        ]
       },
       { type: 'separator' },
       // B03: the two exited-from-a-pin menus used to blur together ("复制"/"保存"),
@@ -2466,6 +2700,11 @@ function createPinDomain(deps) {
     win._pinViewExportSeq = 0
     win._pinViewExporting = false
     win._pinViewExportRequest = null
+    // DEV-08: onion-skin state mirrored for the context-menu radio items, plus the
+    // content-protection value THIS domain last set (Electron exposes no getter).
+    win._onionMode = 'off'
+    win._pinContentProtection = false
+    win._realPixelCompare = null
     // A07: the stable id the tray uses for locate/toggle/exit-click-through.
     win._pinId = windowKey
     // A user-initiated close marks the window as normal before any teardown can
@@ -2476,6 +2715,8 @@ function createPinDomain(deps) {
       // DEV-02: a compose in flight must settle (and release its timer) even when the
       // window disappears before answering; the deferred's only observer is exportPinView.
       cancelPinViewExport(win, 'window-closed')
+      // DEV-08: closing must release the capture sampler and restore content protection.
+      stopRealPixelCompare(win, 'window-closed', { notify: false })
       win._pinRecognition?.abort()
       // The domain always gives back its own reference. After a crash the policy
       // holds a second one, so this releases the window's share and the retained
@@ -2491,6 +2732,9 @@ function createPinDomain(deps) {
     win.webContents.on?.('render-process-gone', (_event, details) => {
       // A dead renderer will never answer a pending compose request.
       cancelPinViewExport(win, 'renderer-gone')
+      // DEV-08: the diff display is gone with the renderer; release the sampler now and
+      // restore content protection before the recovery/destroy path runs.
+      stopRealPixelCompare(win, 'renderer-gone', { notify: false })
       handlePinRendererGone(win, details)
     })
     let retainedForWindow = null
@@ -3104,9 +3348,12 @@ function createPinDomain(deps) {
     attachPinEditable,
     releasePinEditable,
     getPinSnapshotBytes: () => pinSnapshotBytes,
-    // N05 / DEV-08: experiment-only prototype surface. Not wired to any menu, tray,
-    // shortcut or renderer path; the real probe drives it directly.
-    createScreenDiffSampler,
+    // N05 / DEV-08: onion-skin compare, including the adopted opt-in real-pixel mode.
+    // The context menu and the renderer command envelope are the only callers; the
+    // start/stop pair is exposed for the tests that assert the protection lifecycle.
+    applyOnionModeSelection,
+    startRealPixelCompare,
+    stopRealPixelCompare,
     captureScreenUnderPin,
     togglePinVisibility,
     // N05: pin workspace snapshots (persisted manifest + copied pictures) plus the
@@ -3169,6 +3416,11 @@ module.exports = {
   normalizeViewExportCommand,
   pinViewExportFailureKey,
   viewExportResultCode,
+  // N05 / DEV-08 pure contracts (no Electron): the onion mode vocabulary and the
+  // renderer -> main state envelope. The sampling session itself lives in createPinDomain.
+  ONION_MODES,
+  DEFAULT_REAL_DIFF_INTERVAL_MS,
+  normalizeOnionStateCommand,
   // U02 / DEV-01 pure contracts (no Electron): the in-memory editable snapshot shape
   // and its bounds. The domain (createPinDomain) owns the budget, binding to the image
   // generation and the re-annotation hand-off.

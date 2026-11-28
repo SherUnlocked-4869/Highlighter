@@ -26,6 +26,51 @@ const VIEW_EXPORT_REQUEST_ID = /^[a-z0-9-]{1,64}$/
 const VIEW_EXPORT_ERROR_CODE = /^[a-z0-9-]{1,48}$/
 const VIEW_EXPORT_RESULT_TYPE = 'view-export-result'
 
+// N05 / DEV-08: the pin renderer's onion-mode state echo and the main->renderer diff
+// frames. Same bounded-envelope rules: a fixed mode vocabulary in, bounded frame
+// dimensions/bytes out. No new IPC channel.
+const ONION_MODES = Object.freeze(['off', 'difference', 'flash', 'real-diff'])
+const ONION_ACTIONS = Object.freeze(['off', 'toggle-difference', 'toggle-flash'])
+const MAX_DIFF_FRAME_PIXELS = 16000000
+const MAX_DIFF_FRAME_DIMENSION = 16384
+const ONION_STATE_TYPE = 'onion-state'
+
+function normalizeOnionState(value) {
+  if (!value || typeof value !== 'object' || value.type !== ONION_STATE_TYPE) return null
+  const mode = typeof value.mode === 'string' && ONION_MODES.includes(value.mode) ? value.mode : ''
+  if (!mode) return null
+  return { type: ONION_STATE_TYPE, mode }
+}
+
+function normalizeScreenDiffFrame(value) {
+  if (!value || typeof value !== 'object') return null
+  const width = Math.round(Number(value.width))
+  const height = Math.round(Number(value.height))
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null
+  if (width <= 0 || height <= 0 || width > MAX_DIFF_FRAME_DIMENSION || height > MAX_DIFF_FRAME_DIMENSION) return null
+  if (width * height > MAX_DIFF_FRAME_PIXELS) return null
+  const pixels = value.pixels
+  if (!(pixels instanceof ArrayBuffer) && !ArrayBuffer.isView(pixels)) return null
+  const length = pixels.byteLength ?? pixels.length
+  if (length !== width * height * 4) return null
+  const rect = value.dipRect && typeof value.dipRect === 'object'
+    ? {
+        x: Number(value.dipRect.x) || 0,
+        y: Number(value.dipRect.y) || 0,
+        width: Math.max(0, Number(value.dipRect.width) || 0),
+        height: Math.max(0, Number(value.dipRect.height) || 0)
+      }
+    : null
+  return {
+    sequence: Math.max(0, Math.round(Number(value.sequence) || 0)),
+    width,
+    height,
+    dipRect: rect,
+    scaleFactor: Math.max(0.25, Number(value.scaleFactor) || 1),
+    pixels
+  }
+}
+
 function viewExportPngBytes(value) {
   if (value instanceof ArrayBuffer) return value
   if (ArrayBuffer.isView(value)) {
@@ -179,6 +224,49 @@ contextBridge.exposeInMainWorld('pinAPI', {  // P0-1-T2：语言广播（主→�
     if (!normalized) return false
     ipcRenderer.send('pin:context-menu', null, normalized)
     return true
+  },
+  // DEV-08: the renderer's authoritative onion mode (its Ctrl+Shift+D/F shortcuts can
+  // change it without the menu). Same envelope, same channel.
+  onionState: (value) => {
+    const normalized = normalizeOnionState(value)
+    if (!normalized) return false
+    ipcRenderer.send('pin:context-menu', null, normalized)
+    return true
+  },
+  // Main -> renderer: ask for a shipped onion mode (off/difference/flash).
+  onOnionCommand: (callback) => {
+    const handler = (_event, payload) => {
+      const action = payload && typeof payload.action === 'string' && ONION_ACTIONS.includes(payload.action)
+        ? payload.action
+        : ''
+      if (action) callback({ action })
+    }
+    ipcRenderer.on('pin:onion-command', handler)
+    return () => ipcRenderer.removeListener('pin:onion-command', handler)
+  },
+  // Main -> renderer: authoritative mode receipt. `real-diff` is owned by the main
+  // process; the reason is a bounded code used only for the failure toast.
+  onOnionMode: (callback) => {
+    const handler = (_event, payload) => {
+      const mode = payload && typeof payload.mode === 'string' && ONION_MODES.includes(payload.mode)
+        ? payload.mode
+        : 'off'
+      const reason = payload && typeof payload.reason === 'string' && payload.reason.length <= 48
+        ? payload.reason
+        : ''
+      callback({ mode, reason })
+    }
+    ipcRenderer.on('pin:onion-mode', handler)
+    return () => ipcRenderer.removeListener('pin:onion-mode', handler)
+  },
+  // Main -> renderer: one bounded RGBA frame of the pixels UNDER the pin.
+  onScreenDiffFrame: (callback) => {
+    const handler = (_event, payload) => {
+      const frame = normalizeScreenDiffFrame(payload)
+      if (frame) callback(frame)
+    }
+    ipcRenderer.on('pin:screen-diff-frame', handler)
+    return () => ipcRenderer.removeListener('pin:screen-diff-frame', handler)
   },
   // Explicit boolean, never a toggle: the renderer's corner badge and the main
   // process' batch exit can both fire, and a flip would land on the wrong state.

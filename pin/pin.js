@@ -106,6 +106,8 @@ function startPinRenderer() {
   const opacityBadge = document.getElementById('opacityBadge')
   const clickThroughTag = document.getElementById('clickThroughTag')
   const toast = document.getElementById('pinToast')
+  const diffOverlay = document.getElementById('pinDiffOverlay')
+  const diffBadge = document.getElementById('pinDiffBadge')
   const namingOverlay = document.getElementById('pinWorkspaceNaming')
   const namingInput = document.getElementById('pinWorkspaceNameInput')
   const namingConfirm = document.getElementById('pinWorkspaceNameConfirm')
@@ -136,6 +138,13 @@ function startPinRenderer() {
   let recognitionFrame = 0
   let opacityRatio = 1
   let onionMode = ONION_MODES.OFF
+  // DEV-08: the opt-in real-pixel compare is owned by the MAIN process (it needs
+  // desktopCapturer/content protection); the renderer only draws the per-frame diff.
+  const REAL_DIFF_MODE = 'real-diff'
+  let realDiffActive = false
+  let realDiffFrameBusy = false
+  let realDiffSequence = 0
+  const diffViewApi = window.pinDiffView || null
   let toastTimer = 0
   let lastToast = null
   const TOAST_VISIBLE_MS = 2600
@@ -261,9 +270,7 @@ function startPinRenderer() {
     let canvas = null
     try {
       const surface = activeSurface
-      const surfaceSize = surface === image
-        ? { width: image.naturalWidth, height: image.naturalHeight }
-        : { width: pixelImage.width, height: pixelImage.height }
+      const surfaceSize = activeSurfaceSize()
       const scroller = document.scrollingElement || document.documentElement
       const plan = viewExportApi.planViewExport({
         viewport: {
@@ -454,9 +461,16 @@ function startPinRenderer() {
   }
 
   function handleOnionAction(action) {
+    // A local shortcut always wins over the main-process real-pixel mode.
+    if (realDiffActive) {
+      realDiffActive = false
+      document.body.classList.remove(REAL_DIFF_MODE)
+      teardownRealDiffDisplay()
+    }
     const result = resolveOnionMode({ ...onionSnapshot(), action })
     if (result.mode !== onionMode) applyOnionMode(result.mode)
     if (result.toastKey) showToast(result.toastKey)
+    reportOnionState()
   }
 
   // Click-through / transparency can be changed by the context menu, the wheel or a
@@ -466,6 +480,180 @@ function startPinRenderer() {
     const result = resolveOnionMode({ ...onionSnapshot(), action: ONION_ACTIONS.REVALIDATE })
     if (result.changed) applyOnionMode(result.mode)
     if (result.toastKey) showToast(result.toastKey)
+  }
+
+  // -------------------------------------------------------------------------
+  // DEV-08 (adopted 2026-11-28): opt-in "real pixel compare".
+  //
+  // Main samples the real screen pixels under this pin (the pin itself is excluded by
+  // content protection while the mode runs) and sends one bounded RGBA frame per second.
+  // The renderer composes its OWN current view at exactly the same physical size, diffs
+  // the two with pin/pin-diff-view.js and paints a red translucent mask plus a ratio
+  // badge. Everything here is torn down when the mode stops; the overlay is never part of
+  // any export, snapshot or history artifact.
+  // -------------------------------------------------------------------------
+  function activeSurfaceSize() {
+    return activeSurface === image
+      ? { width: image.naturalWidth, height: image.naturalHeight }
+      : { width: pixelImage.width, height: pixelImage.height }
+  }
+
+  function reportOnionState() {
+    if (typeof window.pinAPI.onionState !== 'function') return false
+    return window.pinAPI.onionState({
+      type: 'onion-state',
+      mode: realDiffActive ? REAL_DIFF_MODE : onionMode
+    }) === true
+  }
+
+  function teardownRealDiffDisplay() {
+    realDiffFrameBusy = false
+    realDiffSequence = 0
+    if (diffOverlay) {
+      const context = diffOverlay.getContext('2d')
+      if (context) context.clearRect(0, 0, diffOverlay.width, diffOverlay.height)
+      diffOverlay.hidden = true
+      diffOverlay.width = 1
+      diffOverlay.height = 1
+    }
+    if (diffBadge) {
+      diffBadge.hidden = true
+      diffBadge.textContent = ''
+    }
+  }
+
+  function showRealDiffUnavailable(code) {
+    if (!realDiffActive) return
+    if (diffOverlay) diffOverlay.hidden = true
+    if (diffBadge) {
+      diffBadge.textContent = t('pin.onion.real-diff.unavailable', { code: String(code || 'failed') })
+      diffBadge.hidden = false
+    }
+  }
+
+  function applyRealDiffMode(enabled, reason = '') {
+    const next = enabled === true
+    if (next === realDiffActive) {
+      if (!next) teardownRealDiffDisplay()
+      return
+    }
+    realDiffActive = next
+    document.body.classList.toggle(REAL_DIFF_MODE, realDiffActive)
+    if (realDiffActive) {
+      // The real-pixel overlay replaces the local blend/animation modes.
+      if (onionMode !== ONION_MODES.OFF) applyOnionMode(ONION_MODES.OFF)
+      teardownRealDiffDisplay()
+      if (diffBadge) {
+        diffBadge.textContent = t('pin.onion.real-diff.waiting')
+        diffBadge.hidden = false
+      }
+      showToast('pin.onion.real-diff-on')
+      return
+    }
+    teardownRealDiffDisplay()
+    if (reason === 'failure-limit') showToast('pin.onion.real-diff.failed')
+    else if (reason === 'no-content-protection') showToast('pin.onion.real-diff.failed')
+    else if (reason === 'hidden') showToast('pin.onion.real-diff-off')
+    else showToast('pin.onion.real-diff-off')
+  }
+
+  async function handleScreenDiffFrame(frame) {
+    if (!realDiffActive || !diffViewApi || !viewExportApi) return
+    if (realDiffFrameBusy) return
+    if (Number(frame?.sequence) <= realDiffSequence) return
+    realDiffFrameBusy = true
+    let viewCanvas = null
+    try {
+      const capture = { width: frame.width, height: frame.height }
+      const devicePixelRatio = window.devicePixelRatio || 1
+      const plan = diffViewApi.planDiffOverlay({
+        capture,
+        dipRect: frame.dipRect,
+        devicePixelRatio,
+        windowOrigin: { x: window.screenX, y: window.screenY }
+      })
+      if (!plan.ok) {
+        showRealDiffUnavailable(plan.code)
+        return
+      }
+      const scroller = document.scrollingElement || document.documentElement
+      const viewPlan = viewExportApi.planViewExport({
+        viewport: {
+          width: capture.width / devicePixelRatio,
+          height: capture.height / devicePixelRatio,
+          devicePixelRatio
+        },
+        surface: activeSurfaceSize(),
+        rotation: Number(document.body.dataset.rotation) || 0,
+        longCapture: settings.longCapture === true,
+        scrollTop: scroller ? Number(scroller.scrollTop) || 0 : 0,
+        ocr: { visible: false }
+      })
+      if (!viewPlan.ok || viewPlan.width !== capture.width || viewPlan.height !== capture.height) {
+        showRealDiffUnavailable('view-size-mismatch')
+        return
+      }
+      viewCanvas = document.createElement('canvas')
+      viewCanvas.width = viewPlan.width
+      viewCanvas.height = viewPlan.height
+      const viewContext = viewCanvas.getContext('2d')
+      if (!viewContext || !viewExportApi.drawViewExport(viewContext, viewPlan, { picture: activeSurface })) {
+        showRealDiffUnavailable('view-unavailable')
+        return
+      }
+      const viewPixels = viewContext.getImageData(0, 0, viewCanvas.width, viewCanvas.height).data
+      const diff = diffViewApi.buildDiffMask(frame.pixels, viewPixels, plan, {
+        tolerance: diffViewApi.DEFAULT_TOLERANCE
+      })
+      if (!diff.ok) {
+        showRealDiffUnavailable(diff.code)
+        return
+      }
+      if (!diffOverlay) return
+      diffOverlay.width = diff.width
+      diffOverlay.height = diff.height
+      diffOverlay.style.left = `${Math.round(plan.cssRect.left)}px`
+      diffOverlay.style.top = `${Math.round(plan.cssRect.top)}px`
+      diffOverlay.style.width = `${Math.max(1, Math.round(plan.cssRect.width))}px`
+      diffOverlay.style.height = `${Math.max(1, Math.round(plan.cssRect.height))}px`
+      diffOverlay.hidden = false
+      const overlayContext = diffOverlay.getContext('2d')
+      diffViewApi.paintDiffMask(overlayContext, diff)
+      const badge = diffViewApi.diffBadge(diff)
+      if (diffBadge) {
+        diffBadge.textContent = t(badge.key, badge.params || undefined)
+        diffBadge.hidden = false
+      }
+      realDiffSequence = Number(frame.sequence) || realDiffSequence
+    } catch (_error) {
+      showRealDiffUnavailable('failed')
+    } finally {
+      if (viewCanvas) {
+        viewCanvas.width = 1
+        viewCanvas.height = 1
+      }
+      realDiffFrameBusy = false
+    }
+  }
+
+  function handleOnionCommand(command) {
+    const action = command && typeof command.action === 'string' ? command.action : ''
+    if (!action) return
+    if (realDiffActive) {
+      // A local shortcut replaced the real-pixel mode; main stops its sampler when it
+      // receives this state echo below.
+      realDiffActive = false
+      document.body.classList.remove(REAL_DIFF_MODE)
+      teardownRealDiffDisplay()
+    }
+    if (action === ONION_ACTIONS.OFF) {
+      handleOnionAction(ONION_ACTIONS.OFF)
+    } else if (action === ONION_ACTIONS.TOGGLE_FLASH) {
+      handleOnionAction(ONION_ACTIONS.TOGGLE_FLASH)
+    } else if (action === ONION_ACTIONS.TOGGLE_DIFFERENCE) {
+      handleOnionAction(ONION_ACTIONS.TOGGLE_DIFFERENCE)
+    }
+    reportOnionState()
   }
 
   function setNativePixelMode(zoom) {
@@ -619,6 +807,9 @@ function startPinRenderer() {
     releasePendingImage()
     if (activeImageUrl) URL.revokeObjectURL(activeImageUrl)
     activeImageUrl = null
+    // DEV-08: never leave a diff overlay or a sampled-frame loop pointing at a dead page.
+    realDiffActive = false
+    teardownRealDiffDisplay()
   })
   // The window-security probe boots every renderer by calling its marker global; N05 wrapped the
   // renderer in startPinRenderer(), so applyPinData has to stay reachable from window.
@@ -636,6 +827,17 @@ function startPinRenderer() {
   })
   window.pinAPI.onWorkspaceNameRequest(() => openWorkspaceNaming())
   window.pinAPI.onWorkspaceResult(handleWorkspaceResult)
+  // DEV-08: main -> renderer onion mode + one bounded frame per second for the opt-in
+  // real-pixel compare. Both bridges are send-only on the main side (no IPC policy entry).
+  if (typeof window.pinAPI.onOnionCommand === 'function') {
+    window.pinAPI.onOnionCommand((command) => handleOnionCommand(command))
+  }
+  if (typeof window.pinAPI.onOnionMode === 'function') {
+    window.pinAPI.onOnionMode(({ mode, reason }) => applyRealDiffMode(mode === REAL_DIFF_MODE, reason))
+  }
+  if (typeof window.pinAPI.onScreenDiffFrame === 'function') {
+    window.pinAPI.onScreenDiffFrame((frame) => { void handleScreenDiffFrame(frame) })
+  }
   addEventListener('resize', queueRecognitionLayout)
   // A click-through pin receives forwarded mouse *moves* only (clicks and the wheel
   // are dropped), so hovering the reserved badge is the in-window way back — the

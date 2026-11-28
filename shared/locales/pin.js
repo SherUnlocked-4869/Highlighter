@@ -73,6 +73,23 @@
     'pin.onion.unavailable': '像素对齐需在“点击穿透 + 半透明”下使用',
     'pin.onion.reduced-motion': '系统已开启“减少动态效果”，闪烁改用静态差分',
 
+    // N05 / DEV-08: the onion compare menu and the opt-in real-pixel mode. The side
+    // effect is stated where the user turns it on: the exclusion mechanism that keeps the
+    // pin out of its own sample also keeps it out of screenshots/recordings.
+    'pin.onion.menu-label': '像素比对',
+    'pin.onion.mode-off': '关闭比对',
+    'pin.onion.mode-difference': '差分模式',
+    'pin.onion.mode-flash': '闪烁对比',
+    'pin.onion.mode-real-diff': '真实像素比对（实验）',
+    'pin.onion.real-diff.side-effect': '开启期间本贴图不会出现在屏幕截图/录屏中（比对排除机制）',
+    'pin.onion.real-diff-on': '真实像素比对已开启：红色表示与下方屏幕不同的像素',
+    'pin.onion.real-diff-off': '已关闭真实像素比对',
+    'pin.onion.real-diff.waiting': '正在采样下方屏幕…',
+    'pin.onion.real-diff.changed': '差异 {ratio}%',
+    'pin.onion.real-diff.no-change': '与下方屏幕无差异',
+    'pin.onion.real-diff.unavailable': '当前无法进行像素比对（{code}）',
+    'pin.onion.real-diff.failed': '真实像素比对不可用，已恢复普通显示',
+
     // N05: pin workspace snapshots (persisted by the pin domain; the context menu
     // and the status toasts are the only surfaces).
     'pin.workspace.menu-label': '工作区快照',
@@ -158,6 +175,20 @@
     'pin.onion.unavailable': 'Pixel diff needs click-through and a semi-transparent pin',
     'pin.onion.reduced-motion': 'Reduced motion is on, so the blink was replaced by a static difference',
 
+    'pin.onion.menu-label': 'Pixel compare',
+    'pin.onion.mode-off': 'Turn compare off',
+    'pin.onion.mode-difference': 'Difference mode',
+    'pin.onion.mode-flash': 'Blinking compare',
+    'pin.onion.mode-real-diff': 'Real pixel compare (experimental)',
+    'pin.onion.real-diff.side-effect': 'While this runs the pin is excluded from screen captures/recordings (the exclusion mechanism)',
+    'pin.onion.real-diff-on': 'Real pixel compare on: red marks pixels that differ from the screen underneath',
+    'pin.onion.real-diff-off': 'Real pixel compare off',
+    'pin.onion.real-diff.waiting': 'Sampling the screen underneath…',
+    'pin.onion.real-diff.changed': 'Difference {ratio}%',
+    'pin.onion.real-diff.no-change': 'No difference from the screen underneath',
+    'pin.onion.real-diff.unavailable': 'Pixel compare unavailable right now ({code})',
+    'pin.onion.real-diff.failed': 'Real pixel compare is unavailable; normal display restored',
+
     // N05: pin workspace snapshots.
     'pin.workspace.menu-label': 'Workspace snapshots',
     'pin.workspace.menu-save': 'Save current workspace…',
@@ -241,6 +272,20 @@
     'pin.onion.off': '已退出像素對齊',
     'pin.onion.unavailable': '像素對齊需在「點擊穿透 + 半透明」下使用',
     'pin.onion.reduced-motion': '系統已開啟「減少動態效果」，閃爍改用靜態差分',
+
+    'pin.onion.menu-label': '像素比對',
+    'pin.onion.mode-off': '關閉比對',
+    'pin.onion.mode-difference': '差分模式',
+    'pin.onion.mode-flash': '閃爍對比',
+    'pin.onion.mode-real-diff': '真實像素比對（實驗）',
+    'pin.onion.real-diff.side-effect': '開啟期間本貼圖不會出現在螢幕擷取/錄影中（比對排除機制）',
+    'pin.onion.real-diff-on': '真實像素比對已開啟：紅色表示與下方螢幕不同的像素',
+    'pin.onion.real-diff-off': '已關閉真實像素比對',
+    'pin.onion.real-diff.waiting': '正在取樣下方螢幕…',
+    'pin.onion.real-diff.changed': '差異 {ratio}%',
+    'pin.onion.real-diff.no-change': '與下方螢幕無差異',
+    'pin.onion.real-diff.unavailable': '目前無法進行像素比對（{code}）',
+    'pin.onion.real-diff.failed': '真實像素比對無法使用，已還原一般顯示',
 
     // N05: pin workspace snapshots.
     'pin.workspace.menu-label': '工作區快照',

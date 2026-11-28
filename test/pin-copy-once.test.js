@@ -344,16 +344,15 @@ test('the pin menu renames the original-bytes exits and adds the offscreen view 
   assert.doesNotMatch(pinDomainSource, /pin-view-export-chrome/)
   assert.match(pinDomainSource, /pin:view-export-request/)
   assert.match(pinDomainSource, /normalizeViewExportCommand\(command\)/)
-  // Desktop capture is confined to the DEV-08 EXPERIMENT-ONLY prototype; no user surface
-  // reaches it and the view export itself never samples the screen.
-  assert.match(pinDomainSource, /EXPERIMENT-ONLY/)
+  // Desktop capture belongs to the OPT-IN real-pixel compare only; the view export itself
+  // never samples the screen.
   assert.match(pinDomainSource, /async function captureScreenUnderPin/)
-  const viewExportBlock = pinDomainSource.slice(
-    pinDomainSource.indexOf('async function exportPinView'),
-    pinDomainSource.indexOf('EXPERIMENT-ONLY')
-  )
-  assert.doesNotMatch(viewExportBlock, /desktopCapturer/)
-  assert.doesNotMatch(viewExportBlock, /captureScreenUnderPin/)
+  assert.match(pinDomainSource, /function startRealPixelCompare/)
+  const exportBlockStart = pinDomainSource.indexOf('async function exportPinView')
+  const exportBlockEnd = pinDomainSource.indexOf('N05 / DEV-08: opt-in')
+  assert.ok(exportBlockStart >= 0 && exportBlockEnd > exportBlockStart)
+  const viewExportBlock = pinDomainSource.slice(exportBlockStart, exportBlockEnd)
+  assert.doesNotMatch(viewExportBlock, /desktopCapturer|captureScreenUnderPin/)
   // A second click while the preview is open must not stack a second export.
   assert.match(pinDomainSource, /if \(win\._pinViewExporting\) return null/)
   // Existing pin channels keep their semantics: no new channel was introduced.
