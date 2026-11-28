@@ -150,3 +150,24 @@ test('plan: display snapshot helper is unused by this module (planning stays in 
   assert.doesNotMatch(source, /desktopCapturer|display_id|physicalRect/)
   assert.ok(DISPLAY.bounds.width > 0)
 })
+
+test('wiring: the real-diff view composes the same measured visible rectangle as the view export (P2-02)', () => {
+  // DEV-08 P2-02: the diff view called planViewExport() too, and duplicated the broken
+  // document.scrollingElement read. Both entries must feed ONE measurement of the picture's
+  // actual on-screen rectangle, otherwise a long pin compares the diff frame against the
+  // picture top instead of the scrolled viewport.
+  const fs = require('node:fs')
+  const path = require('node:path')
+  const pinScript = fs.readFileSync(path.join(__dirname, '..', 'pin', 'pin.js'), 'utf8')
+  const code = pinScript.replace(/^\s*\/\/.*$/gm, '')
+  assert.doesNotMatch(code, /document\.scrollingElement/)
+  assert.doesNotMatch(code, /document\.documentElement\.scrollTop/)
+  const composeAt = code.indexOf('async function composeViewExport')
+  const diffAt = code.indexOf('async function handleScreenDiffFrame')
+  assert.ok(composeAt > 0 && diffAt > composeAt, 'both compositor entries exist')
+  assert.match(code.slice(composeAt, diffAt), /visibleRect: measureVisibleSurfaceRect\(\)/, 'the export feeds the measurement')
+  const diffSource = code.slice(diffAt)
+  assert.match(diffSource, /visibleRect: measureVisibleSurfaceRect\(\)/, 'the diff view feeds the same measurement')
+  assert.match(diffSource, /planViewExport\(\{/)
+  assert.match(diffSource, /longCapture: settings\.longCapture === true/)
+})

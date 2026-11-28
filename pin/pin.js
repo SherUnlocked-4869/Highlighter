@@ -212,6 +212,19 @@ function startPinRenderer() {
   const viewExportApi = window.pinViewExport || null
   let viewExportBusy = false
 
+  // P2-02: pin.css gives html/body `overflow:hidden` and a long capture `overflow-y:auto`
+  // on BODY, so the real scroll container is body while document.scrollingElement is the
+  // HTML element that never moves. Both the offscreen view export and the real-pixel
+  // compare must therefore share ONE measurement of the picture's actual on-screen
+  // rectangle: its negative top IS the scroll offset the user sees.
+  function measureVisibleSurfaceRect() {
+    if (!activeSurface || typeof activeSurface.getBoundingClientRect !== 'function') return null
+    const rect = activeSurface.getBoundingClientRect()
+    if (!rect || ![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite)) return null
+    if (!(rect.width > 0) || !(rect.height > 0)) return null
+    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height }
+  }
+
   function currentViewExportOcr() {
     if (!recognition || !recognition.result) return { visible: false }
     const translating = recognition.action === 'translate' && recognition.phase === 'result'
@@ -221,12 +234,27 @@ function startPinRenderer() {
       textBlocks: recognition.result.textBlocks.map((block) => ({ ...block, text: block.sourceText }))
     } : recognition.result
     const overlay = document.getElementById('pinOcrOverlay')
+    const blocks = displayed?.textBlocks || []
+    // P2-04: hand the export the layout measured from the RENDERED overlay (browser wrap
+    // points, vertical-rl columns, per-glyph boxes) instead of letting the painter guess.
+    // Measurement is bounded and read-only; any failure keeps the deterministic fallback.
+    let layout = null
+    const overlayApi = window.OcrTextOverlay
+    if (overlay && overlay.childElementCount > 0 && overlayApi && typeof overlayApi.measureLayout === 'function') {
+      try {
+        const measured = overlayApi.measureLayout(overlay)
+        if (Array.isArray(measured) && measured.length > 0) layout = measured
+      } catch (_error) {
+        layout = null
+      }
+    }
     return {
       visible: !!overlay && overlay.childElementCount > 0 && Array.isArray(displayed?.textBlocks),
       translated: translating && !showSource,
-      blocks: displayed?.textBlocks || [],
+      blocks,
       imageWidth: displayed?.imageWidth,
-      imageHeight: displayed?.imageHeight
+      imageHeight: displayed?.imageHeight,
+      layout
     }
   }
 
@@ -271,7 +299,6 @@ function startPinRenderer() {
     try {
       const surface = activeSurface
       const surfaceSize = activeSurfaceSize()
-      const scroller = document.scrollingElement || document.documentElement
       const plan = viewExportApi.planViewExport({
         viewport: {
           width: window.innerWidth,
@@ -281,7 +308,8 @@ function startPinRenderer() {
         surface: surfaceSize,
         rotation: Number(document.body.dataset.rotation) || 0,
         longCapture: settings.longCapture === true,
-        scrollTop: scroller ? Number(scroller.scrollTop) || 0 : 0,
+        scrollTop: 0,
+        visibleRect: measureVisibleSurfaceRect(),
         ocr: currentViewExportOcr()
       })
       if (!plan.ok) {
@@ -576,7 +604,6 @@ function startPinRenderer() {
         showRealDiffUnavailable(plan.code)
         return
       }
-      const scroller = document.scrollingElement || document.documentElement
       const viewPlan = viewExportApi.planViewExport({
         viewport: {
           width: capture.width / devicePixelRatio,
@@ -586,7 +613,8 @@ function startPinRenderer() {
         surface: activeSurfaceSize(),
         rotation: Number(document.body.dataset.rotation) || 0,
         longCapture: settings.longCapture === true,
-        scrollTop: scroller ? Number(scroller.scrollTop) || 0 : 0,
+        scrollTop: 0,
+        visibleRect: measureVisibleSurfaceRect(),
         ocr: { visible: false }
       })
       if (!viewPlan.ok || viewPlan.width !== capture.width || viewPlan.height !== capture.height) {

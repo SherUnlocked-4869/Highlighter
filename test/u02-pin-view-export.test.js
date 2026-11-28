@@ -250,11 +250,12 @@ test('plan: bounded canvas and empty-image refusals are explicit, never silent',
 
 function createRecordingContext() {
   const ops = []
+  // `font` / `fillStyle` are read back at fillText time so a test can assert the painter
+  // used the measured DOM font size instead of the old shrink-to-fit heuristic.
+  const state = { font: '', fillStyle: '' }
   const context = {
     ops,
     imageSmoothingEnabled: false,
-    fillStyle: '',
-    font: '',
     textAlign: '',
     textBaseline: '',
     save: () => ops.push({ op: 'save' }),
@@ -266,11 +267,385 @@ function createRecordingContext() {
     beginPath: () => ops.push({ op: 'beginPath' }),
     rect: (x, y, w, h) => ops.push({ op: 'rect', x, y, w, h }),
     clip: () => ops.push({ op: 'clip' }),
-    fillText: (text, x, y) => ops.push({ op: 'fillText', text, x, y }),
+    fillText: (text, x, y) => ops.push({ op: 'fillText', text, x, y, font: state.font }),
     measureText: (text) => ({ width: String(text).length * 6 })
   }
+  Object.defineProperty(context, 'font', { get: () => state.font, set: (value) => { state.font = value } })
+  Object.defineProperty(context, 'fillStyle', { get: () => state.fillStyle, set: (value) => { state.fillStyle = value } })
   return context
 }
+
+// ---------------------------------------------------------------------------
+// 1b. P2-02: the export and the real-diff view compose the ACTUAL visible rectangle.
+// ---------------------------------------------------------------------------
+
+test('plan: a long capture composes the measured visible picture rectangle, not an HTML scroller offset', () => {
+  // pin.css scrolls BODY; document.scrollingElement stays the HTML element at 0. The live
+  // rect (image top = -600 CSS px) is the only measurement the export may trust.
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 420, devicePixelRatio: 1.5 },
+    surface: { width: 400, height: 6000 },
+    longCapture: true,
+    visibleRect: { x: 0, y: -600, width: 390, height: 5850 },
+    // A stale/zero scrollTop must not win over the measured rectangle.
+    scrollTop: 0
+  })
+  assert.equal(plan.ok, true)
+  assert.equal(plan.scrollTop, 600)
+  assert.deepEqual(plan.visibleRect, { x: 0, y: -600, width: 390, height: 5850 })
+  // The picture is drawn at the negative rect top and scaled by the measured DOM width
+  // (390 = body client width without the long-capture scrollbar), at the physical DPR.
+  assert.deepEqual(plan.picture.dest, { x: 0, y: -900, width: 585, height: 8775 })
+  assert.deepEqual(plan.picture.source, { x: 0, y: 0, width: 400, height: 6000 })
+  // The first output row samples source y = 600 / (5850 / 6000) = 615.4 - i.e. INSIDE the
+  // picture after the 600 px scroll, never the picture top the defect exported.
+  const firstRowSourceY = Math.abs(plan.picture.dest.y) / plan.picture.dest.height * plan.picture.source.height
+  assert.ok(firstRowSourceY > 400 && firstRowSourceY < 1200, `first row must come from the scrolled band (${firstRowSourceY})`)
+  // Without a DOM measurement the explicit scroll offset stays the deterministic fallback.
+  const fallback = viewExport.planViewExport({
+    viewport: { width: 500, height: 400, devicePixelRatio: 2 },
+    surface: { width: 500, height: 5000 },
+    longCapture: true,
+    scrollTop: 1200
+  })
+  assert.equal(fallback.scrollTop, 1200)
+  assert.deepEqual(fallback.picture.dest, { x: 0, y: -2400, width: 1000, height: 10000 })
+  assert.equal(fallback.visibleRect, null)
+  // The rectangle parser is bounded and tolerant of DOM number strings.
+  assert.equal(viewExport.normalizeVisibleRect(null), null)
+  assert.equal(viewExport.normalizeVisibleRect({ x: 0, y: -600, width: 0, height: 10 }), null)
+  assert.equal(viewExport.normalizeVisibleRect({ x: Number.NaN, y: 0, width: 10, height: 10 }), null)
+  assert.deepEqual(viewExport.normalizeVisibleRect({ x: '0', y: '-600', width: '390', height: '5850.5' }),
+    { x: 0, y: -600, width: 390, height: 5850.5 })
+})
+
+test('wiring: view export and the real-diff view share ONE measured visible rectangle (P2-02)', () => {
+  const pinScript = read('pin', 'pin.js')
+  // Comments may explain the trap; the CODE must never read a scroll element: body is the
+  // scroller in a long pin and document.scrollingElement is the HTML element that never moves.
+  const pinCode = pinScript.replace(/^\s*\/\/.*$/gm, '')
+  assert.doesNotMatch(pinCode, /document\.scrollingElement/)
+  assert.doesNotMatch(pinCode, /document\.documentElement\.scrollTop/)
+  // Exactly one measurement helper, consumed by both callsites.
+  assert.equal((pinScript.match(/function measureVisibleSurfaceRect\(/g) || []).length, 1)
+  assert.equal((pinScript.match(/visibleRect: measureVisibleSurfaceRect\(\)/g) || []).length, 2)
+  const composeAt = pinScript.indexOf('async function composeViewExport')
+  const diffAt = pinScript.indexOf('async function handleScreenDiffFrame')
+  assert.ok(composeAt > 0 && diffAt > composeAt, 'both entry functions exist')
+  assert.match(pinScript.slice(composeAt, diffAt), /visibleRect: measureVisibleSurfaceRect\(\)/)
+  assert.match(pinScript.slice(diffAt), /visibleRect: measureVisibleSurfaceRect\(\)/)
+})
+
+// ---------------------------------------------------------------------------
+// 1c. P2-04: the export painter consumes the layout measured from the LIVE overlay.
+// ---------------------------------------------------------------------------
+
+// A synthetic measured layout entry with the shape shared/ocr-text-overlay.js
+// measureLayout() reads back from the rendered DOM: the chip rectangle in surface-local
+// CSS px and per-glyph boxes relative to the chip centre.
+function measuredEntry(blockIndex, options = {}) {
+  return {
+    blockIndex,
+    width: options.width ?? 100,
+    height: options.height ?? 40,
+    centerX: options.centerX ?? 0,
+    centerY: options.centerY ?? 0,
+    angle: options.angle ?? 0,
+    vertical: options.vertical === true,
+    fontSize: options.fontSize ?? 12,
+    fontFamily: options.fontFamily || 'system-ui, sans-serif',
+    lines: options.lines || []
+  }
+}
+
+function glyphLine(texts, axis, position, start, advance) {
+  return {
+    text: texts.join(''),
+    glyphs: texts.map((text, index) => ({
+      text,
+      x: axis === 'x' ? position : start + index * advance,
+      y: axis === 'x' ? start + index * advance : position,
+      width: advance,
+      height: advance
+    }))
+  }
+}
+
+test('plan: a wrapped / vertical overlay layout is mapped onto the export instead of one line (P2-04)', () => {
+  const block = (x, y, w, h, text) => ({
+    text,
+    text_score: 0.95,
+    box_points: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }]
+  })
+  // Narrow translated block: the browser wrapped it into two centred lines.
+  const horizontal = measuredEntry(0, {
+    width: 60,
+    height: 40,
+    centerX: 120,
+    centerY: 60,
+    fontSize: 11,
+    lines: [
+      glyphLine(['这', '是'], 'y', 8, -12, 12),
+      glyphLine(['译', '文'], 'y', -8, -12, 12)
+    ]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 2 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: true,
+      blocks: [block(90, 40, 60, 40, '这是译文')],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [horizontal]
+    }
+  })
+  assert.equal(plan.ocrBlocks.length, 1)
+  const mapped = plan.ocrBlocks[0]
+  assert.equal(mapped.measured, true)
+  assert.equal(mapped.translated, true)
+  assert.equal(mapped.vertical, false)
+  assert.equal(mapped.lines.length, 2, 'both wrapped lines are exported, not one centred fillText')
+  assert.deepEqual(mapped.lines[0].glyphs.map((glyph) => glyph.text), ['这', '是'])
+  assert.deepEqual(mapped.lines[1].glyphs.map((glyph) => glyph.text), ['译', '文'])
+  // Chip geometry and per-glyph boxes come from the DOM measurement, at DPR scale.
+  assert.equal(mapped.width, 120)
+  assert.equal(mapped.height, 80)
+  assert.equal(mapped.centerX, 240)
+  assert.equal(mapped.centerY, 120)
+  assert.equal(mapped.fontSize, 22)
+  assert.equal(mapped.fontFamily, 'system-ui, sans-serif')
+  assertClose(mapped.lines[0].glyphs[0].x, -24, 'first glyph x')
+  assertClose(mapped.lines[0].glyphs[0].y, 16, 'first line y')
+  assertClose(mapped.lines[1].glyphs[1].x, 0, 'last glyph x')
+  assertClose(mapped.lines[1].glyphs[1].y, -16, 'last line y')
+
+  // Vertical-rl: columns run right to left and glyphs run top to bottom.
+  const vertical = measuredEntry(0, {
+    width: 40,
+    height: 200,
+    centerX: 40,
+    centerY: 120,
+    vertical: true,
+    fontSize: 14,
+    lines: [
+      glyphLine(['竖', '排', '中', '文'], 'x', 13, -21, 14),
+      glyphLine(['第', '二'], 'x', -1, -14, 14),
+      glyphLine(['列'], 'x', -15, 0, 14)
+    ]
+  })
+  const turned = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: false,
+      blocks: [block(20, 20, 40, 200, '竖排中文第二列')],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [vertical]
+    }
+  })
+  const column = turned.ocrBlocks[0]
+  assert.equal(column.measured, true)
+  assert.equal(column.vertical, true)
+  assert.equal(column.lines.length, 3, 'one export column per measured vertical-rl column')
+  assert.ok(column.lines[0].glyphs[0].x > column.lines[1].glyphs[0].x, 'first column sits to the right')
+  assert.ok(column.lines[1].glyphs[0].x > column.lines[2].glyphs[0].x, 'columns are read right to left')
+  assert.ok(column.lines[0].glyphs[0].y < column.lines[0].glyphs[3].y, 'glyphs run top to bottom inside a column')
+
+  // A whole-pin quarter turn rotates the measured chip about the window centre; the
+  // chip-local glyph boxes stay in the chip's own frame.
+  const turnedBlock = measuredEntry(0, {
+    width: 60,
+    height: 40,
+    centerX: 195,
+    centerY: 100,
+    fontSize: 11,
+    lines: [glyphLine(['A', 'B'], 'y', 0, -6, 12)]
+  })
+  const rotated = viewExport.planViewExport({
+    viewport: { width: 420, height: 400, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 90,
+    ocr: {
+      visible: true,
+      blocks: [block(165, 80, 60, 40, 'AB')],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [turnedBlock]
+    }
+  })
+  const spun = rotated.ocrBlocks[0]
+  // pin.css centres a 400x420 rotor for the quarter turn: (x, y) = (10, -10) pre-transform.
+  const pre = { x: 10 + 195, y: -10 + 100 }
+  const placed = rotatePoint(pre, { x: 210, y: 200 }, 90)
+  assertClose(spun.centerX, placed.x, 'rotated measured centre x')
+  assertClose(spun.centerY, placed.y, 'rotated measured centre y')
+  assert.equal(spun.angle, 90)
+  assertClose(spun.lines[0].glyphs[0].x, -6, 'chip-local glyph box is not rotated twice')
+
+  // A block without a measured entry keeps the deterministic box-point fallback so a
+  // feature-detection miss can never hide text.
+  const mixed = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      blocks: [block(10, 10, 100, 50, 'fallback'), block(200, 10, 100, 50, 'measured')],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [measuredEntry(1, { width: 100, height: 50, centerX: 250, centerY: 35, lines: [glyphLine(['测'], 'y', 0, 0, 12)] })]
+    }
+  })
+  assert.equal(mixed.ocrBlocks.length, 2)
+  assert.equal(mixed.ocrBlocks[0].measured, undefined, 'the unmeasured block keeps the legacy painter')
+  assert.equal(mixed.ocrBlocks[1].measured, true)
+  assert.equal(mixed.ocrBlocks[1].lines.length, 1)
+})
+
+test('draw: measured wrapped/vertical OCR is painted per measured glyph (P2-04)', () => {
+  const block = (text) => ({
+    text,
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 80, y: 20 }, { x: 80, y: 140 }, { x: 20, y: 140 }]
+  })
+  const vertical = measuredEntry(0, {
+    width: 40,
+    height: 120,
+    centerX: 40,
+    centerY: 80,
+    vertical: true,
+    fontSize: 14,
+    lines: [
+      glyphLine(['竖', '排'], 'x', 13, -7, 14),
+      glyphLine(['中', '文'], 'x', -1, -7, 14)
+    ]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: false,
+      blocks: [block('竖排中文')],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [vertical]
+    }
+  })
+  const context = createRecordingContext()
+  const picture = { width: 400, height: 300 }
+  assert.equal(viewExport.drawViewExport(context, plan, { picture }), true)
+  // The chip is the measured DOM rectangle and it clips the measured glyph run.
+  const chip = context.ops.find((entry) => entry.op === 'fillRect')
+  assert.deepEqual(chip, { op: 'fillRect', x: -20, y: -60, w: 40, h: 120 })
+  const clip = context.ops.find((entry) => entry.op === 'rect')
+  assert.deepEqual(clip, { op: 'rect', x: -20, y: -60, w: 40, h: 120 })
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['竖', '排', '中', '文'])
+  // One font string for the whole measured block, at the DOM font size (no shrink-to-fit).
+  assert.match(texts[0].font, /(?:^|\s)14px/)
+  const columnX = texts.map((entry) => entry.x)
+  assert.ok(columnX[0] > columnX[2], 'the first column is painted to the right of the second')
+  assert.ok(texts[1].y > texts[0].y, 'glyphs run top to bottom inside a column')
+  // Every painted glyph stays inside the measured chip rectangle.
+  for (const entry of texts) {
+    assert.ok(entry.x - 7 >= -20 && entry.x + 7 <= 20, `glyph x inside the chip (${entry.x})`)
+    assert.ok(entry.y - 7 >= -60 && entry.y + 7 <= 60, `glyph y inside the chip (${entry.y})`)
+  }
+  // The legacy painter (no measured layout) still does one bounded centred fillText.
+  const fallbackPlan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, blocks: [block('legacy')], imageWidth: 400, imageHeight: 300 }
+  })
+  const fallbackContext = createRecordingContext()
+  viewExport.drawViewExport(fallbackContext, fallbackPlan, { picture })
+  const fallbackTexts = fallbackContext.ops.filter((entry) => entry.op === 'fillText')
+  assert.equal(fallbackTexts.length, 1)
+  assert.equal(fallbackTexts[0].text, 'legacy')
+})
+
+test('draw: an authoritative measurement with no visible glyphs paints the chip only (P2-04)', () => {
+  // The live chip's overflow:hidden clipped every glyph away (e.g. the vertical source block
+  // whose oversized line-height pushes its column outside the chip). The export must match
+  // that: chip background, no invented text.
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      blocks: [{
+        text: '竖排中文',
+        text_score: 0.9,
+        box_points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 220 }, { x: 20, y: 220 }]
+      }],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [measuredEntry(0, { width: 40, height: 200, centerX: 40, centerY: 120, vertical: true, fontSize: 28.8, lines: [] })]
+    }
+  })
+  assert.equal(plan.ocrBlocks.length, 1)
+  assert.equal(plan.ocrBlocks[0].measured, true)
+  assert.deepEqual(plan.ocrBlocks[0].lines, [])
+  const context = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  assert.equal(context.ops.filter((entry) => entry.op === 'fillText').length, 0, 'no invented text')
+  assert.equal(context.ops.filter((entry) => entry.op === 'fillRect').length, 1, 'the chip background is still exported')
+})
+
+test('plan: the measured glyph budget is bounded (P2-04)', () => {  assert.ok(Number.isInteger(viewExport.MAX_OCR_GLYPHS) && viewExport.MAX_OCR_GLYPHS > 0)
+  const blocks = []
+  const layout = []
+  for (let index = 0; index < 4; index += 1) {
+    const glyphs = []
+    for (let glyphIndex = 0; glyphIndex < 2000; glyphIndex += 1) {
+      glyphs.push({ text: '字', x: glyphIndex % 20, y: Math.floor(glyphIndex / 20), width: 8, height: 8 })
+    }
+    blocks.push({
+      text: '字'.repeat(30),
+      text_score: 0.9,
+      box_points: [{ x: 10, y: 10 }, { x: 110, y: 10 }, { x: 110, y: 60 }, { x: 10, y: 60 }]
+    })
+    layout.push(measuredEntry(index, {
+      width: 100,
+      height: 50,
+      centerX: 60,
+      centerY: 35,
+      lines: [{ text: '字', glyphs }]
+    }))
+  }
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, blocks, imageWidth: 400, imageHeight: 300, layout }
+  })
+  const total = plan.ocrBlocks.reduce((sum, blockEntry) => sum + (blockEntry.lines || [])
+    .reduce((lineSum, line) => lineSum + (line.glyphs ? line.glyphs.length : 0), 0), 0)
+  assert.ok(total <= viewExport.MAX_OCR_GLYPHS, `measured glyphs stay bounded (${total})`)
+  assert.ok(plan.ocrBlocks.length <= viewExport.MAX_OCR_BLOCKS)
+})
+
+test('wiring: the renderer measures the live overlay layout for the export (P2-04)', () => {
+  const pinScript = read('pin', 'pin.js')
+  assert.match(pinScript, /measureLayout/)
+  assert.match(pinScript, /\blayout\b/)
+  const overlayScript = read('shared', 'ocr-text-overlay.js')
+  assert.match(overlayScript, /function measureLayout\(/)
+  assert.match(overlayScript, /blockIndex/)
+  // The shared overlay must keep its renderBlocks contract for capture/*.js.
+  assert.match(overlayScript, /renderBlocks/)
+  assert.match(read('capture', 'capture.js'), /window\.OcrTextOverlay\.renderBlocks/)
+})
 
 test('draw: the picture is drawn once under the rotation matrix, then the OCR chips', () => {
   const plan = viewExport.planViewExport({
