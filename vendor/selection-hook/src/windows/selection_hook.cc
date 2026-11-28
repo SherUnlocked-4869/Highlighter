@@ -2203,15 +2203,84 @@ long ReadSelfTestLong(const Napi::Object &object, const char *name, long fallbac
 }
 
 /**
+ * @brief Read the value-domain DEV-04 focus evidence fields of one JSON object.
+ * @param[in] focus Evidence object supplied by the test.
+ * @param[out] evidence Receives the pure focus evidence.
+ * @param[in] defaultHealthy Default for the "a healthy surface was observed" fields (true for
+ * a `focus` object, false for a top-level pure-policy object that must fail closed by omission).
+ * @note Legacy mirrors (hasWritableValue/textPatternReadOnly/textPatternWritable) are translated
+ * into the value-domain fields (presence + known + value) so the policy only ever consumes the
+ * new representation. A pattern that is present but whose read-only property is unknown stays
+ * present+unknown and therefore fails closed.
+ */
+void ReadSelfTestFocusEvidenceFields(const Napi::Object &focus, highlighter::KeyboardFocusEvidence &evidence,
+                                     bool defaultHealthy)
+{
+    const bool legacyHasWritableValue = ReadSelfTestBoolean(focus, "hasWritableValue", false);
+    const bool legacyTextPatternReadOnly = ReadSelfTestBoolean(focus, "textPatternReadOnly", false);
+    const bool legacyTextPatternWritable = ReadSelfTestBoolean(focus, "textPatternWritable", false);
+
+    evidence.foregroundAlive = ReadSelfTestBoolean(focus, "foregroundAlive", defaultHealthy);
+    evidence.foregroundIsCurrent = ReadSelfTestBoolean(focus, "foregroundIsCurrent", defaultHealthy);
+    evidence.ownProcess = ReadSelfTestBoolean(focus, "ownProcess", false);
+    evidence.classifierAvailable = ReadSelfTestBoolean(focus, "classifierAvailable", true);
+    evidence.probeTimedOut = ReadSelfTestBoolean(focus, "probeTimedOut", false);
+    evidence.elementAvailable = ReadSelfTestBoolean(focus, "elementAvailable", defaultHealthy);
+    // Provenance is never assumed by default: only an explicit positive GetFocusedElement (or the
+    // shorthand's healthy surface) may confirm the focus identity; the HWND fallback and an
+    // incomplete evidence object stay unconfirmed and therefore fail closed (P1-3).
+    evidence.focusIdentityConfirmed = ReadSelfTestBoolean(focus, "focusIdentityConfirmed", false);
+    evidence.isPassword = ReadSelfTestBoolean(focus, "isPassword", false);
+    evidence.isTextEditControl = ReadSelfTestBoolean(focus, "isTextEditControl", false);
+    evidence.isTextControlType = ReadSelfTestBoolean(focus, "isTextControlType", false);
+    evidence.imeComposing = ReadSelfTestBoolean(focus, "imeComposing", false);
+
+    evidence.valuePatternPresent = ReadSelfTestBoolean(focus, "valuePatternPresent", legacyHasWritableValue);
+    evidence.valueReadOnlyKnown = ReadSelfTestBoolean(focus, "valueReadOnlyKnown", legacyHasWritableValue);
+    evidence.valueReadOnly = ReadSelfTestBoolean(focus, "valueReadOnly", false);
+    evidence.hasWritableValue = legacyHasWritableValue;
+    if (legacyHasWritableValue)
+    {
+        evidence.valuePatternPresent = true;
+        evidence.valueReadOnlyKnown = true;
+        evidence.valueReadOnly = false;
+    }
+
+    evidence.textPatternPresent =
+        ReadSelfTestBoolean(focus, "textPatternPresent", legacyTextPatternReadOnly || legacyTextPatternWritable);
+    evidence.textPatternReadOnlyKnown = ReadSelfTestBoolean(
+        focus, "textPatternReadOnlyKnown", legacyTextPatternReadOnly || legacyTextPatternWritable);
+    evidence.textPatternReadOnly = ReadSelfTestBoolean(focus, "textPatternReadOnly", false);
+    evidence.textPatternWritable = legacyTextPatternWritable;
+    if (legacyTextPatternReadOnly)
+    {
+        evidence.textPatternPresent = true;
+        evidence.textPatternReadOnlyKnown = true;
+        evidence.textPatternReadOnly = true;
+    }
+    if (legacyTextPatternWritable)
+    {
+        evidence.textPatternPresent = true;
+        evidence.textPatternReadOnlyKnown = true;
+        evidence.textPatternReadOnly = false;
+    }
+}
+
+/**
  * @brief Read an optional DEV-04 focus evidence object (or a class-name shorthand).
  * @param[in] input Self-test evidence object.
  * @param[out] evidence Receives the pure focus evidence.
  * @return true when the input carried a focus description; false for the key-policy-only probe.
- * @note A shorthand string is a convenience for tests: "safe"/"password"/"text"/"ime" describe
- * an otherwise healthy surface with only the named property set; "documentReadOnly" is a
- * TextPattern surface whose IsReadOnly attribute is TRUE (the browser demo page must stay safe);
- * "documentWritable" is a writable TextPattern surface (Word/custom editor, must be rejected);
- * "unknown" hides the element.
+ * @note A shorthand string is a convenience for tests: "safe"/"nonText" describe an otherwise
+ * healthy, focus-identity-confirmed non-text surface; "password"/"text"/"ime" name one sensitive
+ * property; "documentReadOnly" is a TextPattern surface whose IsReadOnly attribute is TRUE (the
+ * browser demo page must stay safe); "documentWritable" is a writable TextPattern surface
+ * (Word/custom editor, must be rejected); "readOnlyValue"/"writableValue" exercise the
+ * ValuePattern read-only evidence; "containerOnly"/"handleFallback" model the HWND fallback that
+ * can only prove a container; "valueReadOnlyUnknown"/"textReadOnlyUnknown" model a present pattern
+ * whose read-only property could not be read (P1-3: must be Unknown); "textControlWithoutEvidence"
+ * is a Document/Text control with no read-only answer; "virtualPasswordSubcontrol" is a password
+ * field behind an unconfirmed container; "unknown" hides the element.
  */
 bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardFocusEvidence &evidence)
 {
@@ -2223,7 +2292,8 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
         evidence.foregroundIsCurrent = true;
         evidence.classifierAvailable = true;
         evidence.elementAvailable = true;
-        if (focus == "safe")
+        evidence.focusIdentityConfirmed = true;
+        if (focus == "safe" || focus == "nonText")
             return true;
         if (focus == "password")
         {
@@ -2240,14 +2310,68 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
             evidence.imeComposing = true;
             return true;
         }
-        if (focus == "documentReadOnly")
+        if (focus == "documentReadOnly" || focus == "readOnlyDocument")
         {
+            evidence.textPatternPresent = true;
+            evidence.textPatternReadOnlyKnown = true;
             evidence.textPatternReadOnly = true;
             return true;
         }
         if (focus == "documentWritable")
         {
+            evidence.textPatternPresent = true;
+            evidence.textPatternReadOnlyKnown = true;
+            evidence.textPatternReadOnly = false;
             evidence.textPatternWritable = true;
+            return true;
+        }
+        if (focus == "readOnlyValue")
+        {
+            evidence.valuePatternPresent = true;
+            evidence.valueReadOnlyKnown = true;
+            evidence.valueReadOnly = true;
+            return true;
+        }
+        if (focus == "writableValue")
+        {
+            evidence.valuePatternPresent = true;
+            evidence.valueReadOnlyKnown = true;
+            evidence.valueReadOnly = false;
+            evidence.hasWritableValue = true;
+            return true;
+        }
+        if (focus == "virtualPasswordSubcontrol")
+        {
+            // A password field inside a host whose HWND fallback evidence was used: the identity
+            // is unconfirmed but the password evidence still rejects as Password.
+            evidence.focusIdentityConfirmed = false;
+            evidence.isPassword = true;
+            return true;
+        }
+        if (focus == "container" || focus == "containerOnly" || focus == "handleFallback" ||
+            focus == "focusIdentityUnconfirmed" || focus == "elementOnly")
+        {
+            evidence.focusIdentityConfirmed = false;
+            return true;
+        }
+        if (focus == "valueReadOnlyUnknown" || focus == "valueReadFailure")
+        {
+            evidence.focusIdentityConfirmed = true;
+            evidence.valuePatternPresent = true;
+            evidence.valueReadOnlyKnown = false;
+            return true;
+        }
+        if (focus == "textReadOnlyUnknown" || focus == "textReadFailure")
+        {
+            evidence.focusIdentityConfirmed = true;
+            evidence.textPatternPresent = true;
+            evidence.textPatternReadOnlyKnown = false;
+            return true;
+        }
+        if (focus == "textControlWithoutEvidence" || focus == "textControlUnknown")
+        {
+            evidence.focusIdentityConfirmed = true;
+            evidence.isTextControlType = true;
             return true;
         }
         // Anything else, including "unknown", fails closed without an element.
@@ -2256,19 +2380,7 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
     }
     if (!focusValue.IsObject() || focusValue.IsArray())
         return false;
-    const Napi::Object focus = focusValue.As<Napi::Object>();
-    evidence.foregroundAlive = ReadSelfTestBoolean(focus, "foregroundAlive", true);
-    evidence.foregroundIsCurrent = ReadSelfTestBoolean(focus, "foregroundIsCurrent", true);
-    evidence.ownProcess = ReadSelfTestBoolean(focus, "ownProcess", false);
-    evidence.classifierAvailable = ReadSelfTestBoolean(focus, "classifierAvailable", true);
-    evidence.probeTimedOut = ReadSelfTestBoolean(focus, "probeTimedOut", false);
-    evidence.elementAvailable = ReadSelfTestBoolean(focus, "elementAvailable", true);
-    evidence.isPassword = ReadSelfTestBoolean(focus, "isPassword", false);
-    evidence.isTextEditControl = ReadSelfTestBoolean(focus, "isTextEditControl", false);
-    evidence.hasWritableValue = ReadSelfTestBoolean(focus, "hasWritableValue", false);
-    evidence.textPatternReadOnly = ReadSelfTestBoolean(focus, "textPatternReadOnly", false);
-    evidence.textPatternWritable = ReadSelfTestBoolean(focus, "textPatternWritable", false);
-    evidence.imeComposing = ReadSelfTestBoolean(focus, "imeComposing", false);
+    ReadSelfTestFocusEvidenceFields(focusValue.As<Napi::Object>(), evidence, true);
     return true;
 }
 
@@ -2362,10 +2474,15 @@ Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
 
 /**
  * @brief Self-test: run the production DEV-04 focus policy on synthetic evidence.
- * @return { classification, safe, reason, textPatternReadOnly, textPatternWritable }.
- * @note Defaults fail closed: an evidence object without `foregroundAlive` is classified Unknown.
- * The echoed TextPattern flags let a test prove that a read-only document surface (browser demo
- * page) was driven through the writable-TextPattern rule and still accepted.
+ * @return { classification, safe, reason, foregroundAlive, foregroundIsCurrent, elementAvailable,
+ *          focusIdentityConfirmed, isPassword, isTextEditControl, isTextControlType,
+ *          valuePatternPresent, valueReadOnlyKnown, valueReadOnly, textPatternPresent,
+ *          textPatternReadOnlyKnown, textPatternReadOnly, textPatternWritable, imeComposing,
+ *          probeTimedOut }.
+ * @note Two input shapes are accepted: a top-level evidence object (the historical shape, whose
+ * defaults fail closed) and a `focus` object or class-name shorthand (the same parser as the
+ * combo bridge). The echoed value-domain fields let a test prove exactly which evidence drove
+ * the decision.
  */
 Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
 {
@@ -2378,18 +2495,8 @@ Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
     const Napi::Object input = info[0].As<Napi::Object>();
 
     highlighter::KeyboardFocusEvidence evidence;
-    evidence.foregroundAlive = ReadSelfTestBoolean(input, "foregroundAlive", false);
-    evidence.foregroundIsCurrent = ReadSelfTestBoolean(input, "foregroundIsCurrent", false);
-    evidence.ownProcess = ReadSelfTestBoolean(input, "ownProcess", false);
-    evidence.classifierAvailable = ReadSelfTestBoolean(input, "classifierAvailable", true);
-    evidence.probeTimedOut = ReadSelfTestBoolean(input, "probeTimedOut", false);
-    evidence.elementAvailable = ReadSelfTestBoolean(input, "elementAvailable", false);
-    evidence.isPassword = ReadSelfTestBoolean(input, "isPassword", false);
-    evidence.isTextEditControl = ReadSelfTestBoolean(input, "isTextEditControl", false);
-    evidence.hasWritableValue = ReadSelfTestBoolean(input, "hasWritableValue", false);
-    evidence.textPatternReadOnly = ReadSelfTestBoolean(input, "textPatternReadOnly", false);
-    evidence.textPatternWritable = ReadSelfTestBoolean(input, "textPatternWritable", false);
-    evidence.imeComposing = ReadSelfTestBoolean(input, "imeComposing", false);
+    if (!ReadSelfTestFocusEvidence(input, evidence))
+        ReadSelfTestFocusEvidenceFields(input, evidence, false);
 
     const highlighter::KeyboardFocusDecision decision = highlighter::ClassifyKeyboardFocus(evidence);
     Napi::Object result = Napi::Object::New(env);
@@ -2397,8 +2504,24 @@ Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
                Napi::String::New(env, highlighter::KeyboardFocusClassName(decision.classification)));
     result.Set("safe", Napi::Boolean::New(env, highlighter::IsKeyboardFocusSafe(decision.classification)));
     result.Set("reason", Napi::String::New(env, decision.reason));
+    // Echo the evidence the policy consumed. P1-3: presence is separate from a successful
+    // read-only read, so a test can assert that a present-but-unreadable pattern produced Unknown.
+    result.Set("foregroundAlive", Napi::Boolean::New(env, evidence.foregroundAlive));
+    result.Set("foregroundIsCurrent", Napi::Boolean::New(env, evidence.foregroundIsCurrent));
+    result.Set("elementAvailable", Napi::Boolean::New(env, evidence.elementAvailable));
+    result.Set("focusIdentityConfirmed", Napi::Boolean::New(env, evidence.focusIdentityConfirmed));
+    result.Set("isPassword", Napi::Boolean::New(env, evidence.isPassword));
+    result.Set("isTextEditControl", Napi::Boolean::New(env, evidence.isTextEditControl));
+    result.Set("isTextControlType", Napi::Boolean::New(env, evidence.isTextControlType));
+    result.Set("valuePatternPresent", Napi::Boolean::New(env, evidence.valuePatternPresent));
+    result.Set("valueReadOnlyKnown", Napi::Boolean::New(env, evidence.valueReadOnlyKnown));
+    result.Set("valueReadOnly", Napi::Boolean::New(env, evidence.valueReadOnly));
+    result.Set("textPatternPresent", Napi::Boolean::New(env, evidence.textPatternPresent));
+    result.Set("textPatternReadOnlyKnown", Napi::Boolean::New(env, evidence.textPatternReadOnlyKnown));
     result.Set("textPatternReadOnly", Napi::Boolean::New(env, evidence.textPatternReadOnly));
     result.Set("textPatternWritable", Napi::Boolean::New(env, evidence.textPatternWritable));
+    result.Set("imeComposing", Napi::Boolean::New(env, evidence.imeComposing));
+    result.Set("probeTimedOut", Napi::Boolean::New(env, evidence.probeTimedOut));
     return result;
 }
 

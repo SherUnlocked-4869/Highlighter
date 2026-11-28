@@ -1155,6 +1155,10 @@ function createCaptureDomain(deps) {
     })
     currentCaptureWindow = captureWindow
     captureWindow._editingPinWindow = options.editingPinWindow || null
+    // P1-01 follow-up: the record domain binds the workbench's one-shot capture config to the
+    // region-capture request that opened this overlay. It travels on the window (not on a channel)
+    // so the confirm path can hand it back without trusting the renderer; the quick entry has none.
+    captureWindow._recordRegionRequestId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
     // B01: a pin created with "do not keep this capture" hands the switch to its
     // re-annotate editor, so reopening the same pixels does not silently start
     // writing history again. Any other capture starts with the renderer's default
@@ -1404,7 +1408,14 @@ function createCaptureDomain(deps) {
         }
         if (!Object.values(bounds).every(Number.isFinite)) throw new Error('录制区域无效')
         const display = screen.getDisplayMatching(bounds)
-        await createRecordWindow({ display, selectionBounds: bounds })
+        // P1-01 follow-up: the record domain only consumes the workbench config whose request id
+        // matches this overlay; a quick-entry overlay forwards the empty id and gets no workbench
+        // options. The id lives on the window, so the renderer cannot forge one.
+        await createRecordWindow({
+          display,
+          selectionBounds: bounds,
+          regionRequestId: captureWindow._recordRegionRequestId || ''
+        })
         if (!captureWindow.isDestroyed()) captureWindow.close()
         return true
       },

@@ -985,6 +985,7 @@
         count: dropped.items,
         labels: dropped.labels,
         maxLabels: plan.maxLabels,
+        maxWindows: plan.maxWindows,
         first: clock(dropped.firstSourceMs),
         last: clock(dropped.lastSourceMs)
       })

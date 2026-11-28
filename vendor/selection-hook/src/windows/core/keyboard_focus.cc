@@ -100,10 +100,19 @@ bool FocusSnapshotStillCurrent(const KeyboardFocusSnapshot &snapshot)
 struct ElementEvidence
 {
     bool available = false;
+    /// Provenance: true only when the element is the matching GetFocusedElement result (or the
+    /// caller's explicit handle); false when the ElementFromHandle fallback was used.
+    bool focusIdentityConfirmed = false;
     bool isPassword = false;
     bool isTextEditControl = false;
-    bool hasWritableValue = false;
+    bool isTextControlType = false;
+    bool valuePatternPresent = false;
+    bool valueReadOnlyKnown = false;
+    bool valueReadOnly = false;
+    bool textPatternPresent = false;
+    bool textPatternReadOnlyKnown = false;
     bool textPatternReadOnly = false;
+    bool hasWritableValue = false;
     bool textPatternWritable = false;
     bool timedOut = false;
 };
@@ -129,6 +138,7 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
     }
     result.available = true;
     result.isTextEditControl = controlType == UIA_EditControlTypeId;
+    result.isTextControlType = controlType == UIA_DocumentControlTypeId || controlType == UIA_TextControlTypeId;
     if (ProbeBudgetExceeded(startedAt))
     {
         result.timedOut = true;
@@ -151,15 +161,21 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
 
     // A writable ValuePattern means text can be typed into the focus owner even when its control
     // type is not Edit (combo box, spinner, custom text control). Read-only values are display
-    // surfaces and stay safe.
+    // surfaces and stay safe. P1-3: presence and the read-only answer are recorded separately, so
+    // a pattern whose read failed can no longer be mistaken for "not writable".
     IUIAutomationValuePattern *valuePattern = nullptr;
     if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
                                               reinterpret_cast<void **>(&valuePattern))) &&
         valuePattern)
     {
+        result.valuePatternPresent = true;
         BOOL readOnly = TRUE;
         if (SUCCEEDED(valuePattern->get_CurrentIsReadOnly(&readOnly)))
+        {
+            result.valueReadOnlyKnown = true;
+            result.valueReadOnly = readOnly != FALSE;
             result.hasWritableValue = readOnly == FALSE;
+        }
         valuePattern->Release();
     }
     if (ProbeBudgetExceeded(startedAt))
@@ -171,14 +187,14 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
     // A writable UIA TextPattern identifies a text-editing surface whose control type is not
     // Edit: Word documents, RichEdit/Scintilla-style editors and custom text controls. The
     // browser-page demo scenario also exposes a TextPattern, but its document range reports
-    // UIA_IsReadOnlyAttributeId = TRUE, so it stays Safe.
+    // UIA_IsReadOnlyAttributeId = TRUE, so it stays Safe. P1-3: a TextPattern whose attribute
+    // read fails is Unknown (property-read failure), not safe.
     //
     // NOTE: this is deliberately NOT the broad DocumentRange fallback removed for issue #25;
     // that path passed an element *property* id (30034) as a text attribute. Here the real text
     // attribute UIA_IsReadOnlyAttributeId is queried once per shortcut press, with the
     // IUIAutomation2 connection/transaction timeouts and the wall-clock budget bounding the
-    // client. A provider that does not answer the attribute keeps the weaker
-    // control-type/ValuePattern rule (documented residual in keyboard_focus.h).
+    // client. A provider that does not answer the attribute now fails closed.
     //
     // Already-sensitive evidence skips this more expensive probe: the decision is a rejection
     // either way.
@@ -189,6 +205,7 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
                                                   reinterpret_cast<void **>(&textPattern))) &&
             textPattern)
         {
+            result.textPatternPresent = true;
             if (ProbeBudgetExceeded(startedAt))
             {
                 result.timedOut = true;
@@ -214,10 +231,11 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
                 documentRange->Release();
                 if (ProbeBudgetExceeded(startedAt))
                     result.timedOut = true;
-                // Attribute unavailable (provider does not expose it) is not text; only a
-                // present TRUE/FALSE value drives the read-only/writable evidence.
+                // Only a present TRUE/FALSE value is a read-only answer; a missing attribute leaves
+                // textPatternReadOnlyKnown=false so the policy fails closed (P1-3).
                 if (SUCCEEDED(attributeResult) && isReadOnly.vt == VT_BOOL)
                 {
+                    result.textPatternReadOnlyKnown = true;
                     result.textPatternReadOnly = isReadOnly.boolVal != VARIANT_FALSE;
                     result.textPatternWritable = isReadOnly.boolVal == VARIANT_FALSE;
                 }
@@ -241,6 +259,9 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
                                     ULONGLONG startedAt)
 {
     ElementEvidence result;
+    // Provenance is part of the evidence: GetFocusedElement names the focus owner itself, while
+    // the ElementFromHandle fallback below only proves a window/container.
+    bool identityConfirmed = false;
     IUIAutomationElement *element = nullptr;
     HRESULT hr = automation->GetFocusedElement(&element);
     if (ProbeBudgetExceeded(startedAt))
@@ -271,6 +292,7 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
                              GetAncestor(elementWindow, GA_ROOT) == snapshot.foregroundWindow;
             }
             usable = sameWindow;
+            identityConfirmed = usable;
         }
         if (!usable)
         {
@@ -307,6 +329,10 @@ ElementEvidence ProbeFocusedElement(IUIAutomation *automation, const KeyboardFoc
     if (!element)
         return result;
     result = ReadElementEvidence(element, startedAt);
+    // P1-3: only the matching GetFocusedElement result proves the identity of the focus owner.
+    // The ElementFromHandle fallback may map to a container host whose virtual subcontrols (for
+    // example a password field inside a document host) were never read, so it stays unconfirmed.
+    result.focusIdentityConfirmed = identityConfirmed;
     element->Release();
     return result;
 }
@@ -343,6 +369,9 @@ ElementEvidence ProbeWindowHandle(IUIAutomation *automation, HWND window, DWORD 
         return result;
     }
     result = ReadElementEvidence(element, startedAt);
+    // The caller supplied the exact target window/control handle (probe/self-test path), so the
+    // element genuinely describes that handle's own properties.
+    result.focusIdentityConfirmed = true;
     element->Release();
     return result;
 }
@@ -477,10 +506,17 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyForeground(const Keyboard
 
     evidence.probeTimedOut = element.timedOut;
     evidence.elementAvailable = element.available;
+    evidence.focusIdentityConfirmed = element.focusIdentityConfirmed;
     evidence.isPassword = element.isPassword;
     evidence.isTextEditControl = element.isTextEditControl;
-    evidence.hasWritableValue = element.hasWritableValue;
+    evidence.isTextControlType = element.isTextControlType;
+    evidence.valuePatternPresent = element.valuePatternPresent;
+    evidence.valueReadOnlyKnown = element.valueReadOnlyKnown;
+    evidence.valueReadOnly = element.valueReadOnly;
+    evidence.textPatternPresent = element.textPatternPresent;
+    evidence.textPatternReadOnlyKnown = element.textPatternReadOnlyKnown;
     evidence.textPatternReadOnly = element.textPatternReadOnly;
+    evidence.hasWritableValue = element.hasWritableValue;
     evidence.textPatternWritable = element.textPatternWritable;
     return ClassifyKeyboardFocus(evidence);
 }
@@ -514,10 +550,17 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyWindowHandle(HWND window)
     const ElementEvidence element = ProbeWindowHandle(automation, window, windowProcessId, startedAt);
     evidence.probeTimedOut = element.timedOut;
     evidence.elementAvailable = element.available;
+    evidence.focusIdentityConfirmed = element.focusIdentityConfirmed;
     evidence.isPassword = element.isPassword;
     evidence.isTextEditControl = element.isTextEditControl;
-    evidence.hasWritableValue = element.hasWritableValue;
+    evidence.isTextControlType = element.isTextControlType;
+    evidence.valuePatternPresent = element.valuePatternPresent;
+    evidence.valueReadOnlyKnown = element.valueReadOnlyKnown;
+    evidence.valueReadOnly = element.valueReadOnly;
+    evidence.textPatternPresent = element.textPatternPresent;
+    evidence.textPatternReadOnlyKnown = element.textPatternReadOnlyKnown;
     evidence.textPatternReadOnly = element.textPatternReadOnly;
+    evidence.hasWritableValue = element.hasWritableValue;
     evidence.textPatternWritable = element.textPatternWritable;
     return ClassifyKeyboardFocus(evidence);
 }

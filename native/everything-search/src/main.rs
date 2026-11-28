@@ -416,67 +416,160 @@ struct TargetInfo {
     probe_total: u32,
 }
 
-/// Pick the candidate most likely to hold the user's real index: windows that
-/// answer a probe query with content rank first, fully accessible (same
-/// integrity level, index loaded) windows rank next.
+/// P2-10: one candidate's control-channel answers, separated from the Win32
+/// handles so the ranking policy is a pure, unit-testable function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeState {
+    /// The query channel answered a parseable result list carrying this total.
+    Answered(u32),
+    /// The query channel answered, but the payload could not be parsed.
+    BadReply,
+    /// `SendMessageTimeoutW` itself failed (the instance is not taking the forward).
+    SendFailed,
+    /// The forward succeeded but no `WM_COPYDATA` reply arrived in time.
+    Timeout,
+}
+
+impl ProbeState {
+    /// Classifies a `probe_window` result. `timeout` is distinct from
+    /// `bad-reply`: one means the query channel never answered, the other that it
+    /// did answer (with a payload we cannot parse).
+    fn classify(probe: &Result<u32, String>) -> Self {
+        match probe {
+            Ok(total) => Self::Answered(*total),
+            Err(message) if message == "send-failed" => Self::SendFailed,
+            Err(message) if message == "timeout" => Self::Timeout,
+            // Any other error came back through the reply window, so the instance
+            // did answer.
+            Err(_) => Self::BadReply,
+        }
+    }
+
+    fn answered(self) -> bool {
+        matches!(self, Self::Answered(_) | Self::BadReply)
+    }
+
+    fn content_total(self) -> u32 {
+        match self {
+            Self::Answered(total) => total,
+            _ => 0,
+        }
+    }
+}
+
+/// P2-10: everything `candidate_score` needs to rank one IPC candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CandidateSignals {
+    probe: ProbeState,
+    ipc_available: bool,
+    db_loaded: bool,
+    has_version: bool,
+}
+
+/// P2-10: pure candidate ranking, higher score wins. A candidate whose query
+/// channel answered always outranks one that only answers the status probes, even
+/// when that silent instance reports a loaded database:
+///
+/// 1. answering with content,
+/// 2. answering with an empty index,
+/// 3. answering with a malformed payload,
+/// 4. query-silent but answers the version + `IPC_IS_DB_LOADED` probes,
+/// 5. query-silent but answers only the version (or db-loaded) probe,
+/// 6. fully silent (score 0) — left to `resolve_target`'s silent fallback.
+///
+/// `send-failed` and `timeout` are both "the query channel did not answer"; an
+/// empty answering index must not tie with a timed-out old instance.
+fn candidate_score(signals: &CandidateSignals) -> i64 {
+    // Status answers only break ties inside a tier; they never lift a query-silent
+    // instance over an instance that answered.
+    let ready_bonus = if signals.ipc_available && signals.db_loaded { 10 } else { 0 };
+    if signals.probe.answered() {
+        return match signals.probe {
+            ProbeState::Answered(total) if total > 0 => {
+                3000 + i64::from(total.min(100)) + ready_bonus
+            }
+            ProbeState::Answered(_) => 2000 + ready_bonus,
+            // BadReply is the only remaining answered state.
+            _ => 1000 + ready_bonus,
+        };
+    }
+    if signals.ipc_available && signals.db_loaded {
+        200
+    } else if signals.ipc_available || signals.has_version || signals.db_loaded {
+        100
+    } else {
+        0
+    }
+}
+
+/// P2-10: index of the best scoreable candidate; the first enumeration order wins
+/// ties (the tie-break `resolve_target` always used). `None` means every
+/// candidate is fully silent and resolves to the silent fallback.
+fn rank_candidates(candidates: &[CandidateSignals]) -> Option<usize> {
+    let mut best: Option<(usize, i64)> = None;
+    for (index, signals) in candidates.iter().enumerate() {
+        let score = candidate_score(signals);
+        if score > 0 && best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((index, score));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+/// Pick the candidate most likely to hold the user's real index: candidates that
+/// answer the query probe rank first (content > empty index > bad reply), then
+/// query-silent instances that still answer the version / `IPC_IS_DB_LOADED`
+/// probes, then fully silent windows as a running-only fallback. The policy itself
+/// is the pure `candidate_score`/`rank_candidates` pair; this function only feeds
+/// it the Win32 probe results.
 fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
     let candidates = enumerate_ipc_windows();
-    let mut best: Option<(i64, TargetInfo)> = None;
-    // A window carrying Everything's exclusive IPC class proves an instance is
-    // running even when both probe channels stay silent (UIPI filters them
-    // when Everything runs elevated and the instance does not re-allow
-    // WM_COPYDATA). Keep the first fully silent candidate so status can still
-    // report `running` — only its version/db are unknowable.
-    let mut silent_fallback: Option<TargetInfo> = None;
-    for (hwnd, class_name) in candidates {
-        let minor = send_ipc_command(hwnd, IPC_GET_MINOR_VERSION);
+    let mut signals = Vec::with_capacity(candidates.len());
+    // Volatile per-candidate fields, indexed in lockstep with `candidates`.
+    let mut snapshots: Vec<(Option<(u32, u32, u32, u32)>, bool, u32)> = Vec::with_capacity(candidates.len());
+    for (hwnd, _class_name) in &candidates {
+        let minor = send_ipc_command(*hwnd, IPC_GET_MINOR_VERSION);
         let version = minor.map(|_| {
-            let major = send_ipc_command(hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
+            let major = send_ipc_command(*hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
             let minor_version = minor.unwrap_or(0) as u32;
-            let revision = send_ipc_command(hwnd, 2).unwrap_or(0) as u32;
-            let build = send_ipc_command(hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
+            let revision = send_ipc_command(*hwnd, 2).unwrap_or(0) as u32;
+            let build = send_ipc_command(*hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
             (major, minor_version, revision, build)
         });
         let ipc_available = matches!(minor, Some(value) if value >= 4);
-        let db_loaded = send_ipc_command(hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
-        let probe_result = probe_window(reply, hwnd);
-        let probe_total = probe_result.as_ref().copied().unwrap_or(0);
-        let probe_failed = matches!(&probe_result, Err(message) if message == "send-failed");
-        if !ipc_available && version.is_none() && probe_total == 0 && probe_failed {
-            if silent_fallback.is_none() {
-                silent_fallback = Some(TargetInfo {
-                    hwnd,
-                    class_name,
-                    version: None,
-                    db_loaded: false,
-                    probe_total: 0,
-                });
-            }
-            continue;
-        }
-        let content_score = i64::from(probe_total.min(100));
-        let score: i64 = if probe_total > 0 {
-            2000 + content_score + if ipc_available && db_loaded { 10 } else { 0 }
-        } else if ipc_available && db_loaded {
-            200
-        } else if ipc_available || version.is_some() {
-            100
-        } else if !probe_failed {
-            // WM_COPYDATA answered (possibly across an integrity level) but
-            // the index holds no files yet.
-            20
-        } else {
-            0
-        };
-        if score == 0 {
-            continue;
-        }
-        let candidate = (score, TargetInfo { hwnd, class_name, version, db_loaded: db_loaded || probe_total > 0, probe_total });
-        if best.as_ref().is_none_or(|(best_score, _)| score > *best_score) {
-            best = Some(candidate);
-        }
+        let db_loaded = send_ipc_command(*hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
+        let probe = ProbeState::classify(&probe_window(reply, *hwnd));
+        signals.push(CandidateSignals {
+            probe,
+            ipc_available,
+            db_loaded,
+            has_version: version.is_some(),
+        });
+        snapshots.push((version, db_loaded, probe.content_total()));
     }
-    best.map(|(_, info)| info).or(silent_fallback)
+    if let Some(index) = rank_candidates(&signals) {
+        let (version, db_loaded, probe_total) = snapshots[index];
+        let (hwnd, class_name) = candidates[index].clone();
+        return Some(TargetInfo {
+            hwnd,
+            class_name,
+            version,
+            db_loaded: db_loaded || probe_total > 0,
+            probe_total,
+        });
+    }
+    // A window carrying Everything's exclusive IPC class proves an instance is
+    // running even when both probe channels stay silent (UIPI filters them when
+    // Everything runs elevated and the instance does not re-allow WM_COPYDATA).
+    // Keep the first fully silent candidate so status can still report `running` —
+    // only its version/db are unknowable.
+    candidates.first().map(|(hwnd, class_name)| TargetInfo {
+        hwnd: *hwnd,
+        class_name: class_name.clone(),
+        version: None,
+        db_loaded: false,
+        probe_total: 0,
+    })
 }
 
 // ==================== Live target cache ====================
@@ -879,16 +972,20 @@ fn status_snapshot(info: &TargetInfo) -> Value {
 /// reports "send-failed"/"timeout" means the window exists but no longer talks to us;
 /// that surfaces as a communication failure (with the still-true running snapshot in
 /// the error) so the cache re-selects instead of treating silence as a healthy status.
+///
+/// P2-10: returns whether this round's query probe answered, alongside the display
+/// snapshot. The snapshot keeps the running instance's `dbLoaded` even when the query
+/// channel is silent, so readiness must not be derived from the snapshot alone.
 fn apply_probe_result(
     target: &mut TargetInfo,
     db_loaded: bool,
     probe: Result<u32, String>,
-) -> Result<(), Value> {
+) -> Result<bool, Value> {
     match probe {
         Ok(total) => {
             target.db_loaded = db_loaded || total > 0;
             target.probe_total = total;
-            Ok(())
+            Ok(true)
         }
         Err(message) if message == "send-failed" || message == "timeout" => {
             // The HWND still exists but is not taking the probe (for example an
@@ -902,17 +999,20 @@ fn apply_probe_result(
                 "status": status_snapshot(target),
             }))
         }
-        // It answered, so a malformed payload is not a communication failure and
-        // must not pay for another desktop sweep.
+        // A malformed payload is still an answer: the instance received the query
+        // and replied, so it is not a communication failure (the cache stays) and
+        // the query channel counts as alive. Only "send-failed"/"timeout" mean the
+        // channel never answered. The payload itself is reported by the probe total
+        // staying 0.
         Err(_) => {
             target.db_loaded = db_loaded;
             target.probe_total = 0;
-            Ok(())
+            Ok(true)
         }
     }
 }
 
-fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<Value, Value> {
+fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<(Value, bool), Value> {
     // Version is stable for one instance, but it is sampled again because an
     // in-place upgrade replaces the window while `wait-ready` may still be
     // polling; the returned `version`/`ipcAvailable` fields stay truthful.
@@ -924,36 +1024,50 @@ fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<Value,
         (major, minor_version as u32, revision, build)
     });
     let db_loaded = send_ipc_command(target.hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
-    apply_probe_result(target, db_loaded, probe_window(reply, target.hwnd))?;
-    Ok(status_snapshot(target))
+    let answered = apply_probe_result(target, db_loaded, probe_window(reply, target.hwnd))?;
+    Ok((status_snapshot(target), answered))
 }
 
 /// P2-07: the status surface keeps reporting a still-running but silent instance
 /// (the communication error carries its last snapshot) while the cache performs
 /// bounded re-selection; once an instance answers again the fresh snapshot wins.
+/// P2-10: a status sample is the display snapshot plus whether *this round's*
+/// query probe answered. The snapshot may still carry a stale `dbLoaded: true`
+/// from the running instance, so readiness must be derived from `answered` too.
 fn status_from_cache(
     cache: &mut TargetCache,
     is_live: impl Fn(&TargetInfo) -> bool,
     resolve: impl FnMut() -> Option<TargetInfo>,
-    attempt: impl FnMut(&mut TargetInfo) -> Result<Value, Value>,
-) -> Value {
+    attempt: impl FnMut(&mut TargetInfo) -> Result<(Value, bool), Value>,
+) -> (Value, bool) {
     match cache.run(is_live, resolve, attempt) {
-        Ok(status) => status,
-        Err(error) => error
-            .get("status")
-            .filter(|status| status.is_object())
-            .cloned()
-            .unwrap_or_else(not_running_status),
+        Ok(sample) => sample,
+        // A silent attempt still shows the instance that exists, but no query
+        // channel answered this round.
+        Err(error) => (
+            error
+                .get("status")
+                .filter(|status| status.is_object())
+                .cloned()
+                .unwrap_or_else(not_running_status),
+            false,
+        ),
     }
 }
 
-fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
+/// P2-10: the readiness-facing status path. `status_value` below keeps the plain
+/// display object the JS status action consumes.
+fn status_sample(reply: &ReplyWindow, cache: &mut TargetCache) -> (Value, bool) {
     status_from_cache(
         cache,
         is_cached_target_live,
         || resolve_target(reply),
         |target| refresh_status(reply, target),
     )
+}
+
+fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
+    status_sample(reply, cache).0
 }
 
 /// DEV-07: the readiness polling loop is kept separate from the Win32 plumbing
@@ -974,6 +1088,16 @@ fn poll_until_ready(timeout_ms: u64, poll_interval: Duration, mut sample: impl F
     }
 }
 
+/// P2-10: readiness requires the query channel to have answered *this round*.
+/// The display snapshot can keep `dbLoaded: true` for a running instance whose
+/// query probe times out (see `apply_probe_result`), so `running && dbLoaded`
+/// alone reports ready with `probeTotal: 0` before searches can be served.
+fn ready_from_sample(status: &Value, answered: bool) -> bool {
+    answered
+        && status.get("running").and_then(Value::as_bool).unwrap_or(false)
+        && status.get("dbLoaded").and_then(Value::as_bool).unwrap_or(false)
+}
+
 fn wait_ready(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> Value {
     let timeout_ms = params
         .get("timeoutMs")
@@ -981,10 +1105,8 @@ fn wait_ready(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> V
         .map(|value| value.min(WAIT_READY_MAX_MS))
         .unwrap_or(WAIT_READY_DEFAULT_MS);
     poll_until_ready(timeout_ms, WAIT_READY_POLL_INTERVAL, || {
-        let status = status_value(reply, cache);
-        let ready = status["running"].as_bool().unwrap_or(false)
-            && status["dbLoaded"].as_bool().unwrap_or(false);
-        (ready, status)
+        let (status, answered) = status_sample(reply, cache);
+        (ready_from_sample(&status, answered), status)
     })
 }
 
@@ -1431,11 +1553,15 @@ mod tests {
         info.db_loaded = false;
         info.probe_total = 0;
         assert!(
-            apply_probe_result(&mut info, false, Err("bad-reply".to_string())).is_ok(),
-            "a malformed reply came from the instance and is not a communication failure"
+            apply_probe_result(&mut info, false, Err("bad-reply".to_string()))
+                .expect("a malformed reply came from the instance and is not a communication failure"),
+            "a bad reply answered the query channel, even though the payload is unusable"
         );
         assert_eq!(info.probe_total, 0);
-        assert!(apply_probe_result(&mut info, false, Ok(12)).is_ok());
+        assert!(
+            apply_probe_result(&mut info, false, Ok(12)).expect("a parseable reply answered"),
+            "an answered query probe reports the channel as usable"
+        );
         assert_eq!(info.probe_total, 12);
         assert!(info.db_loaded);
         for message in ["send-failed", "timeout"] {
@@ -1464,7 +1590,7 @@ mod tests {
         cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         let mut attempted = Vec::new();
-        let status = status_from_cache(
+        let (status, answered) = status_from_cache(
             &mut cache,
             |_| true,
             || {
@@ -1480,10 +1606,11 @@ mod tests {
                     snapshot.probe_total = 0;
                     Err(silent_status_error(status_snapshot(&snapshot)))
                 } else {
-                    Ok(status_snapshot(cached))
+                    Ok((status_snapshot(cached), true))
                 }
             },
         );
+        assert!(answered, "the answering instance's query probe reported an answer");
         assert_eq!(status["running"], true);
         assert_eq!(status["dbLoaded"], true, "the answering instance is reported");
         assert_eq!(status["probeTotal"], 10);
@@ -1500,7 +1627,7 @@ mod tests {
         cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         for _ in 0..24 {
-            let status = status_from_cache(
+            let (status, answered) = status_from_cache(
                 &mut cache,
                 |_| true,
                 || {
@@ -1515,6 +1642,7 @@ mod tests {
                     Err(silent_status_error(status_snapshot(&snapshot)))
                 },
             );
+            assert!(!answered, "no query channel answered while only the silent instance exists");
             assert_eq!(status["running"], true, "a silent instance is still reported");
             assert_eq!(status["dbLoaded"], false);
         }
@@ -1535,7 +1663,7 @@ mod tests {
         cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         let result = poll_until_ready(5000, Duration::from_millis(1), || {
-            let status = status_from_cache(
+            let (status, answered) = status_from_cache(
                 &mut cache,
                 |_| true,
                 || {
@@ -1553,19 +1681,18 @@ mod tests {
                             "probeTotal": 0
                         })))
                     } else {
-                        Ok(json!({
+                        Ok((json!({
                             "running": true,
                             "ipcAvailable": true,
                             "dbLoaded": true,
                             "version": "1.4.1.1032",
                             "instance": "1.4",
                             "probeTotal": 10
-                        }))
+                        }), true))
                     }
                 },
             );
-            let ready = status["running"] == true && status["dbLoaded"] == true;
-            (ready, status)
+            (ready_from_sample(&status, answered), status)
         });
         assert_eq!(result["ready"], true, "wait-ready switches to the answering instance");
         assert_eq!(result["status"]["version"], "1.4.1.1032");
@@ -1705,5 +1832,155 @@ mod tests {
             items[0].get("attributes").is_none(),
             "the raw attribute dword stays an internal IPC detail"
         );
+    }
+
+    // ===================== P2-10: query-channel readiness =====================
+
+    // P2-10: an instance can answer the version + IPC_IS_DB_LOADED probes while
+    // never answering the WM_COPYDATA query probe (the report's repro:
+    // ready:true, elapsedMs:0, probeTotal:0). The status snapshot keeps
+    // `dbLoaded: true` in that branch (the display still reports the running
+    // instance), so a readiness predicate of `running && dbLoaded` would end the
+    // wait before the query channel works. Readiness must require this round's
+    // query probe to answer, and the first re-selection to an answering instance
+    // must end the wait.
+    #[test]
+    fn p2_10_wait_ready_requires_an_answering_query_channel() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut polls = 0usize;
+        let mut resolve_calls = 0usize;
+        let mut silent_samples = 0usize;
+        let answer_from_poll = 4usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            polls += 1;
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    if polls >= answer_from_poll {
+                        Some(target(0x2222))
+                    } else {
+                        Some(target(0x1111))
+                    }
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        // Version + IPC_IS_DB_LOADED answer; the query probe times out.
+                        let mut snapshot = target(0x1111);
+                        snapshot.db_loaded = true;
+                        snapshot.probe_total = 0;
+                        Err(silent_status_error(status_snapshot(&snapshot)))
+                    } else {
+                        Ok((status_snapshot(cached), true))
+                    }
+                },
+            );
+            let ready = ready_from_sample(&status, answered);
+            if !ready {
+                silent_samples += 1;
+                assert_eq!(status["dbLoaded"], true, "the display keeps the running instance's dbLoaded");
+                assert!(!answered, "not ready while the only instance answers only status probes");
+            }
+            (ready, status)
+        });
+        assert!(
+            silent_samples >= 2,
+            "wait-ready must observe silent samples instead of returning ready from the stale snapshot: {silent_samples}"
+        );
+        assert!(polls > silent_samples, "the wait continues past the silent samples: {polls}");
+        assert_eq!(result["ready"], true, "the wait ends once an answering instance is re-selected");
+        assert_eq!(result["status"]["version"], "1.4.1.1032");
+        assert_eq!(result["status"]["probeTotal"], 10);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+        assert!(resolve_calls >= 1, "the answering instance is found by re-selection");
+    }
+
+    // P2-10: the first re-selection to an answering instance ends the wait (the
+    // stale dbLoaded snapshot alone never does).
+    #[test]
+    fn p2_10_wait_ready_flips_on_the_first_answering_reselection() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0usize;
+        let mut samples = 0usize;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            samples += 1;
+            let (status, answered) = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x2222))
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        // The version + db probes answer; the query channel is silent.
+                        let mut snapshot = target(0x1111);
+                        snapshot.db_loaded = true;
+                        snapshot.probe_total = 0;
+                        Err(silent_status_error(status_snapshot(&snapshot)))
+                    } else {
+                        Ok((status_snapshot(cached), true))
+                    }
+                },
+            );
+            (ready_from_sample(&status, answered), status)
+        });
+        assert_eq!(samples, 1, "the first re-selection to an answering instance ends the wait");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(result["ready"], true);
+        assert_eq!(result["status"]["probeTotal"], 10);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    fn candidate(probe: ProbeState, ipc_available: bool, db_loaded: bool, has_version: bool) -> CandidateSignals {
+        CandidateSignals { probe, ipc_available, db_loaded, has_version }
+    }
+
+    // P2-10: the old instance answers version + IPC_IS_DB_LOADED but times out the
+    // query probe; the new instance answers the query probe with 0 results (an empty
+    // index is still a working query channel). The pure ranking must pick the new
+    // instance: a healthy-looking status snapshot must neither tie nor outrank an
+    // answering query channel.
+    #[test]
+    fn p2_10_an_answering_empty_index_outranks_a_status_healthy_query_silent_instance() {
+        let old_instance = candidate(ProbeState::Timeout, true, true, true);
+        let new_instance = candidate(ProbeState::Answered(0), true, true, true);
+        assert!(
+            candidate_score(&new_instance) > candidate_score(&old_instance),
+            "an answering empty index ({}) must outrank a query-silent status-healthy instance ({})",
+            candidate_score(&new_instance),
+            candidate_score(&old_instance)
+        );
+        assert_eq!(
+            rank_candidates(&[old_instance, new_instance]),
+            Some(1),
+            "resolve_target's ranking must switch to the instance that answers queries"
+        );
+
+        // Answers beat every silence mode: content > empty index > bad reply.
+        assert!(
+            candidate_score(&candidate(ProbeState::Answered(3), false, false, false))
+                > candidate_score(&candidate(ProbeState::Answered(0), false, false, false)),
+            "content outranks an answering empty index"
+        );
+        assert!(
+            candidate_score(&candidate(ProbeState::BadReply, false, false, false))
+                > candidate_score(&candidate(ProbeState::Timeout, true, true, true)),
+            "a bad reply proves the query channel answered, so it outranks a silent one"
+        );
+        // Query-silent instances still rank by their status answers, and a fully
+        // silent candidate is left to resolve_target's silent fallback.
+        assert!(
+            candidate_score(&candidate(ProbeState::Timeout, true, true, true))
+                > candidate_score(&candidate(ProbeState::SendFailed, true, false, true)),
+            "timeout and send-failed are both unanswered; only the status answers differ"
+        );
+        let fully_silent = candidate(ProbeState::SendFailed, false, false, false);
+        assert_eq!(candidate_score(&fully_silent), 0, "fully silent candidates are not scoreable");
+        assert_eq!(rank_candidates(&[fully_silent]), None, "fully silent falls back to a running-only snapshot");
+        assert_eq!(rank_candidates(&[]), None);
     }
 }

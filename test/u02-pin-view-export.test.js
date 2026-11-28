@@ -635,6 +635,359 @@ test('plan: the measured glyph budget is bounded (P2-04)', () => {  assert.ok(Nu
   assert.ok(plan.ocrBlocks.length <= viewExport.MAX_OCR_BLOCKS)
 })
 
+// ---------------------------------------------------------------------------
+// 1d. P2-06/P2-07: grapheme-cluster measurement and an ATTEMPT-bounded DOM-read
+//     budget. These tests run the shared overlay script against a fake DOM whose
+//     Range boxes behave like Chromium's: a range that is a strict SUBSET of one
+//     grapheme still reports that cluster's whole box, so the old code-point loop
+//     produced several overlapping glyphs (and 3000 synchronous layout reads) for
+//     a narrow chip that only shows three clusters.
+// ---------------------------------------------------------------------------
+
+const CLUSTER_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+function graphemeClusters(text) {
+  const clusters = []
+  for (const part of CLUSTER_SEGMENTER.segment(text)) {
+    clusters.push({ text: part.segment, start: part.index, end: part.index + part.segment.length })
+  }
+  return clusters
+}
+
+// A fake pin overlay: one absolute chip per text block. place(clusterIndex, cluster)
+// returns the cluster's box in the chip's local frame; the chip geometry mirrors what
+// renderBlocks() writes into the DOM.
+function createOverlayRuntime(specs, globals = {}) {
+  const reads = { count: 0 }
+  const host = {
+    nodeType: 1,
+    parentElement: null,
+    children: [],
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 400 })
+  }
+  const ownerByTextNode = new Map()
+  const elements = []
+  for (const spec of specs) {
+    const width = spec.width === undefined ? 100 : spec.width
+    const height = spec.height === undefined ? 40 : spec.height
+    const offsetLeft = spec.offsetLeft === undefined ? 0 : spec.offsetLeft
+    const offsetTop = spec.offsetTop === undefined ? 0 : spec.offsetTop
+    const clusters = graphemeClusters(spec.text)
+    const boxes = clusters.map((cluster, index) => {
+      const placed = spec.place(index, cluster)
+      const left = offsetLeft + placed.left
+      const top = offsetTop + placed.top
+      return { left, top, right: left + placed.width, bottom: top + placed.height, width: placed.width, height: placed.height }
+    })
+    const textNode = { nodeType: 3, nodeValue: spec.text, nextSibling: null }
+    const element = {
+      nodeType: 1,
+      firstChild: textNode,
+      nextSibling: null,
+      dataset: { blockIndex: String(spec.blockIndex === undefined ? elements.length : spec.blockIndex) },
+      style: { transform: '' },
+      classList: { contains: (name) => spec.vertical === true && name === 'vertical' },
+      offsetParent: host,
+      parentElement: host,
+      offsetLeft,
+      offsetTop,
+      offsetWidth: width,
+      offsetHeight: height,
+      getBoundingClientRect: () => ({ left: offsetLeft, top: offsetTop, width, height }),
+      __computed: {
+        fontSize: (spec.fontSize === undefined ? 12 : spec.fontSize) + 'px',
+        fontFamily: spec.fontFamily || 'system-ui, sans-serif',
+        transform: 'none'
+      }
+    }
+    ownerByTextNode.set(textNode, { clusters, boxes })
+    host.children.push(element)
+    elements.push(element)
+  }
+  const document = {
+    createRange: () => {
+      let startNode = null
+      let start = 0
+      let end = 0
+      return {
+        setStart: (node, offset) => { startNode = node; start = offset },
+        setEnd: (node, offset) => { end = offset },
+        getClientRects: () => {
+          reads.count += 1
+          const owner = ownerByTextNode.get(startNode)
+          if (!owner) return []
+          const rects = []
+          for (let index = 0; index < owner.clusters.length; index += 1) {
+            const cluster = owner.clusters[index]
+            if (end <= cluster.start || start >= cluster.end) continue
+            rects.push(owner.boxes[index])
+          }
+          return rects
+        }
+      }
+    }
+  }
+  const sandbox = {
+    window: {},
+    document,
+    getComputedStyle: (node) => node.__computed || { fontSize: '12px', fontFamily: 'sans-serif', transform: 'none' },
+    ...globals
+  }
+  vm.runInNewContext(read('shared', 'ocr-text-overlay.js'), sandbox, { filename: 'ocr-text-overlay.js' })
+  return {
+    api: sandbox.window.OcrTextOverlay,
+    host,
+    elements,
+    reads,
+    measure: () => sandbox.window.OcrTextOverlay.measureLayout(host)
+  }
+}
+
+// One unwrapped line: every cluster advances 18 CSS px on the same baseline.
+function singleLinePlace(index, cluster) {
+  return { left: 4 + index * 18, top: 4, width: cluster.text.length > 1 ? 20 : 10, height: 14 }
+}
+
+// A 3000-cluster block whose chip is only 40x20 and whose text wraps into many lines:
+// only the first visible line (3 clusters) is inside the chip.
+function narrowClippedPlace(index) {
+  const line = Math.floor(index / 3)
+  const column = index % 3
+  return { left: 2 + column * 12, top: 1 + line * 20, width: 10, height: 14 }
+}
+
+// vertical-rl: three clusters per column, columns run right to left.
+function verticalColumnPlace(index) {
+  const column = Math.floor(index / 3)
+  const row = index % 3
+  return { left: 38 - column * 24, top: 10 + row * 16, width: 16, height: 14 }
+}
+
+test('measure: grapheme clusters keep ZWJ emoji, combining marks and joining scripts intact (P2-06)', () => {
+  const runtime = createOverlayRuntime([
+    { text: '测试👩‍💻', width: 120, height: 40, place: singleLinePlace },
+    { text: 'cafe\u0301', width: 120, height: 40, place: singleLinePlace },
+    { text: 'مرحبا', width: 120, height: 40, place: singleLinePlace },
+    { text: '甲乙👩‍💻丙丁戊', vertical: true, width: 60, height: 120, place: verticalColumnPlace }
+  ])
+  const layouts = runtime.measure()
+  assert.equal(layouts.length, 4)
+
+  // Chromium reports three graphemes for the ZWJ sample; the measurement must not split
+  // the sequence into several glyphs at the same coordinates.
+  const zwj = layouts[0]
+  assert.equal(zwj.lines.length, 1)
+  assert.deepEqual(Array.from(zwj.lines[0].glyphs, (glyph) => glyph.text), ['测', '试', '👩‍💻'])
+  assert.equal(zwj.lines[0].text, '测试👩‍💻')
+  assert.equal(zwj.attempts, 3, 'one measurement per grapheme cluster, not per code point')
+  assert.equal(zwj.complete, true)
+
+  // A combining diacritic stays attached to its base letter.
+  const combining = layouts[1]
+  assert.deepEqual(Array.from(combining.lines[0].glyphs, (glyph) => glyph.text), ['c', 'a', 'f', 'e\u0301'])
+  assert.equal(combining.attempts, 4)
+
+  // Arabic letters stay separate clusters but the line keeps the browser's own run.
+  const arabic = layouts[2]
+  assert.equal(arabic.lines[0].text, 'مرحبا')
+  assert.deepEqual(Array.from(arabic.lines[0].glyphs, (glyph) => glyph.text), ['م', 'ر', 'ح', 'ب', 'ا'])
+  assert.equal(arabic.attempts, 5)
+
+  // Vertical text keeps complete clusters and right-to-left column order.
+  const vertical = layouts[3]
+  assert.equal(vertical.vertical, true)
+  assert.equal(vertical.lines.length, 2)
+  assert.deepEqual(Array.from(vertical.lines[0].glyphs, (glyph) => glyph.text), ['甲', '乙', '👩‍💻'])
+  assert.deepEqual(Array.from(vertical.lines[1].glyphs, (glyph) => glyph.text), ['丙', '丁', '戊'])
+  assert.ok(vertical.lines[0].glyphs[0].x > vertical.lines[1].glyphs[0].x, 'first column sits to the right')
+  assert.ok(vertical.lines[0].glyphs[0].y < vertical.lines[0].glyphs[1].y, 'clusters run top to bottom')
+})
+
+test('measure: without Intl.Segmenter the bounded fallback keeps clusters whole (P2-06)', () => {
+  const combiningRun = 'a' + String.fromCharCode(0x301).repeat(100)
+  const runtime = createOverlayRuntime([
+    { text: '测试👩‍💻', width: 120, height: 40, place: singleLinePlace },
+    { text: 'cafe' + String.fromCharCode(0x301), width: 120, height: 40, place: singleLinePlace },
+    // Devanagari KA + VIRAMA + SSA: the fallback has no Indic cluster table, so it keeps
+    // the code points separate. That also proves the fallback path really ran (a real
+    // segmentation would report one conjunct cluster).
+    { text: '\u0915\u094d\u0937', width: 120, height: 40, place: singleLinePlace },
+    { text: combiningRun, width: 120, height: 40, place: singleLinePlace }
+  ], { Intl: undefined })
+  const layouts = runtime.measure()
+  assert.equal(layouts.length, 4)
+  assert.deepEqual(Array.from(layouts[0].lines[0].glyphs, (glyph) => glyph.text), ['测', '试', '👩‍💻'])
+  assert.deepEqual(Array.from(layouts[1].lines[0].glyphs, (glyph) => glyph.text), ['c', 'a', 'f', 'e' + String.fromCharCode(0x301)])
+  assert.deepEqual(Array.from(layouts[2].lines[0].glyphs, (glyph) => glyph.text), ['\u0915', '\u094d', '\u0937'])
+  // A hostile combining run is chunked, never unbounded: each glyph text stays <= 32 units
+  // and the whole run is still measured exactly once.
+  const chunks = Array.from(layouts[3].lines[0].glyphs, (glyph) => glyph.text)
+  assert.equal(chunks.join(''), combiningRun)
+  assert.ok(chunks.every((chunk) => chunk.length <= 32), `fallback chunks are bounded (${chunks.map((chunk) => chunk.length)})`)
+})
+
+test('measure: attempted measurements, not retained glyphs, consume the bounded DOM-read budget (P2-07)', () => {
+  const text = '可'.repeat(3000)
+  const runtime = createOverlayRuntime([{ text, width: 40, height: 20, place: narrowClippedPlace }])
+  const layouts = runtime.measure()
+  // Before the fix this was 3000 synchronous Range.getClientRects() calls even though the
+  // chip only shows three clusters (the review's measured defect).
+  assert.ok(runtime.reads.count <= 512, 'per-block DOM reads stay bounded (' + runtime.reads.count + ')')
+  assert.equal(layouts.length, 1)
+  const layout = layouts[0]
+  assert.equal(layout.attempts, 512, 'the per-block budget counts attempted measurements')
+  assert.equal(layout.complete, false, 'a block that was not fully measured is marked incomplete')
+  assert.equal(layout.lines.length, 1)
+  assert.deepEqual(Array.from(layout.lines[0].glyphs, (glyph) => glyph.text), ['可', '可', '可'])
+  assert.equal(layout.lines[0].text, '可可可', 'the visible prefix is still measured and exported')
+})
+
+test('measure: a multi-block clipped corpus shares one bounded global attempt budget (P2-07)', () => {
+  const specs = []
+  for (let index = 0; index < 12; index += 1) {
+    specs.push({ text: '可'.repeat(3000), width: 40, height: 20, offsetLeft: 0, offsetTop: index * 30, place: narrowClippedPlace })
+  }
+  const runtime = createOverlayRuntime(specs)
+  const layouts = runtime.measure()
+  const totalAttempts = layouts.reduce((sum, layout) => sum + (layout.attempts || 0), 0)
+  assert.ok(runtime.reads.count <= 4096, 'global DOM reads stay bounded (' + runtime.reads.count + ' of 12x3000 potential)')
+  assert.ok(layouts.length <= 8, 'only the blocks the global budget covers are measured (' + layouts.length + ')')
+  assert.equal(runtime.reads.count, totalAttempts, 'every DOM read is accounted for as an attempted measurement')
+  for (const layout of layouts) {
+    assert.ok(layout.attempts <= 512, 'per-block attempts stay bounded (' + layout.attempts + ')')
+    assert.equal(layout.complete, false)
+  }
+})
+
+test('measure: a budget-limited clipped block still exports its visible prefix (P2-07)', () => {
+  const runtime = createOverlayRuntime([{ text: '可'.repeat(3000), width: 40, height: 20, place: narrowClippedPlace }])
+  const layouts = runtime.measure()
+  assert.equal(layouts[0].complete, false)
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: false,
+      blocks: [{
+        text: '可'.repeat(3000),
+        text_score: 0.9,
+        box_points: [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 20 }, { x: 0, y: 20 }]
+      }],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: layouts
+    }
+  })
+  assert.equal(plan.ocrBlocks.length, 1)
+  assert.equal(plan.ocrBlocks[0].measured, true, 'the partially measured block still uses the measured painter')
+  assert.equal(plan.ocrBlocks[0].lines.length, 1)
+  assert.equal(plan.ocrBlocks[0].lines[0].text, '可可可')
+  const context = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['可可可'], 'the visible region is painted, exactly once')
+})
+
+test('draw: a horizontal measured line is shaped and painted once as the whole line (P2-06)', () => {
+  const block = (text) => ({
+    text,
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 180, y: 20 }, { x: 180, y: 60 }, { x: 20, y: 60 }]
+  })
+  const wrapped = measuredEntry(0, {
+    width: 60,
+    height: 40,
+    centerX: 120,
+    centerY: 60,
+    fontSize: 11,
+    lines: [
+      { text: '这是译文', x: 0, y: 8, width: 48, height: 12, glyphs: glyphLine(['这', '是', '译', '文'], 'y', 8, -24, 12).glyphs },
+      { text: '分担', x: 0, y: -8, width: 24, height: 12, glyphs: glyphLine(['分', '担'], 'y', -8, -12, 12).glyphs }
+    ]
+  })
+  const arabicText = 'مرحبا بالعالم'
+  const arabicGlyphs = graphemeClusters(arabicText).map((cluster, index) => ({
+    text: cluster.text,
+    x: -60 + index * 12,
+    y: 0,
+    width: 12,
+    height: 14
+  }))
+  const arabic = measuredEntry(1, {
+    width: 160,
+    height: 40,
+    centerX: 120,
+    centerY: 120,
+    fontSize: 11,
+    lines: [{ text: arabicText, x: 0, y: 0, width: 120, height: 14, glyphs: arabicGlyphs }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: false,
+      blocks: [block('这是译文分担'), block(arabicText)],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [wrapped, arabic]
+    }
+  })
+  const context = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  // One shaped fillText per measured horizontal line: three lines total, in reading order.
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['这是译文', '分担', arabicText])
+  assert.equal(texts[0].y, 8)
+  assert.equal(texts[1].y, -8)
+})
+
+test('plan: the measured glyph payload never truncates a ZWJ grapheme (P2-06)', () => {
+  const emoji = '👩‍💻'
+  const sample = '测' + emoji
+  const entry = measuredEntry(0, {
+    width: 120,
+    height: 40,
+    centerX: 120,
+    centerY: 60,
+    fontSize: 12,
+    lines: [{
+      text: sample,
+      x: 0,
+      y: 0,
+      width: 80,
+      height: 14,
+      glyphs: [
+        { text: '测', x: -24, y: 0, width: 12, height: 12 },
+        { text: emoji, x: -4, y: 0, width: 20, height: 12 }
+      ]
+    }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: {
+      visible: true,
+      translated: true,
+      blocks: [{
+        text: sample,
+        text_score: 0.95,
+        box_points: [{ x: 60, y: 40 }, { x: 180, y: 40 }, { x: 180, y: 80 }, { x: 60, y: 80 }]
+      }],
+      imageWidth: 400,
+      imageHeight: 300,
+      layout: [entry]
+    }
+  })
+  assert.equal(plan.ocrBlocks.length, 1)
+  assert.equal(plan.ocrBlocks[0].lines[0].text, sample)
+  assert.deepEqual(plan.ocrBlocks[0].lines[0].glyphs.map((glyph) => glyph.text), ['测', emoji])
+})
+
 test('wiring: the renderer measures the live overlay layout for the export (P2-04)', () => {
   const pinScript = read('pin', 'pin.js')
   assert.match(pinScript, /measureLayout/)

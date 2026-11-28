@@ -101,7 +101,18 @@
   //
   // Privacy note: keystrokes are already filtered at capture time (modifier chords + a short
   // navigation/function-key whitelist). The editor only renders the labels it is given.
-  const KEYSTROKE_CAPSULE_LIMIT = 500
+  //
+  // P2-08: KEYSTROKE_SOURCE_LIMIT is the project's persistence cap (main/services/
+  // recording-project-service.js KEYSTROKE_LIMIT), NOT a render budget. The editor must keep the
+  // WHOLE source track, because the trim selection is projected onto it by keystrokePlan() ->
+  // shared normalizeKeystrokeOverlay(); the 500-window / 64-label render budget is applied to the
+  // PROJECTED sequence there, and its loss is disclosed with exact counts + source-time range.
+  // Reading only the first 500 here deleted the tail before projection, so a legal 600-capsule
+  // project trimmed to its last 100 s planned 0 capsules and `dropped` stayed null.
+  const KEYSTROKE_SOURCE_LIMIT = Math.max(
+    1,
+    Math.round(Number(options.KEYSTROKE_OVERLAY_LIMITS && options.KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS) || 2000)
+  )
   const KEYSTROKE_CAPSULE_MAX_LENGTH = 48
   const KEYSTROKE_CAPSULE_PATTERN = /^(?:(?:Ctrl|Alt|Shift|Win)\+){1,4}(?:[A-Z0-9]|Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$|^(?:Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$/
   const PAUSE_CUT_MAX_SEGMENTS = 20
@@ -112,7 +123,7 @@
     if (!Array.isArray(value)) return []
     const limit = Math.max(0, Math.round(Number(durationMs) || 0))
     const capsules = []
-    for (const entry of value.slice(0, KEYSTROKE_CAPSULE_LIMIT * 2)) {
+    for (const entry of value.slice(0, KEYSTROKE_SOURCE_LIMIT)) {
       if (!entry || typeof entry !== 'object') continue
       const combo = typeof entry.combo === 'string' ? entry.combo.trim() : ''
       if (!combo || combo.length > KEYSTROKE_CAPSULE_MAX_LENGTH) continue
@@ -123,7 +134,9 @@
       capsules.push({ tMs, combo })
     }
     capsules.sort((left, right) => left.tMs - right.tMs)
-    return capsules.slice(0, KEYSTROKE_CAPSULE_LIMIT)
+    // The input slice above already bounds the list by the project's own cap; read time applies NO
+    // render truncation (keystrokePlan lets the shared normaliser budget the projected sequence).
+    return capsules
   }
 
   function normalizePauseCuts(value, durationMs) {
@@ -662,7 +675,11 @@
         truncated: false,
         total: { windows: 0, labels: 0 },
         dropped: null,
-        maxLabels: Math.max(0, Math.round(finiteNumber(limits.MAX_LABELS) || 0))
+        // The exact cap that produced `dropped` differs by scenario (the 64-label material cap or
+        // the 500-window render budget), so both are disclosed instead of attributing every loss
+        // to the label cap (P2-08 follow-up).
+        maxLabels: Math.max(0, Math.round(finiteNumber(limits.MAX_LABELS) || 0)),
+        maxWindows: Math.max(0, Math.round(finiteNumber(limits.MAX_RENDER_WINDOWS) || 0))
       }
       if (model.keystrokes.length === 0) return fallback
       const normalized = options.normalizeKeystrokeOverlay({
@@ -683,7 +700,8 @@
               lastSourceMs: value.dropped.lastSourceMs
             }
           : null,
-        maxLabels: fallback.maxLabels
+        maxLabels: fallback.maxLabels,
+        maxWindows: fallback.maxWindows
       }
     }
 

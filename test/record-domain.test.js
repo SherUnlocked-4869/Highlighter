@@ -744,6 +744,28 @@ function createProjectHarness(overrides = {}) {
   }
   const updateSettingsCalls = []
   const regionSelections = []
+  // P1-01 review: the workbench passes the capture request id to the overlay and waits for that
+  // request's receipt. The fake overlay behaves like the real BrowserWindow: it is returned from
+  // createRegionSelection and reports 'closed' only when the test emits it.
+  const regionOverlays = []
+  const createRegionOverlay = (options) => {
+    const closedListeners = []
+    const overlay = {
+      options,
+      destroyed: false,
+      isDestroyed: () => overlay.destroyed,
+      once: (event, listener) => {
+        if (event === 'closed') closedListeners.push(listener)
+      },
+      emitClosed: () => {
+        if (overlay.destroyed) return
+        overlay.destroyed = true
+        for (const listener of closedListeners.slice()) listener()
+      }
+    }
+    regionOverlays.push(overlay)
+    return overlay
+  }
   const routes = []
   const shellCalls = []
   const trayRefreshes = []
@@ -897,7 +919,10 @@ function createProjectHarness(overrides = {}) {
       },
       createMainWindow: (route) => routes.push(route),
       backdropColor: () => '#101010',
-      createRegionSelection: (options) => { regionSelections.push(options); return Promise.resolve({}) },
+      createRegionSelection: (options) => {
+        regionSelections.push(options)
+        return Promise.resolve(createRegionOverlay(options))
+      },
       positionAutomationWindow: () => false,
       refreshTray: () => trayRefreshes.push(Date.now())
     }),
@@ -919,6 +944,7 @@ function createProjectHarness(overrides = {}) {
     settings,
     updateSettingsCalls,
     regionSelections,
+    regionOverlays,
     routes,
     shellCalls,
     trayRefreshes,
@@ -1299,12 +1325,127 @@ test('the workbench reads config/displays/recent and starts a capture with the w
   // Region start reuses the capture overlay and carries the workbench's parameters through the
   // one-shot slot the overlay's createRecordWindow() consumes.
   const regionHarness = createProjectHarness()
-  await regionHarness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  const regionStart = regionHarness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  await regionHarness.tick()
   assert.equal(regionHarness.regionSelections.length, 1)
   assert.equal(regionHarness.regionSelections[0].mode, 'region')
-  const regionControl = await regionHarness.domain.createRecordWindow({ display: regionHarness.display, selectionBounds: { x: 0, y: 0, width: 100, height: 100 } })
+  const regionControl = await regionHarness.domain.createRecordWindow({ display: regionHarness.display, selectionBounds: { x: 0, y: 0, width: 100, height: 100 }, regionRequestId: regionHarness.regionSelections[0].regionRequestId })
+  assert.deepEqual(await regionStart, { ok: true, created: true })
   assert.equal(regionControl._recordMode, 'region')
   assert.equal(regionControl._recordInit.quality, 'ultra')
+})
+
+// P1-01 review: cancelling the workbench's region overlay must revoke the one-shot capture
+// config, so the next quick-entry region selection cannot silently inherit "this recording only"
+// global shortcut capture (the review reproduced the second control window with
+// _recordCaptureConfig.demoKeystrokes === true).
+test('P1-01 review: a cancelled workbench region selection never authorizes the quick entry', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true }
+  })
+  await harness.tick()
+  assert.equal(harness.regionSelections.length, 1)
+  const requestId = harness.regionSelections[0].regionRequestId
+  assert.equal(typeof requestId, 'string')
+  assert.ok(requestId.length > 0, 'the workbench overlay is addressed by a capture request id')
+  // The user cancels the selection overlay: no control window was created.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+
+  // Quick-entry region recording is a different entry: it carries no workbench config and no
+  // workbench request id, so the pending slot must not be consumed by it.
+  assert.deepEqual(await harness.domain.startRegionRecording(), { ok: true })
+  assert.equal(harness.regionSelections.length, 2)
+  assert.equal(harness.regionSelections[1].regionRequestId, undefined)
+  const quickControl = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 100, height: 100 },
+    regionRequestId: ''
+  })
+  assert.equal(quickControl._recordCaptureConfig.demoKeystrokes, false, 'a cancelled opt-in must not authorize the quick entry')
+  assert.equal(quickControl._recordInit.quality, 'standard', 'the cancelled workbench quality must not leak either (persisted default used)')
+})
+
+// P1-01 review: the workbench only receives a created receipt once the control window exists;
+// a matching request consumes exactly its own config and the closed overlay cannot report it as
+// cancelled afterwards.
+test('P1-01 review: a created region take resolves the matching workbench request exactly once', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { quality: 'ultra', demoKeystrokes: true }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const control = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 10, y: 20, width: 200, height: 150 },
+    regionRequestId: requestId
+  })
+  assert.deepEqual(await startPromise, { ok: true, created: true })
+  assert.equal(control._recordCaptureConfig.demoKeystrokes, true)
+  assert.equal(control._recordInit.quality, 'ultra')
+  // The overlay closing after the take started is not a second (cancel) receipt.
+  harness.regionOverlays[0].emitClosed()
+  // Repeat entry only focuses the running bar and never reports a created take.
+  assert.deepEqual(await harness.controller.workbenchStart(null, { mode: 'region', config: { demoKeystrokes: true } }), { ok: true, focused: true })
+  assert.equal(harness.regionOverlays.length, 1, 'focusing the active take does not open another selection overlay')
+})
+
+// P1-01 review: a REPLACED overlay (a new capture supersedes the old one, which is what the
+// capture domain does when another region selection starts) must revoke the old request and keep
+// the replacement's own config intact.
+test('P1-01 review: replacing the region overlay revokes the old request, not the new one', async () => {
+  const harness = createProjectHarness()
+  const firstStart = harness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'ultra' } })
+  await harness.tick()
+  const firstRequestId = harness.regionSelections[0].regionRequestId
+  const secondStart = harness.controller.workbenchStart(null, { mode: 'region', config: { quality: 'high' } })
+  await harness.tick()
+  assert.equal(harness.regionSelections.length, 2)
+  const secondRequestId = harness.regionSelections[1].regionRequestId
+  assert.notEqual(firstRequestId, secondRequestId)
+  // The capture domain closes the previous overlay when a new capture window replaces it.
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await firstStart, { ok: true, created: false }, 'the replaced request reports no take')
+  // The replacement keeps its own one-shot config and consumes exactly that.
+  const control = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 80, height: 80 },
+    regionRequestId: secondRequestId
+  })
+  assert.deepEqual(await secondStart, { ok: true, created: true })
+  assert.equal(control._recordCaptureConfig.demoKeystrokes, false)
+  assert.equal(control._recordInit.quality, 'high', 'the replacement keeps its own quality')
+})
+
+// P1-01 review: a pending workbench config can only be consumed by the overlay request that
+// created it; an unrelated/quick overlay selecting a rectangle gets the persisted defaults.
+test('P1-01 review: a pending workbench config is only consumed by its own request id', async () => {
+  const harness = createProjectHarness()
+  const startPromise = harness.controller.workbenchStart(null, {
+    mode: 'region',
+    config: { demoKeystrokes: true }
+  })
+  await harness.tick()
+  const requestId = harness.regionSelections[0].regionRequestId
+  const unrelated = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 50, height: 50 },
+    regionRequestId: 'unrelated-request'
+  })
+  assert.equal(unrelated._recordCaptureConfig.demoKeystrokes, false, 'a different request id never consumes the slot')
+  harness.regionOverlays[0].emitClosed()
+  assert.deepEqual(await startPromise, { ok: true, created: false })
+  // The slot is gone: the bound request id can no longer authorize a later capture.
+  const stale = await harness.domain.createRecordWindow({
+    display: harness.display,
+    selectionBounds: { x: 0, y: 0, width: 50, height: 50 },
+    regionRequestId: requestId
+  })
+  assert.equal(stale._recordCaptureConfig.demoKeystrokes, false, 'a cancelled request id stays invalid')
 })
 
 test('the workbench records page: list/open/rename/delete/reveal stay path-free and role-safe', async () => {

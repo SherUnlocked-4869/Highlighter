@@ -1198,12 +1198,32 @@ function createPinDomain(deps) {
     } catch (error) {
       return { ok: false, code: 'CAPTURE_THREW', message: error.message }
     }
+    // P2-5 (review finding 5): getSources() awaited just above, and the display list was read
+    // BEFORE that await. A hotplug or a driver re-enumeration during the await means the plan's
+    // rectangle and the returned sources can describe two different topologies; cropping the
+    // new topology's source with the old rectangle delivers another screen's pixels. Re-read
+    // the list and refuse retryably when it no longer has the same shape, so the next tick
+    // re-plans from the current topology.
+    let displaysAfter = null
+    try {
+      displaysAfter = typeof screen.getAllDisplays === 'function'
+        ? screen.getAllDisplays()
+        : [screen.getDisplayMatching(win.getBounds())]
+    } catch (error) {
+      // The display state could not be re-confirmed: no frame may be delivered from it.
+      return { ok: false, code: 'DISPLAY_UNAVAILABLE', retryable: true, message: error.message }
+    }
+    const topology = pinScreenDiff.checkDisplayTopology(displays, displaysAfter, plan.display.id)
+    if (!topology || topology.ok !== true) {
+      return { ok: false, code: topology?.code || 'TOPOLOGY_CHANGED', retryable: true }
+    }
     // display_id is the authoritative match. There is deliberately NO blind fallback: with
     // more than one display an unidentified source could be the primary screen, and the
     // caller would then crop the target display's coordinates out of the wrong pixels
     // (P2-03). The single-display case is safe by elimination - the only screen source IS
-    // the target one - and pickScreenSource states that explicitly.
-    const displaysCount = Array.isArray(displays) ? displays.length : 1
+    // the target one - and pickScreenSource states that explicitly. It is asserted from the
+    // post-await count: the pre-await one may describe a topology that is already gone (P2-5).
+    const displaysCount = Array.isArray(displaysAfter) ? displaysAfter.length : 1
     const picked = pinScreenDiff.pickScreenSource(sources, plan.display.id, {
       singleDisplay: displaysCount === 1
     })

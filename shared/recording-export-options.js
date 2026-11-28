@@ -411,8 +411,19 @@
   // reach the filter graph. Anything else is dropped here, so an events.json written by another
   // build still cannot inject arbitrary text into the encoder's asset pipeline.
   const KEYSTROKE_OVERLAY_LIMITS = Object.freeze({
-    // Same cap the editor HUD normalises to (record/trim-controller.js KEYSTROKE_CAPSULE_LIMIT):
-    // preview and export must agree on how many events they consider.
+    // P2-08: the SOURCE read boundary, NOT a render budget. A project track persists at most
+    // 2000 capsules (main/services/recording-project-service.js KEYSTROKE_LIMIT, mirrored by
+    // main/domains/record KEYSTROKE_LIMIT), so the editor and this normaliser must accept every
+    // one of them: the trim selection is projected onto the WHOLE source sequence before any
+    // budget below is applied. Reading fewer deleted the tail at read time, and a legal
+    // 600-capsule project trimmed to its last 100 s then planned 0 windows with `truncated:false`.
+    // Exceeding this cap is a malformed/foreign track, not a disclosed render truncation.
+    MAX_SOURCE_ITEMS: 2000,
+    // Render-window budget (one composited window => one `gte()/lt()` term in its label's enable
+    // expression). Historical name kept because the preview HUD and the exporter must agree on the
+    // visible sequence; `MAX_RENDER_WINDOWS` below is the canonical spelling and both stay equal.
+    // Applied AFTER the trim projection; every dropped window is disclosed through
+    // `truncated`/`dropped` with its exact source-time range.
     MAX_ITEMS: 500,
     // Preview display window (record/editor.js KEYSTROKE_CAPSULE_MS).
     DISPLAY_MS: 1100,
@@ -420,8 +431,8 @@
     // P2-05 filter/material budget. appendKeystrokeOverlay composes ONE looped PNG input and ONE
     // overlay node per DISTINCT label (never one per window), so the window count only adds
     // `gte()/lt()` terms to that label's enable expression: 300 presses of the same shortcut cost
-    // one node, not 300 chained overlays. The cap therefore matches the editor's 500-capsule
-    // sequence exactly, and 240 no longer silently hides the tail the preview showed.
+    // one node, not 300 chained overlays. The cap is therefore the render budget for the projected
+    // sequence, and 240 no longer silently hides the tail the preview showed.
     // It is still enforced for a hand-built/older caller: windows past the cap are dropped and
     // disclosed through `truncated` / `dropped` instead of disappearing silently.
     MAX_RENDER_WINDOWS: 500,
@@ -500,6 +511,8 @@
   // When a retained material cap drops windows, `items`/`sourceItems` are the KEPT plan and
   // `total`/`dropped` describe the truncation precisely (capsule count, distinct label count,
   // first/last dropped SOURCE time) so the editor can disclose it before the user confirms.
+  // P2-08: the raw input is read up to MAX_SOURCE_ITEMS (the project's own persistence cap) and
+  // projected first; MAX_RENDER_WINDOWS/MAX_LABELS are applied to the PROJECTED list afterwards.
   function normalizeKeystrokeOverlay(input, segments, durationMs = 0) {
     if (input === undefined || input === null) return { ok: true, value: null }
     if (!isPlainObject(input)) return fail('invalid-keystroke-option')
@@ -509,7 +522,7 @@
     const limit = Math.max(0, Math.round(finiteNumber(durationMs) || 0))
     const ranges = Array.isArray(segments) ? segments : []
     const projected = []
-    for (const entry of input.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS * 2)) {
+    for (const entry of input.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS)) {
       if (!isPlainObject(entry)) continue
       if (!isValidKeystrokeCombo(entry.combo)) continue
       const rawMs = finiteNumber(entry.tMs)
@@ -1553,8 +1566,10 @@
     const keystrokes = isPlainObject(source.keystrokes) && source.keystrokes.enabled === true
       ? {
           enabled: true,
+          // P2-08: SOURCE items use the project limit (2000), not the 500-window render budget;
+          // the export service projects the selection first and applies the budget afterwards.
           items: Array.isArray(source.keystrokes.items)
-            ? source.keystrokes.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS)
+            ? source.keystrokes.items.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_SOURCE_ITEMS)
             : null
         }
       : null

@@ -290,48 +290,55 @@ const KEYSTROKE_SOURCE_GLOBAL = 1
 
 function mergeKeystrokeSources(primary, global, { dedupeMs = KEYSTROKE_SOURCE_DEDUPE_MS } = {}) {
   const window = Math.max(0, Math.round(Number(dedupeMs) || 0))
-  const entries = []
+  const byCombo = new Map()
   const collect = (source, sourceId) => {
     for (const entry of Array.isArray(source) ? source : []) {
       if (!isValidKeystrokeCombo(entry?.combo)) continue
       const at = Number(entry?.at)
       if (!Number.isFinite(at) || at < 0) continue
-      entries.push({ at, combo: String(entry.combo).trim(), source: sourceId })
+      const combo = String(entry.combo).trim()
+      const group = byCombo.get(combo) || []
+      group.push({ at, combo, source: sourceId })
+      byCombo.set(combo, group)
     }
   }
   collect(primary, KEYSTROKE_SOURCE_CONTROL_BAR)
   collect(global, KEYSTROKE_SOURCE_GLOBAL)
-  // Time order decides which side of a pair is seen first; the source id is only the stable
-  // tie-breaker so the result never depends on the two input arrays' internal order.
-  entries.sort((left, right) => left.at - right.at || left.source - right.source)
 
-  const unmatched = [[], []]
   const merged = []
-  for (const entry of entries) {
-    const candidates = unmatched[entry.source ^ 1]
-    // Pair with the nearest unmatched entry of the other source reporting the same combo inside
-    // the window. Nearest (rather than first-in-order) keeps an interleaved sequence aligned.
-    let pairingIndex = -1
-    let pairingDistance = Infinity
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]
-      if (candidate.combo !== entry.combo) continue
-      const distance = Math.abs(candidate.at - entry.at)
-      if (distance > window || distance >= pairingDistance) continue
-      pairingIndex = index
-      pairingDistance = distance
+  for (const [combo, entries] of byCombo) {
+    // P2-06 follow-up: pair the two sources in PHYSICAL-PRESS ORDER, not by nearest distance.
+    // The same physical press is reported by both sources in the same order, so a monotone
+    // one-to-one match maximises the number of paired presses. Nearest-first can cross two
+    // complete double reports (control bar 110 ms late: global 1000/1090, control 1110/1200)
+    // and turn two presses into three capsules. Different combos can never pair, so grouping by
+    // combo keeps the order constraint local to a same-label sequence.
+    const controlBar = entries.filter((entry) => entry.source === KEYSTROKE_SOURCE_CONTROL_BAR)
+      .sort((left, right) => left.at - right.at)
+    const globalEntries = entries.filter((entry) => entry.source === KEYSTROKE_SOURCE_GLOBAL)
+      .sort((left, right) => left.at - right.at)
+    let controlIndex = 0
+    let globalIndex = 0
+    while (controlIndex < controlBar.length && globalIndex < globalEntries.length) {
+      const controlEntry = controlBar[controlIndex]
+      const globalEntry = globalEntries[globalIndex]
+      if (Math.abs(controlEntry.at - globalEntry.at) <= window) {
+        // One event for one physical press: keep the earlier wall time (the global hook samples
+        // at key-down, before the renderer's keydown batch), never two events for the same press.
+        merged.push({ at: Math.min(controlEntry.at, globalEntry.at), combo })
+        controlIndex += 1
+        globalIndex += 1
+      } else if (controlEntry.at < globalEntry.at) {
+        // Too early to pair with this (or any later) global report: the press is unpaired.
+        merged.push({ at: controlEntry.at, combo })
+        controlIndex += 1
+      } else {
+        merged.push({ at: globalEntry.at, combo })
+        globalIndex += 1
+      }
     }
-    if (pairingIndex >= 0) {
-      const paired = candidates.splice(pairingIndex, 1)[0]
-      // One event for one physical press: keep the earlier wall time (the global hook samples at
-      // key-down, before the renderer's keydown batch), never two events for the same press.
-      merged.push({ at: Math.min(paired.at, entry.at), combo: entry.combo })
-      continue
-    }
-    unmatched[entry.source].push(entry)
-  }
-  for (const sourceEntries of unmatched) {
-    for (const entry of sourceEntries) merged.push({ at: entry.at, combo: entry.combo })
+    for (; controlIndex < controlBar.length; controlIndex += 1) merged.push({ at: controlBar[controlIndex].at, combo })
+    for (; globalIndex < globalEntries.length; globalIndex += 1) merged.push({ at: globalEntries[globalIndex].at, combo })
   }
   merged.sort((left, right) => left.at - right.at || (left.combo < right.combo ? -1 : left.combo > right.combo ? 1 : 0))
   // The per-source caps are already bounded; this keeps the merged list inside the same budget.
@@ -646,8 +653,35 @@ function createRecordDomain(deps) {
   // implies. The capture overlay returns only a rectangle, so the workbench's just-picked parameters
   // travel through this one-shot slot that createRecordWindow() consumes. The timestamp bounds how
   // long a cancelled overlay can leak its config into an unrelated later capture.
+  //
+  // P1-01 follow-up: the slot is BOUND to the overlay request that opened it. createRecordWindow()
+  // only consumes it when the rectangle comes from that same request id (the quick entry never
+  // carries one), and cancellation/close/supersede revokes it. The workbench start waits for the
+  // outcome receipt, so the one-shot shortcut opt-in is consumed only after a control window was
+  // really created — never when the selection overlay merely opened, was cancelled or was replaced.
   let pendingRegionCapture = null
+  const regionCaptureRequests = new Map() // requestId -> { settle }
   const REGION_PENDING_TTL_MS = 5 * 60 * 1000
+
+  // Resolves the waiting workbenchStart() for one region request. created=true is sent by
+  // createRecordWindow() after the control window exists; anything else (closed, replaced,
+  // superseded) is a cancellation and drops the pending slot it owns.
+  function settleRegionCaptureRequest(requestId, created) {
+    const request = regionCaptureRequests.get(requestId)
+    if (!request) return false
+    regionCaptureRequests.delete(requestId)
+    if (created !== true && pendingRegionCapture && pendingRegionCapture.requestId === requestId) {
+      pendingRegionCapture = null
+    }
+    request.settle(created === true)
+    return true
+  }
+
+  // Quit/shutdown path: never leave a workbench start awaiting an overlay that will not close.
+  function abandonRegionCaptureRequests() {
+    for (const requestId of [...regionCaptureRequests.keys()]) settleRegionCaptureRequest(requestId, false)
+    pendingRegionCapture = null
+  }
   // token -> { sourceId, title, appName, width, height, expiresAt, used }. The source id is the
   // secret this registry protects: it never appears in a channel payload.
   const windowSourceTokens = new Map()
@@ -2134,12 +2168,21 @@ function createRecordDomain(deps) {
       return recordWindow
     }
     await closeRecordFlow()
-    const pending = pendingRegionCapture
-    pendingRegionCapture = null
-    // A stale slot (the user cancelled the region overlay) must not turn a later capture into the
-    // workbench's last region configuration.
-    const pendingRegion = pending && Date.now() - pending.at < REGION_PENDING_TTL_MS ? pending : null
-    const providedCapture = options.capture || pendingRegion?.capture || null
+    // P1-01 follow-up: only the overlay request that opened the workbench region flow may consume
+    // its one-shot capture configuration. A quick-entry rectangle (empty request id), a replaced
+    // overlay and a stale slot all fall back to the persisted/default capture config.
+    const requestedRegionId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
+    // The receipt belongs to the request even after the config TTL expired (a very slow
+    // selection still starts a recording, just with the persisted defaults).
+    const requestedRegion = requestedRegionId && regionCaptureRequests.has(requestedRegionId)
+      ? requestedRegionId
+      : ''
+    const pendingRegion = requestedRegion && pendingRegionCapture &&
+      pendingRegionCapture.requestId === requestedRegion &&
+      Date.now() - pendingRegionCapture.at < REGION_PENDING_TTL_MS
+      ? pendingRegionCapture
+      : null
+    const providedCapture = options.capture || (pendingRegion?.capture ?? null)
     const config = resolveCaptureConfig({
       ...options,
       mode: options.mode || pendingRegion?.mode,
@@ -2356,6 +2399,12 @@ function createRecordDomain(deps) {
       quality: config.quality,
       countdown: config.countdown
     })
+    // P1-01 follow-up: the workbench's receipt is "a control window now exists". Consuming the
+    // one-shot config earlier would let a failed/aborted creation eat the user's opt-in.
+    if (requestedRegion) {
+      if (pendingRegionCapture && pendingRegionCapture.requestId === requestedRegion) pendingRegionCapture = null
+      settleRegionCaptureRequest(requestedRegion, true)
+    }
     return controlWindow
   }
 
@@ -3330,15 +3379,34 @@ function createRecordDomain(deps) {
           // The overlay returns only a rectangle; the workbench's just-picked parameters travel
           // through the one-shot slot createRecordWindow() consumes, together with the region mode
           // (the overlay itself calls createRecordWindow without a mode).
-          pendingRegionCapture = { capture: payloadCapture, mode: 'region', at: Date.now() }
+          //
+          // P1-01 follow-up: the slot is addressed by a request id and the answer is the overlay's
+          // RECEIPT (a control window was created for this request, or it was cancelled/closed/
+          // replaced). The renderer only consumes the one-shot shortcut opt-in for a created take.
+          const requestId = crypto.randomUUID()
+          let settleOutcome = null
+          const outcome = new Promise((resolve) => { settleOutcome = resolve })
+          regionCaptureRequests.set(requestId, { settle: settleOutcome })
+          pendingRegionCapture = { requestId, capture: payloadCapture, mode: 'region', at: Date.now() }
           try {
-            await openSelection({ mode: 'region', source: 'recording-workbench' })
+            const overlay = await openSelection({ mode: 'region', source: 'recording-workbench', regionRequestId: requestId })
+            if (overlay && typeof overlay.once === 'function') {
+              // Cancel / close / replacement: the slot this request owns is revoked here.
+              overlay.once('closed', () => settleRegionCaptureRequest(requestId, false))
+              // A window that was already closed while openSelection resolved never emits again.
+              if (typeof overlay.isDestroyed === 'function' && overlay.isDestroyed()) {
+                settleRegionCaptureRequest(requestId, false)
+              }
+            } else {
+              settleRegionCaptureRequest(requestId, false)
+            }
+            const created = await outcome
+            return { ok: true, created }
           } catch (error) {
-            pendingRegionCapture = null
+            settleRegionCaptureRequest(requestId, false)
             log('Recording region selection failed:', error?.message || error)
             return { ok: false, code: 'selection-failed' }
           }
-          return { ok: true }
         }
         try {
           await createRecordWindow({ display: resolveDisplay(payload?.displayId), mode, capture: payloadCapture })
@@ -3847,6 +3915,7 @@ function createRecordDomain(deps) {
       try { pointerTrackService.dispose() } catch (error) { log('Pointer track dispose failed:', error?.message || error) }
     }
     pointerTrackService = null
+    abandonRegionCaptureRequests()
     const activeService = typeof peekRecordingService === 'function'
       ? peekRecordingService()
       : null

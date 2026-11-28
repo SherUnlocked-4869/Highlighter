@@ -14,6 +14,12 @@
 //   C. source contracts: the low-level hook callback never calls UIA, the event-time snapshot is
 //      cheap, the classification is bounded/fail-closed, and only the JS thread runs it.
 //
+// P1-3 (docs/reviews/2026-11-28-d7923ac-fix-delivery-review.md section 3): missing writability
+// evidence is no longer classified safe. A present but unreadable ValuePattern/TextPattern
+// read-only property, an HWND-fallback container, or a Document/Text control without read-only
+// evidence are all Unknown; only a confirmed read-only surface or a confirmed non-text control is
+// safe. The allowed read-only demo page stays a positive case.
+//
 // The real hardware keyboard matrix (demo page / text input / password input / IME composition /
 // unknown focus) remains a real-device step; scripts/probe-keyboard-focus-context.js covers the
 // runtime focus classification with off-screen test windows and no key presses.
@@ -167,35 +173,44 @@ const evidence = (overrides) => ({
   foregroundAlive: true,
   foregroundIsCurrent: true,
   elementAvailable: true,
+  focusIdentityConfirmed: true,
   ...overrides
 })
 
+function focusResult(overrides) {
+  return plain(nativeAddon.__testClassifyKeyboardFocus(evidence(overrides)))
+}
+
+function assertFocus(result, expected, label) {
+  assert.equal(result.classification, expected.classification, label)
+  assert.equal(result.safe, expected.classification === 'safe', label)
+  if (expected.reason) assert.equal(result.reason, expected.reason, label)
+}
+
 test('P1-02 native focus policy classifies every sensitive class and fails closed', { skip: !nativeAddon }, () => {
   assert.equal(typeof nativeAddon.__testClassifyKeyboardFocus, 'function')
-  const focus = (overrides) => nativeAddon.__testClassifyKeyboardFocus(evidence(overrides))
-  const flags = { textPatternReadOnly: false, textPatternWritable: false }
-  assert.deepEqual(plain(focus({})), { classification: 'safe', safe: true, reason: 'safe_focus', ...flags })
-  assert.deepEqual(plain(focus({ isPassword: true })), { classification: 'password', safe: false, reason: 'password_focus', ...flags })
-  assert.deepEqual(plain(focus({ imeComposing: true })), { classification: 'ime', safe: false, reason: 'ime_composition', ...flags })
-  assert.deepEqual(plain(focus({ isTextEditControl: true })), { classification: 'text', safe: false, reason: 'text_edit_focus', ...flags })
-  assert.deepEqual(plain(focus({ hasWritableValue: true })), { classification: 'text', safe: false, reason: 'writable_value_focus', ...flags })
-  assert.equal(focus({ isPassword: true, isTextEditControl: true }).classification, 'password', 'password wins over text')
+  // A confirmed non-text control (focus identity proven, no ValuePattern/TextPattern) is the
+  // only positively safe surface.
+  assertFocus(focusResult({}), { classification: 'safe', reason: 'safe_focus' }, 'confirmed non-text control')
+  assertFocus(focusResult({ isPassword: true }), { classification: 'password', reason: 'password_focus' }, 'password')
+  assertFocus(focusResult({ imeComposing: true }), { classification: 'ime', reason: 'ime_composition' }, 'ime')
+  assertFocus(focusResult({ isTextEditControl: true }), { classification: 'text', reason: 'text_edit_focus' }, 'edit')
+  assertFocus(focusResult({ hasWritableValue: true }), { classification: 'text', reason: 'writable_value_focus' }, 'writable value (legacy evidence field)')
+  assert.equal(focusResult({ isPassword: true, isTextEditControl: true }).classification, 'password', 'password wins over text')
   // P1-02 hardening: a UIA Document/TextPattern surface must be judged by UIA_IsReadOnlyAttributeId.
   // The browser demo page is a read-only Document (TextPattern present, IsReadOnly=TRUE) -> Safe.
-  assert.deepEqual(plain(focus({ textPatternReadOnly: true })), {
-    classification: 'safe', safe: true, reason: 'safe_focus',
-    textPatternReadOnly: true, textPatternWritable: false
-  })
+  assertFocus(focusResult({ textPatternPresent: true, textPatternReadOnlyKnown: true, textPatternReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'read-only TextPattern document')
+  assertFocus(focusResult({ textPatternReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'legacy documentReadOnly evidence field')
   // A writable TextPattern is Word/RichEdit/an editable custom editor -> text input, rejected.
-  assert.deepEqual(plain(focus({ textPatternWritable: true })), {
-    classification: 'text', safe: false, reason: 'writable_text_pattern_focus',
-    textPatternReadOnly: false, textPatternWritable: true
-  })
+  assertFocus(focusResult({ textPatternPresent: true, textPatternReadOnlyKnown: true, textPatternReadOnly: false }),
+    { classification: 'text', reason: 'writable_text_pattern_focus' }, 'writable TextPattern document')
+  assertFocus(focusResult({ textPatternWritable: true }),
+    { classification: 'text', reason: 'writable_text_pattern_focus' }, 'legacy documentWritable evidence field')
   // A strong signal keeps precedence over a writable document range.
-  assert.equal(focus({ textPatternWritable: true, isPassword: true }).classification, 'password')
-  assert.equal(focus({ textPatternWritable: true, isTextEditControl: true }).reason, 'text_edit_focus')
-  // Attribute unavailable (both flags false) is the documented residual: not text by itself.
-  assert.equal(focus({ textPatternReadOnly: false, textPatternWritable: false }).classification, 'safe')
+  assert.equal(focusResult({ textPatternWritable: true, isPassword: true }).classification, 'password')
+  assert.equal(focusResult({ textPatternWritable: true, isTextEditControl: true }).reason, 'text_edit_focus')
   // Fail-closed classes: every one yields Unknown (never Safe).
   const closed = [
     { foregroundAlive: false },
@@ -206,13 +221,77 @@ test('P1-02 native focus policy classifies every sensitive class and fails close
     { elementAvailable: false }
   ]
   for (const override of closed) {
-    const result = focus(override)
+    const result = focusResult(override)
     assert.equal(result.classification, 'unknown', JSON.stringify(override))
     assert.equal(result.safe, false)
     assert.equal(typeof result.reason, 'string')
   }
   // Defaults fail closed when the evidence object is incomplete.
   assert.equal(nativeAddon.__testClassifyKeyboardFocus({}).classification, 'unknown')
+})
+
+test('P1-3 missing writability evidence or unconfirmed focus identity is never safe', { skip: !nativeAddon }, () => {
+  // The delivery-review regression: get_CurrentControlType and get_CurrentIsPassword succeed, so
+  // the element is "available", but the ValuePattern read-only property could not be read. The
+  // surface may be a writable editor, so the policy must return Unknown instead of Safe.
+  assertFocus(focusResult({ valuePatternPresent: true, valueReadOnlyKnown: false }),
+    { classification: 'unknown', reason: 'value_read_only_unknown' }, 'ValuePattern IsReadOnly read failure')
+  assert.equal(focusResult({ valuePatternPresent: true }).classification, 'unknown',
+    'a present ValuePattern without a read-only answer fails closed')
+  // Same for a TextPattern whose document range did not answer UIA_IsReadOnlyAttributeId.
+  assertFocus(focusResult({ textPatternPresent: true, textPatternReadOnlyKnown: false }),
+    { classification: 'unknown', reason: 'text_read_only_unknown' }, 'TextPattern read-only attribute read failure')
+  // get_CurrentIsPassword succeeded and every sensitive flag is false, yet no read-only evidence
+  // was obtained: this is the exact review payload class and it must not be Safe.
+  assertFocus(focusResult({}), { classification: 'safe' }, 'positive control: fully confirmed non-text surface')
+  const unproven = nativeAddon.__testClassifyKeyboardFocus({
+    foregroundAlive: true,
+    foregroundIsCurrent: true,
+    elementAvailable: true
+  })
+  assert.equal(unproven.classification, 'unknown', 'elementAvailable alone no longer authorizes Safe')
+  assert.equal(unproven.safe, false)
+  // HWND fallback: ElementFromHandle evidence may only describe the container of virtual
+  // subcontrols, so it cannot authorize Safe even when the container looks non-text.
+  assertFocus(focusResult({ focusIdentityConfirmed: false }),
+    { classification: 'unknown', reason: 'unconfirmed_focus_identity' }, 'HWND fallback/container evidence')
+  // A virtual password subcontrol behind such a container is still rejected as password: the
+  // sensitive classes are decided before the focus-identity check, never as safe.
+  assertFocus(focusResult({ focusIdentityConfirmed: false, isPassword: true }),
+    { classification: 'password', reason: 'password_focus' }, 'virtual password subcontrol')
+  // A Document/Text control with no read-only answer cannot be proven safe either.
+  assertFocus(focusResult({ isTextControlType: true }),
+    { classification: 'unknown', reason: 'no_read_only_evidence' }, 'Document/Text control without read-only evidence')
+  // Positively confirmed read-only evidence is the safe accept for text surfaces.
+  assertFocus(focusResult({ valuePatternPresent: true, valueReadOnlyKnown: true, valueReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'read-only ValuePattern')
+  assertFocus(focusResult({ textPatternPresent: true, textPatternReadOnlyKnown: true, textPatternReadOnly: true }),
+    { classification: 'safe', reason: 'read_only_focus' }, 'read-only TextPattern document')
+
+  // Class-name shorthands used by the probe and the cross-layer tests.
+  const shorthand = (focus) => plain(nativeAddon.__testClassifyKeyboardFocus({ focus }))
+  assertFocus(shorthand('safe'), { classification: 'safe' }, 'safe shorthand')
+  assertFocus(shorthand('documentReadOnly'), { classification: 'safe' }, 'documentReadOnly shorthand')
+  assertFocus(shorthand('readOnlyValue'), { classification: 'safe' }, 'readOnlyValue shorthand')
+  assertFocus(shorthand('containerOnly'), { classification: 'unknown', reason: 'unconfirmed_focus_identity' }, 'containerOnly shorthand')
+  assertFocus(shorthand('valueReadOnlyUnknown'), { classification: 'unknown', reason: 'value_read_only_unknown' }, 'valueReadOnlyUnknown shorthand')
+  assertFocus(shorthand('textReadOnlyUnknown'), { classification: 'unknown', reason: 'text_read_only_unknown' }, 'textReadOnlyUnknown shorthand')
+  assertFocus(shorthand('textControlWithoutEvidence'), { classification: 'unknown', reason: 'no_read_only_evidence' }, 'textControlWithoutEvidence shorthand')
+  assertFocus(shorthand('virtualPasswordSubcontrol'), { classification: 'password' }, 'virtualPasswordSubcontrol shorthand')
+  assertFocus(shorthand('unknown'), { classification: 'unknown' }, 'unknown shorthand')
+
+  // The bridge echoes the new evidence fields so a test can see what the policy consumed.
+  const echoed = focusResult({ valuePatternPresent: true, valueReadOnlyKnown: true, valueReadOnly: true })
+  assert.equal(echoed.focusIdentityConfirmed, true)
+  assert.equal(echoed.elementAvailable, true)
+  assert.equal(echoed.valuePatternPresent, true)
+  assert.equal(echoed.valueReadOnlyKnown, true)
+  assert.equal(echoed.valueReadOnly, true)
+  assert.equal(echoed.textPatternPresent, false)
+  assert.equal(echoed.textPatternReadOnlyKnown, false)
+  assert.equal(echoed.isTextControlType, false)
+  const containerEcho = focusResult({ focusIdentityConfirmed: false })
+  assert.equal(containerEcho.focusIdentityConfirmed, false)
 })
 
 test('P1-02 native combo policy only accepts a grammar-valid combo on a safe surface', { skip: !nativeAddon }, () => {
@@ -248,6 +327,22 @@ test('P1-02 native combo policy only accepts a grammar-valid combo on a safe sur
   assert.equal(writableDocument.combo, 'Ctrl+V', 'the key policy itself still recognizes the combination')
   assert.equal(writableDocument.context, 'text')
   assert.equal(writableDocument.reason, 'writable_text_pattern_focus')
+  // P1-3: missing writability evidence and unconfirmed focus identity are rejected, not accepted.
+  for (const [label, focusValue, reason] of [
+    ['container-only evidence', { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true, focusIdentityConfirmed: false }, 'unconfirmed_focus_identity'],
+    ['value read failure', { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true, focusIdentityConfirmed: true, valuePatternPresent: true }, 'value_read_only_unknown'],
+    ['text read failure', { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true, focusIdentityConfirmed: true, textPatternPresent: true }, 'text_read_only_unknown'],
+    ['text control without evidence', { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true, focusIdentityConfirmed: true, isTextControlType: true }, 'no_read_only_evidence'],
+    ['virtual password subcontrol', { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true, focusIdentityConfirmed: false, isPassword: true }, 'password_focus']
+  ]) {
+    const result = classify(focusValue)
+    assert.equal(result.accepted, false, label)
+    assert.equal(result.combo, 'Ctrl+V', label)
+    assert.equal(result.context, label === 'virtual password subcontrol' ? 'password' : 'unknown', label)
+    assert.equal(result.reason, reason, label)
+  }
+  // Confirmed read-only document stays accepted.
+  assert.equal(classify(evidence({ textPatternPresent: true, textPatternReadOnlyKnown: true, textPatternReadOnly: true })).accepted, true)
   // Deliberately omitting the focus input keeps the historical key-policy-only probe (used by
   // test/selection-keyboard-combos.test.js); the production path always has focus evidence.
   const keyOnly = plain(nativeAddon.__testClassifyKeyboardCombo({ vkCode: 0x56, modifiers: 2 }))
@@ -306,13 +401,39 @@ test('P1-02 the classifier is bounded IUIAutomation2 and every failure fails clo
   assert.match(header, /Safe,\n    Password,\n    TextInput,\n    ImeComposition,\n    Unknown/)
   assert.match(header, /KeyboardFocusDecision ClassifyKeyboardFocus\(const KeyboardFocusEvidence &evidence\)/)
   assert.match(header, /CaptureKeyboardFocusSnapshot\(\)/)
-  // Pure policy: the header must not create OS/UIA state.
-  assert.doesNotMatch(header, /CoCreateInstance|GetFocusedElement|ElementFromHandle/)
+  // Pure policy: the header must not create OS/UIA state. Only the executable text is checked:
+  // the doc comments legitimately name GetFocusedElement/ElementFromHandle when they explain the
+  // P1-3 evidence provenance.
+  const headerCode = header.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  assert.doesNotMatch(headerCode, /CoCreateInstance|GetFocusedElement|ElementFromHandle/)
   // P1-02 hardening: the writable-TextPattern rule and its documented residuals are in the
   // production header/policy, not only in comments.
   assert.match(header, /textPatternWritable/)
   assert.match(header, /UIA_IsReadOnlyAttributeId/)
   assert.match(header, /same-window web-content focus change/)
+  // P1-3 hardening: the policy distinguishes confirmed read-only, confirmed non-text and
+  // "property read failed / focus identity unconfirmed" (the latter is Unknown, fail closed).
+  for (const field of [
+    'focusIdentityConfirmed',
+    'isTextControlType',
+    'valuePatternPresent',
+    'valueReadOnlyKnown',
+    'valueReadOnly',
+    'textPatternPresent',
+    'textPatternReadOnlyKnown',
+    'textPatternReadOnly'
+  ]) {
+    assert.match(header, new RegExp('\\b' + field + '\\b'), `the evidence struct must carry ${field}`)
+  }
+  for (const reason of [
+    'unconfirmed_focus_identity',
+    'value_read_only_unknown',
+    'text_read_only_unknown',
+    'no_read_only_evidence',
+    'read_only_focus'
+  ]) {
+    assert.match(header, new RegExp(reason), 'the policy must emit the stable reason ' + reason)
+  }
   // The stale own-process claim is fixed: the control bar lives in the MAIN process (different
   // PID from the hook's utility process), so this branch is defence-in-depth and the duplicate
   // is handled by the P2-06 source pairing.
@@ -335,6 +456,17 @@ test('P1-02 the classifier is bounded IUIAutomation2 and every failure fails clo
   assert.match(source, /documentRange->Release\(\)/)
   assert.match(source, /textPattern->Release\(\)/)
   assert.match(source, /textPatternWritable = isReadOnly\.boolVal == VARIANT_FALSE/)
+  // P1-3: presence is recorded separately from a successful read-only read, and the HWND
+  // fallback is marked as unconfirmed container/identity evidence.
+  assert.match(source, /valuePatternPresent = true/)
+  assert.match(source, /valueReadOnlyKnown = true/)
+  assert.match(source, /textPatternPresent = true/)
+  assert.match(source, /textPatternReadOnlyKnown = true/)
+  assert.match(source, /UIA_DocumentControlTypeId/)
+  assert.match(source, /UIA_TextControlTypeId/)
+  assert.match(source, /focusIdentityConfirmed = true/, 'only a matching GetFocusedElement confirms identity')
+  assert.match(source, /focusIdentityConfirmed = false/, 'the HWND fallback / explicit handle path marks its identity source')
+  assert.match(source, /focusIdentityConfirmed = ProbeWindowHandle|ProbeWindowHandle\(automation, window, windowProcessId, startedAt\)/)
   // TOCTOU: the production path re-checks the foreground/focus identity after the UIA probe and
   // fails closed before spreading the evidence into the decision.
   assert.match(source, /bool FocusSnapshotStillCurrent\(const KeyboardFocusSnapshot &snapshot\)/)
@@ -360,5 +492,26 @@ test('P1-02 the native focus probe script exists and never presses keys', () => 
   assert.match(probe, /UseSystemPasswordChar/)
   // The probe must never synthesize input: the native channel drops injected keys by design.
   assert.doesNotMatch(probe, /SendInput|SendKeys|keybd_event/)
+})
+
+test('P1-3 the probe no longer accepts safe for a writable rich-text surface', () => {
+  const probe = read('scripts/probe-keyboard-focus-context.js')
+  // The writable rich-text expectation must never include 'safe' again: a writable TextPattern
+  // is a text surface even when the provider cannot answer its read-only attribute (the policy
+  // then fails closed to unknown). Keeping 'safe' in the allowed set was the review regression.
+  const writable = sliceBetween(probe, "label: 'writable rich text document'", 'residual:')
+  assert.doesNotMatch(writable, /'safe'/, 'writable rich text must not accept safe')
+  assert.match(writable, /expected: \['text'/)
+  // Read-only rich text stays a positive expectation (provider-dependent unknown is allowed and
+  // must be documented as such).
+  const readOnly = sliceBetween(probe, "label: 'read-only rich text document'", 'residual:')
+  assert.match(readOnly, /expected: \['safe'(, 'unknown')?\]/)
+  assert.doesNotMatch(readOnly, /'text'/, 'read-only rich text must not be treated as text input')
+  // The hardened evidence classes are also checked by the probe through the native self-test
+  // bridge, so the rebuilt addon is exercised for containers and read failures too.
+  assert.match(probe, /__testClassifyKeyboardFocus/)
+  assert.match(probe, /containerOnly/)
+  assert.match(probe, /valueReadOnlyUnknown|value read failure/i)
+  assert.match(probe, /focusIdentityConfirmed/)
 })
 

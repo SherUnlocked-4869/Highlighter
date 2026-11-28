@@ -57,6 +57,10 @@
   // block and blocks are capped by the same limits as the live overlay.
   const MAX_OCR_GLYPHS = 4096
   const MAX_OCR_LINES = 512
+  // P2-06: one measured glyph is a whole grapheme cluster. The overlay measurement chunks a
+  // pathological cluster at 32 UTF-16 units, so this bound never truncates a real ZWJ emoji
+  // (at most 15 units) while arbitrary plan input stays bounded.
+  const MAX_OCR_GLYPH_TEXT = 32
   const DEFAULT_OCR_FONT = 'system-ui, sans-serif'
   // What the composition must never contain. The first two are absent by construction
   // (we draw the pinned picture, not the screen); the rest are the transient window
@@ -90,6 +94,16 @@
 
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, value))
+  }
+
+  // Bounded but complete: a hard UTF-16 cut may never split a surrogate pair in half.
+  function boundedText(value, limit) {
+    if (typeof value !== 'string' || !value) return ''
+    if (value.length <= limit) return value
+    let end = limit
+    const last = value.charCodeAt(end - 1)
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1
+    return value.slice(0, end)
   }
 
   function normalizeViewport(value) {
@@ -235,7 +249,8 @@
       const glyphs = []
       for (const glyph of Array.isArray(line.glyphs) ? line.glyphs : []) {
         if (glyphCount >= glyphBudget) break
-        const text = typeof glyph?.text === 'string' ? glyph.text.slice(0, 4) : ''
+        // P2-06: a ZWJ emoji is a 5+ UTF-16-unit grapheme; a 4-unit slice cut it in half.
+        const text = boundedText(glyph?.text, MAX_OCR_GLYPH_TEXT)
         const x = finiteOr(glyph?.x, Number.NaN)
         const y = finiteOr(glyph?.y, Number.NaN)
         if (!text || !Number.isFinite(x) || !Number.isFinite(y)) continue
@@ -249,8 +264,8 @@
         glyphCount += 1
       }
       const lineText = typeof line.text === 'string'
-        ? line.text.slice(0, MAX_OCR_TEXT_LENGTH)
-        : glyphs.map((glyph) => glyph.text).join('')
+        ? boundedText(line.text, MAX_OCR_TEXT_LENGTH)
+        : boundedText(glyphs.map((glyph) => glyph.text).join(''), MAX_OCR_TEXT_LENGTH)
       if (!lineText && glyphs.length === 0) continue
       lines.push({
         text: lineText,
@@ -469,11 +484,24 @@
     if (block.measured === true) {
       const measuredFont = Math.max(1, block.fontSize)
       context.font = `${measuredFont}px ${block.fontFamily || DEFAULT_OCR_FONT}`
-      for (const line of Array.isArray(block.lines) ? block.lines : []) {
-        if (Array.isArray(line.glyphs) && line.glyphs.length > 0) {
+      const lines = Array.isArray(block.lines) ? block.lines : []
+      if (block.vertical === true) {
+        // P2-06: vertical-rl keeps the browser's columns (right to left in plan order) and
+        // paints every measured grapheme cluster at its own box, so clusters stay whole.
+        for (const line of lines) {
+          if (!Array.isArray(line.glyphs)) continue
           for (const glyph of line.glyphs) context.fillText(glyph.text, glyph.x, glyph.y)
-        } else if (line.text) {
-          context.fillText(line.text, line.x, line.y)
+        }
+      } else {
+        // P2-06: a horizontal line was shaped by the browser as ONE run. One fillText keeps
+        // joining scripts (Arabic) and combined glyphs (ZWJ emoji) intact; the per-cluster
+        // boxes only supply the line box the run is centred on.
+        for (const line of lines) {
+          const glyphs = Array.isArray(line.glyphs) ? line.glyphs : []
+          const text = boundedText(line.text, MAX_OCR_TEXT_LENGTH) ||
+            boundedText(glyphs.map((glyph) => glyph.text).join(''), MAX_OCR_TEXT_LENGTH)
+          if (!text) continue
+          context.fillText(text, finiteOr(line.x, 0), finiteOr(line.y, 0))
         }
       }
       context.restore()
@@ -501,6 +529,7 @@
     MAX_OCR_TEXT_LENGTH,
     MAX_OCR_GLYPHS,
     MAX_OCR_LINES,
+    MAX_OCR_GLYPH_TEXT,
     DEFAULT_OCR_FONT,
     VIEW_EXPORT_EXCLUSIONS,
     VALID_ROTATIONS,

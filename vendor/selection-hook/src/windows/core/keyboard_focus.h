@@ -10,19 +10,32 @@
  * capture boundary and it fails closed: only a positively identified non-text application
  * surface may emit a combo.
  *
- * Evidence -> class rules (ClassifyKeyboardFocus):
- *  - no foreground snapshot / focus moved since the event / own process / no UIA element /
- *    bounded UIA probe timed out                      -> Unknown (drop the event)
- *  - UIA IsPassword                                     -> Password (drop)
- *  - an active IME composition                          -> ImeComposition (drop)
- *  - UIA Edit control type, a writable ValuePattern or a writable TextPattern
- *    (Word/RichEdit/custom editors)                      -> TextInput (drop)
- *  - anything else that produced a UIA element          -> Safe (accept)
+ * Evidence -> class rules (ClassifyKeyboardFocus), in this order:
+ *  1. no foreground snapshot / focus moved since the event / own process / classifier
+ *     unavailable / bounded UIA probe timed out / no UIA element   -> Unknown (drop)
+ *  2. UIA IsPassword                                               -> Password (drop)
+ *  3. an active IME composition                                    -> ImeComposition (drop)
+ *  4. UIA Edit control type, a writable ValuePattern or a writable TextPattern
+ *     (Word/RichEdit/custom editors)                               -> TextInput (drop)
+ *  5. focus identity not confirmed (evidence came from the ElementFromHandle fallback and may
+ *     describe the host container of virtual subcontrols)          -> Unknown (drop)
+ *  6. ValuePattern/TextPattern exists but its read-only answer could not be read
+ *     (property-read failure)                                      -> Unknown (drop)
+ *  7. positively confirmed read-only ValuePattern/TextPattern
+ *     (browser demo page, read-only editors)                       -> Safe (accept)
+ *  8. positively confirmed non-text control: no ValuePattern/TextPattern and the control type is
+ *     not Document/Text                                            -> Safe (accept)
+ *  9. anything else (e.g. Document/Text without read-only evidence) -> Unknown (drop)
+ *
+ * P1-3 (docs/reviews/2026-11-28-d7923ac-fix-delivery-review.md section 3): a successful
+ * get_CurrentControlType/get_CurrentIsPassword only proves that the element is readable. Missing
+ * writability evidence is no longer treated as safety: a present pattern without a read-only
+ * answer, or an element that may be a container of virtual subcontrols, fails closed.
  *
  * Residual uncertainty (deliberate, documented instead of silently accepted):
  *  - The TextPattern rule needs the provider to answer UIA_IsReadOnlyAttributeId on its document
- *    range. A provider that cannot answer it keeps the weaker (control type + ValuePattern)
- *    rule; password/Edit/ValuePattern detection is unaffected.
+ *    range. A provider that cannot answer it now yields Unknown (fail closed) instead of the old
+ *    weaker accept rule; providers without TextPattern stay on rule 8.
  *  - Classification runs on the drained TSFN event, up to the wall-clock budget after the key
  *    press. A post-probe re-check proves foreground and native focus did not change during the
  *    probe; a same-window web-content focus change that does not move the native focus HWND
@@ -66,12 +79,27 @@ struct KeyboardFocusEvidence
     bool ownProcess = false;           ///< The event-time foreground belongs to this process.
     bool classifierAvailable = true;   ///< The bounded IUIAutomation2 client could be created.
     bool probeTimedOut = false;        ///< A bounded UIA call exceeded the classification budget.
-    bool elementAvailable = false;     ///< A UIA element for the focus owner was obtained.
-    bool isPassword = false;           ///< UIA_IsPasswordPropertyId of the focus owner.
-    bool isTextEditControl = false;    ///< UIA_EditControlTypeId for the focus owner.
-    bool hasWritableValue = false;     ///< ValuePattern is available and not read-only.
-    bool textPatternReadOnly = false;  ///< TextPattern document range reports IsReadOnly=TRUE.
-    bool textPatternWritable = false;  ///< TextPattern document range reports IsReadOnly=FALSE.
+    bool elementAvailable = false;     ///< Control type + password flag of the UIA element were read.
+    /// Evidence provenance. True only for a matching GetFocusedElement result (or an explicit
+    /// caller-chosen handle). The ElementFromHandle fallback may describe the host container of
+    /// virtual subcontrols, so it cannot authorize Safe.
+    bool focusIdentityConfirmed = false;
+    bool isPassword = false;      ///< UIA_IsPasswordPropertyId of the focus owner.
+    bool isTextEditControl = false;  ///< UIA_EditControlTypeId for the focus owner.
+    bool isTextControlType = false;  ///< UIA_DocumentControlTypeId / UIA_TextControlTypeId.
+    // Pattern presence is recorded separately from the read-only answer: a pattern that exists
+    // but whose read-only property could not be read is ambiguous (Unknown), never safe.
+    bool valuePatternPresent = false;       ///< A ValuePattern was obtained for the element.
+    bool valueReadOnlyKnown = false;        ///< ValuePattern::get_CurrentIsReadOnly succeeded.
+    bool valueReadOnly = false;             ///< ValuePattern reports IsReadOnly=TRUE (valid when known).
+    bool textPatternPresent = false;        ///< A TextPattern was obtained for the element.
+    bool textPatternReadOnlyKnown = false;  ///< DocumentRange answered UIA_IsReadOnlyAttributeId.
+    bool textPatternReadOnly = false;       ///< DocumentRange reports IsReadOnly=TRUE (valid when known).
+    // Compatibility mirrors filled by the same reads. The policy OR-checks them with the
+    // value-domain fields above, so neither "pattern present but unreadable" nor an old-style
+    // writable flag can ever collapse into "not writable".
+    bool hasWritableValue = false;     ///< ValuePattern present and known writable (legacy mirror).
+    bool textPatternWritable = false;  ///< TextPattern present and known writable (legacy mirror).
     bool imeComposing = false;         ///< An IME composition string is active.
 };
 
@@ -156,7 +184,8 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
         return rejected;
     }
 
-    // Sensitive classes take precedence over the safe fallback.
+    // Sensitive classes take precedence over the safe fallback. A password/IME/writable-text
+    // rejection does not depend on how much focus identity was proven.
     if (evidence.isPassword)
     {
         rejected.classification = KeyboardFocusClass::Password;
@@ -169,22 +198,72 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
         rejected.reason = "ime_composition";
         return rejected;
     }
-    if (evidence.isTextEditControl || evidence.hasWritableValue || evidence.textPatternWritable)
+    const bool writableValue = evidence.hasWritableValue ||
+                               (evidence.valuePatternPresent && evidence.valueReadOnlyKnown && !evidence.valueReadOnly);
+    const bool writableText = evidence.textPatternWritable ||
+                              (evidence.textPatternPresent && evidence.textPatternReadOnlyKnown && !evidence.textPatternReadOnly);
+    if (evidence.isTextEditControl || writableValue || writableText)
     {
         rejected.classification = KeyboardFocusClass::TextInput;
         if (evidence.isTextEditControl)
             rejected.reason = "text_edit_focus";
-        else if (evidence.hasWritableValue)
+        else if (writableValue)
             rejected.reason = "writable_value_focus";
         else
             rejected.reason = "writable_text_pattern_focus";
         return rejected;
     }
 
-    KeyboardFocusDecision accepted;
-    accepted.classification = KeyboardFocusClass::Safe;
-    accepted.reason = "safe_focus";
-    return accepted;
+    // P1-3 fail closed: an element obtained through ElementFromHandle may be the host container
+    // of virtual subcontrols (the focused password field itself is not what was read), so the
+    // container's non-text properties cannot authorize Safe.
+    if (!evidence.focusIdentityConfirmed)
+    {
+        rejected.reason = "unconfirmed_focus_identity";
+        return rejected;
+    }
+
+    // P1-3 fail closed: the pattern exists but its read-only property could not be read. The
+    // surface may be a writable editor, so it is ambiguous, not display-only.
+    if (evidence.valuePatternPresent && !evidence.valueReadOnlyKnown)
+    {
+        rejected.reason = "value_read_only_unknown";
+        return rejected;
+    }
+    if (evidence.textPatternPresent && !evidence.textPatternReadOnlyKnown)
+    {
+        rejected.reason = "text_read_only_unknown";
+        return rejected;
+    }
+
+    // Positively confirmed read-only surfaces stay accepted (the allowed demo page exposes a
+    // read-only Document and existing read-only editors are display surfaces).
+    const bool readOnlyValue =
+        evidence.valuePatternPresent && evidence.valueReadOnlyKnown && evidence.valueReadOnly;
+    const bool readOnlyText =
+        evidence.textPatternPresent && evidence.textPatternReadOnlyKnown && evidence.textPatternReadOnly;
+    if (readOnlyValue || readOnlyText)
+    {
+        KeyboardFocusDecision accepted;
+        accepted.classification = KeyboardFocusClass::Safe;
+        accepted.reason = "read_only_focus";
+        return accepted;
+    }
+
+    // Positively confirmed non-text control: no ValuePattern/TextPattern at all and the control
+    // type is not a Document/Text class.
+    if (!evidence.isTextControlType && !evidence.valuePatternPresent && !evidence.textPatternPresent)
+    {
+        KeyboardFocusDecision accepted;
+        accepted.classification = KeyboardFocusClass::Safe;
+        accepted.reason = "safe_focus";
+        return accepted;
+    }
+
+    // A Document/Text control whose read-only state could not be proven (e.g. a provider without
+    // TextPattern) stays Unknown instead of being accepted by default.
+    rejected.reason = "no_read_only_evidence";
+    return rejected;
 }
 
 //=============================================================================

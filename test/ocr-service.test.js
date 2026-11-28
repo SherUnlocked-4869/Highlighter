@@ -470,6 +470,14 @@ function frameLoop(buffer) {
       reply({ id: header.id, ok: false, error: 'body-mismatch' })
       continue
     }
+    if (config.delayFirstResponseMs && framesSeen === 1) {
+      // A sidecar that is slow to produce the first recognition result: the
+      // frame bytes are fully written, only the reply is late.
+      setTimeout(function () {
+        reply({ id: header.id, ok: true, result: fakeResult('fake-frame:' + bodyLength) })
+      }, config.delayFirstResponseMs)
+      continue
+    }
     if (header.action !== 'recognize') {
       reply({ id: header.id, ok: false, error: 'bad-action' })
       continue
@@ -493,15 +501,26 @@ if (config.mode === 'legacy') {
   })
 } else {
   reply({ type: 'ready', engine: 'paddleocr', model: 'fake', initDurationMs: 1, protocol: { imageTransfer: 'stdin-frame-v1', maxFrameBodyBytes: 67108864 } })
-  let buffered = Buffer.alloc(0)
-  process.stdin.on('data', function (chunk) {
-    buffered = Buffer.concat([buffered, chunk])
-    buffered = frameLoop(buffered)
-  })
+  const diesMidWrite = config.exitAfterFirstChunkMs && (!config.exitOnlyOnFirstStart || starts === 1)
+  if (diesMidWrite) {
+    // Models a sidecar that dies while the parent is still writing one frame:
+    // take one chunk of stdin (so the frame write has definitely started), stop
+    // draining the pipe, then exit, which breaks the pipe mid-write.
+    process.stdin.once('data', function () {
+      process.stdin.pause()
+      setTimeout(function () { process.exit(0) }, config.exitAfterFirstChunkMs)
+    })
+  } else {
+    let buffered = Buffer.alloc(0)
+    process.stdin.on('data', function (chunk) {
+      buffered = Buffer.concat([buffered, chunk])
+      buffered = frameLoop(buffered)
+    })
+  }
 }
 `
 
-async function createFakeSidecarHarness(t, config) {
+async function createFakeSidecarHarness(t, config, serviceOptions = {}) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-ocr-frames-'))
   t.after(() => fsp.rm(root, { recursive: true, force: true }))
   const scriptPath = path.join(root, 'fake-sidecar.js')
@@ -512,7 +531,8 @@ async function createFakeSidecarHarness(t, config) {
     modelDir: root,
     tempDir: path.join(root, 'temp'),
     idleTimeoutMs: 0,
-    log: () => {}
+    log: () => {},
+    ...serviceOptions
   })
   service.validateFiles = () => {}
   service.spawnSidecar = () => spawn(process.execPath, [scriptPath, '--model-dir', root], {
@@ -883,4 +903,268 @@ test('DEV-06 a new main falls back to the legacy imagePath protocol against an o
   const tempDir = path.join(root, 'temp')
   assert.ok(fs.existsSync(tempDir), 'the legacy path uses the temp directory')
   assert.deepEqual(fs.readdirSync(tempDir), [], 'the temp PNG is removed after a successful legacy call')
+})
+// ===================== P1-2 / P2-4: stdin lifecycle and frame expiry =========
+
+// Records every pending entry as it is registered so tests can observe the
+// per-request frame state after the recognition result has already timed out
+// (the pending entry itself is gone by then).
+function trackPendingRecords(service) {
+  const records = []
+  const pendingSet = service.pending.set.bind(service.pending)
+  service.pending.set = (id, entry) => {
+    records.push(entry)
+    return pendingSet(id, entry)
+  }
+  return records
+}
+
+// A generation-shaped fake child for start(): only the stream/lifecycle surface
+// OcrService touches, so stdin events can be injected deterministically.
+function createFakeGenerationChild() {
+  const { EventEmitter } = require('node:events')
+  const child = new EventEmitter()
+  child.stdout = new EventEmitter()
+  child.stderr = new EventEmitter()
+  child.stderr.setEncoding = () => {}
+  child.killed = false
+  child.kill = () => { child.killed = true }
+  child.stdin = new EventEmitter()
+  child.stdin.write = (_line, callback) => { if (callback) callback() }
+  return child
+}
+
+test('DEV-06 a stdin error after a legacy JSON-line write callback is handled once and reclaims the generation', async (t) => {
+  // Reproduces the reviewer P1-2 event order without a real pipe: Node reports
+  // the broken pipe to the write callback first and then emits 'error' on the
+  // same stdin stream. The old writeFrame removed the only listener in its
+  // callback, so that second event was unhandled and killed the process.
+  const service = createService(0)
+  service.validateFiles = () => {}
+  const child = createFakeGenerationChild()
+  service.spawnSidecar = () => child
+  let reclaimed = 0
+  let killCount = 0
+  const originalDiscard = service.discardProcess.bind(service)
+  service.discardProcess = (target, error) => {
+    const result = originalDiscard(target, error)
+    if (result) reclaimed += 1
+    return result
+  }
+  child.kill = () => { killCount += 1; child.killed = true }
+  t.after(() => service.stop())
+
+  const started = service.start()
+  child.stdout.emit('data', Buffer.from('{"type":"ready"}\n'))
+  await started
+  assert.equal(service.ready, true)
+
+  const request = service.request({ action: 'recognize' }, 1000)
+  assert.equal(service.pending.size, 1)
+  const streamError = Object.assign(new Error('write EOF'), { code: 'EOF', syscall: 'write' })
+  assert.doesNotThrow(() => child.stdin.emit('error', streamError), 'the stdin error must never be unhandled')
+  await assert.rejects(request, (error) => error.code === 'OCR_SIDECAR_RECYCLED')
+  assert.equal(reclaimed, 1, 'the generation is reclaimed exactly once')
+  assert.equal(killCount, 1)
+  assert.equal(service.process, null)
+  assert.equal(service.ready, false)
+
+  // A late stream error from the same dead generation is swallowed, not fatal.
+  assert.doesNotThrow(() => child.stdin.emit('error', Object.assign(new Error('write EOF again'), { code: 'EOF' })))
+  assert.equal(reclaimed, 1, 'late events from the discarded generation never reclaim twice')
+})
+
+test('DEV-06 a real sidecar that dies mid-write is reclaimed once by the parent without crashing it', async (t) => {
+  // Reviewer P1-2 repro: a real Windows child sends the ready line, stops
+  // reading stdin and exits. The parent's 8 MiB frame write then fails; the
+  // process must survive the stream 'error', reclaim that generation exactly
+  // once, and re-handshake for the next recognition.
+  const { service, root } = await createFakeSidecarHarness(t, {
+    mode: 'frames',
+    exitAfterFirstChunkMs: 150,
+    exitOnlyOnFirstStart: true
+  })
+  await service.ensureStarted()
+  const firstChild = service.process
+  assert.ok(firstChild)
+  const records = trackPendingRecords(service)
+  let discardReclaims = 0
+  let exitReclaims = 0
+  let killCount = 0
+  const originalDiscard = service.discardProcess.bind(service)
+  service.discardProcess = (child, error) => {
+    const result = originalDiscard(child, error)
+    if (result) discardReclaims += 1
+    return result
+  }
+  const originalHandleExit = service.handleExit.bind(service)
+  service.handleExit = (child, error) => {
+    const wasCurrent = service.process === child
+    const result = originalHandleExit(child, error)
+    if (wasCurrent) exitReclaims += 1
+    return result
+  }
+  const originalKill = firstChild.kill.bind(firstChild)
+  firstChild.kill = (...args) => { killCount += 1; return originalKill(...args) }
+  t.after(() => {
+    try { if (firstChild.exitCode === null && !firstChild.killed) firstChild.kill() } catch {}
+  })
+
+  await assert.rejects(
+    service.recognize(Buffer.alloc(8 * 1024 * 1024)),
+    (error) => /EOF|EPIPE|write|异常退出|recycled/i.test(error.message)
+  )
+  // Give the late exit/stream events their turn before counting reclaims.
+  await delay(100)
+  assert.equal(discardReclaims + exitReclaims, 1, 'the broken generation is reclaimed exactly once')
+  assert.ok(killCount <= 1, 'the broken generation is killed at most once')
+  assert.equal(service.process, null)
+  assert.equal(service.ready, false)
+  assert.equal(service.imageTransfer, null)
+  assert.equal(service.pending.size, 0)
+  assert.equal(records.length, 1)
+
+  // The next recognition negotiates a brand new sidecar and succeeds.
+  const recoveredImage = Buffer.from('recovered-image')
+  const recovered = await service.recognize(recoveredImage)
+  assert.equal(recovered.text, `fake-frame:${recoveredImage.length}`)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 2, 'the next recognition established exactly one fresh handshake')
+})
+
+test('DEV-06 a fully written frame keeps normal result-timeout semantics without recycling', async (t) => {
+  // Reviewer P2-4 timing A: the whole frame is flushed, only inference is slow.
+  // The recognition result may time out, but that must not recycle the process
+  // and a later recognition must reuse the same handshake.
+  const { service, root } = await createFakeSidecarHarness(t, { mode: 'frames', delayFirstResponseMs: 250 })
+  await service.ensureStarted()
+  const child = service.process
+  assert.ok(child)
+  const records = trackPendingRecords(service)
+  let killCount = 0
+  const originalKill = child.kill.bind(child)
+  child.kill = (...args) => { killCount += 1; return originalKill(...args) }
+
+  const slow = service.requestFrame({ action: 'recognize' }, Buffer.from('slow-frame-image'), 100)
+  await assert.rejects(slow, /OCR recognition timed out/)
+  assert.equal(records.length, 1)
+  assert.equal(records[0].frameState, 'written', 'the frame bytes were fully flushed before the result timed out')
+  assert.equal(service.pending.size, 0)
+  assert.equal(service.process, child)
+  assert.equal(service.ready, true)
+  assert.equal(service.imageTransfer, IMAGE_FRAME.imageTransfer)
+  assert.equal(killCount, 0, 'a slow inference result must not recycle the sidecar')
+  assert.equal(service.isBusy(), false, 'a fully written frame with no waiting request is not an in-flight write')
+
+  // The late reply for the timed-out id is ignored, and the same process serves
+  // the next recognition.
+  await delay(350)
+  const nextImage = Buffer.from('after-slow-image')
+  const next = await service.recognize(nextImage)
+  assert.equal(next.text, `fake-frame:${nextImage.length}`)
+  assert.equal(killCount, 0)
+  assert.equal(service.process, child)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 1, 'a slow inference keeps the same handshake')
+})
+
+test('DEV-06 a recovered pipe never writes a queued frame whose request already expired', async (t) => {
+  // Reviewer P2-4 timing B: two frame requests time out while the first frame
+  // write is stalled. When the pipe recovers, the second (never-started, now
+  // ownerless) frame must not be written; the recovered pipe still serves the
+  // next recognition.
+  const { service, root } = await createFakeSidecarHarness(t, { mode: 'frames' })
+  await service.ensureStarted()
+  const child = service.process
+  assert.ok(child)
+  const records = trackPendingRecords(service)
+  const frames = []
+  let releaseFirst = null
+  const originalWrite = child.stdin.write.bind(child.stdin)
+  child.stdin.write = (chunk, callback) => {
+    if (!Buffer.isBuffer(chunk)) return originalWrite(chunk, callback)
+    frames.push(Buffer.from(chunk))
+    if (frames.length === 1) {
+      // Park the first write exactly like a pipe that is not draining; the
+      // callback is released later to model the pipe recovering.
+      releaseFirst = callback
+      return false
+    }
+    return originalWrite(chunk, callback)
+  }
+  let killCount = 0
+  const originalKill = child.kill.bind(child)
+  child.kill = (...args) => { killCount += 1; return originalKill(...args) }
+
+  const first = service.requestFrame({ action: 'recognize' }, Buffer.from('first-frame-image'), 25)
+  const second = service.requestFrame({ action: 'recognize' }, Buffer.from('second-frame-image'), 25)
+  await assert.rejects(first, /OCR recognition timed out/)
+  await assert.rejects(second, /OCR recognition timed out/)
+  assert.equal(service.pending.size, 0)
+  assert.equal(frames.length, 1, 'the stalled pipe only saw the first frame')
+  assert.equal(records[0].frameState, 'writing', 'the first frame write is in flight')
+  assert.equal(records[1].frameState, 'queued', 'the second frame never started writing')
+  assert.equal(service.isBusy(), true, 'a timed-out frame that is still draining keeps the sidecar busy')
+  assert.equal(service.stopIfIdle(), false, 'idle reclamation must not kill the sidecar mid-write')
+  assert.equal(service.process, child)
+
+  // Recovery: the parked write flushes. The queued frame is expired now, so it
+  // is skipped instead of being handed to the pipe.
+  releaseFirst()
+  assert.ok(await waitFor(() => records[0].frameState === 'written'), 'the first write completed')
+  await delay(30)
+  assert.equal(frames.length, 1, 'the expired queued frame must not be written after recovery')
+  assert.equal(killCount, 0, 'skipping an unwritten frame leaves the pipe synchronised')
+  assert.equal(service.process, child)
+  assert.equal(service.ready, true)
+  assert.equal(service.isBusy(), false)
+
+  const nextImage = Buffer.from('after-recovery-image')
+  const next = await service.recognize(nextImage)
+  assert.equal(next.text, `fake-frame:${nextImage.length}`)
+  assert.equal(service.process, child)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 1, 'the recovered process serves the next recognition')
+})
+
+test('DEV-06 a frame write that never flushes is reclaimed after the stall deadline', async (t) => {
+  // A permanently stalled in-flight write must not pin the write chain forever:
+  // past the reclaim deadline the generation is discarded and the next
+  // recognition starts over with a fresh handshake.
+  const { service, root } = await createFakeSidecarHarness(t, { mode: 'frames' }, { frameWriteStallTimeoutMs: 100 })
+  await service.ensureStarted()
+  const child = service.process
+  assert.ok(child)
+  const records = trackPendingRecords(service)
+  let killCount = 0
+  const originalKill = child.kill.bind(child)
+  child.kill = (...args) => { killCount += 1; return originalKill(...args) }
+  const originalWrite = child.stdin.write.bind(child.stdin)
+  const writeStarted = deferred()
+  child.stdin.write = (chunk, callback) => {
+    if (!Buffer.isBuffer(chunk)) return originalWrite(chunk, callback)
+    // The pipe never drains and never reports an error: the callback is parked.
+    writeStarted.resolve()
+    return false
+  }
+  t.after(() => {
+    try { if (child.exitCode === null && !child.killed) child.kill() } catch {}
+  })
+
+  const stalled = service.requestFrame({ action: 'recognize' }, Buffer.from('stalled-frame-image'), 120000)
+  await writeStarted.promise
+  await assert.rejects(stalled, (error) => error.code === 'OCR_FRAME_WRITE_STALLED' && /stalled/i.test(error.message))
+  assert.equal(records[0].frameState, 'writing')
+  assert.equal(service.process, null)
+  assert.equal(service.ready, false)
+  assert.equal(service.imageTransfer, null)
+  assert.equal(service.pending.size, 0)
+  assert.equal(killCount, 1, 'the stalled generation is reclaimed exactly once')
+
+  // The write chain is not wedged: the next recognition re-handshakes and works.
+  const recoveredImage = Buffer.from('after-stall-image')
+  const recovered = await service.recognize(recoveredImage)
+  assert.equal(recovered.text, `fake-frame:${recoveredImage.length}`)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 2, 'the next recognition established exactly one fresh handshake')
 })

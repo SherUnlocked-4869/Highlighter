@@ -75,17 +75,27 @@
   // sees, so instead of re-deriving a layout this measures it once, right before the
   // offscreen compose:
   //   * each block's chip rectangle and rotation come from its layout box;
-  //   * per character the browser's own Range boxes give the wrap line (horizontal) or
-  //     vertical-rl column and the glyph position inside it;
-  //   * characters clipped away by the chip's overflow are dropped, so the export matches
+  //   * per GRAPHEME CLUSTER (P2-06) the browser's own Range boxes give the wrap line
+  //     (horizontal) or vertical-rl column and the glyph position inside it;
+  //   * clusters clipped away by the chip's overflow are dropped, so the export matches
   //     the visible pixels rather than the invisible overflow.
-  // Everything is bounded (blocks / glyphs / line text) and nothing in the DOM is changed
-  // after the synchronous measurement returns.
+  // Everything is bounded (blocks / ATTEMPTED measurements / line text) and nothing in the
+  // DOM is changed after the synchronous measurement returns.
   // -------------------------------------------------------------------------
   const MAX_LAYOUT_BLOCKS = 200
+  // P2-07: the measurement budgets count ATTEMPTED grapheme measurements (one
+  // Range.getClientRects per attempt), not retained glyphs. A narrow chip clips almost
+  // every glyph away, so charging only the retained glyphs let one 3000-character block
+  // issue 3000 synchronous layout reads.
+  //   MAX_LAYOUT_TEXT   - per-block attempt cap
+  //   MAX_LAYOUT_GLYPHS - global attempt cap across the whole overlay
   const MAX_LAYOUT_GLYPHS = 4096
   const MAX_LAYOUT_LINES = 512
   const MAX_LAYOUT_TEXT = 512
+  // P2-06: cap one grapheme cluster's UTF-16 length so a pathological combining/ZWJ run
+  // cannot serialise an unbounded glyph text. Normal ZWJ emoji are at most 15 units, so a
+  // real cluster is never split; longer runs are chunked at a code-point boundary.
+  const MAX_GRAPHEME_UNITS = 32
   const LAYOUT_ANGLE_PATTERN = /rotate\(\s*(-?\d+(?:\.\d+)?)deg\s*\)/
 
   // The accumulated 2D rotation of the host's ancestors (the pin rotates #rotor by 90/180/
@@ -148,7 +158,137 @@
     return null
   }
 
-  function measureElement(element, host, rotation, glyphBudget, angle) {
+  // P2-06: iterate GRAPHEME CLUSTERS, not code points. Intl.Segmenter does the real
+  // UAX #29 work; the bounded fallback keeps combining marks, variation selectors, emoji
+  // modifiers and ZWJ sequences attached to their base when the platform has no segmenter.
+  let cachedGraphemeSegmenter
+  function createGraphemeSegmenter() {
+    if (cachedGraphemeSegmenter !== undefined) return cachedGraphemeSegmenter
+    cachedGraphemeSegmenter = null
+    try {
+      if (typeof Intl === 'object' && Intl && typeof Intl.Segmenter === 'function') {
+        cachedGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      }
+    } catch (_error) {
+      cachedGraphemeSegmenter = null
+    }
+    return cachedGraphemeSegmenter
+  }
+
+  function isClusterExtension(code) {
+    return (code >= 0x0300 && code <= 0x036f) ||
+      (code >= 0x1ab0 && code <= 0x1aff) ||
+      (code >= 0x1dc0 && code <= 0x1dff) ||
+      (code >= 0x20d0 && code <= 0x20ff) ||
+      (code >= 0xfe20 && code <= 0xfe2f) ||
+      (code >= 0xfe00 && code <= 0xfe0f) ||
+      (code >= 0xe0100 && code <= 0xe01ef) ||
+      (code >= 0x1f3fb && code <= 0x1f3ff) ||
+      (code >= 0xe0020 && code <= 0xe007f) ||
+      code === 0x20e3
+  }
+
+  // Bounded fallback segmenter: a cluster never grows past MAX_GRAPHEME_UNITS while the
+  // loop keeps running, so a hostile run of combining marks cannot stall the measurement.
+  function nextFallbackCluster(text, index) {
+    let end = index
+    const first = text.codePointAt(end)
+    const firstSize = first > 0xffff ? 2 : 1
+    end += firstSize
+    // CRLF is one cluster.
+    if (first === 0x0d && text.charCodeAt(end) === 0x0a) return { end: end + 1 }
+    // A regional-indicator pair is one flag cluster.
+    if (first >= 0x1f1e6 && first <= 0x1f1ff) {
+      const next = text.codePointAt(end)
+      if (next >= 0x1f1e6 && next <= 0x1f1ff) end += next > 0xffff ? 2 : 1
+    }
+    while (end < text.length && end - index < MAX_GRAPHEME_UNITS) {
+      const code = text.codePointAt(end)
+      const unitSize = code > 0xffff ? 2 : 1
+      if (code === 0x200d) {
+        // Zero-width joiner: keep it and the following base with this cluster.
+        end += unitSize
+        if (end < text.length) {
+          const joined = text.codePointAt(end)
+          end += joined > 0xffff ? 2 : 1
+        }
+        continue
+      }
+      if (!isClusterExtension(code)) break
+      end += unitSize
+    }
+    // Keep the promise the serialised payload relies on: one glyph text never exceeds
+    // MAX_GRAPHEME_UNITS units, so the export's bounded slice never cuts a normal cluster.
+    if (end - index > MAX_GRAPHEME_UNITS) {
+      end = index + MAX_GRAPHEME_UNITS
+      const last = text.charCodeAt(end - 1)
+      if (last >= 0xd800 && last <= 0xdbff) end -= 1
+    }
+    return { end }
+  }
+
+  // Collects at most `limit` clusters (the DOM-read budget): segmenting stops there, so the
+  // work is bounded by the budget even for a 3000-character block.
+  function collectGraphemes(text, limit) {
+    const clusters = []
+    if (!text || limit <= 0) return clusters
+    const segmenter = createGraphemeSegmenter()
+    if (segmenter) {
+      try {
+        for (const part of segmenter.segment(text)) {
+          let offset = 0
+          while (offset < part.segment.length && clusters.length < limit) {
+            let end = Math.min(offset + MAX_GRAPHEME_UNITS, part.segment.length)
+            if (end < part.segment.length) {
+              const last = part.segment.charCodeAt(end - 1)
+              if (last >= 0xd800 && last <= 0xdbff) end -= 1
+            }
+            clusters.push({ text: part.segment.slice(offset, end), start: part.index + offset, end: part.index + end })
+            offset = end
+          }
+          if (clusters.length >= limit) return clusters
+        }
+        return clusters
+      } catch (_error) {
+        // Fall through to the deterministic bounded fallback below.
+      }
+    }
+    let index = 0
+    while (index < text.length && clusters.length < limit) {
+      const cluster = nextFallbackCluster(text, index)
+      clusters.push({ text: text.slice(index, cluster.end), start: index, end: cluster.end })
+      index = cluster.end
+    }
+    return clusters
+  }
+
+  // A grapheme may report several client rects (base + marks, emoji fallback runs): the
+  // union is one glyph box.
+  function unionClientRects(boxes) {
+    if (!boxes || typeof boxes.length !== 'number' || boxes.length === 0) return null
+    let left = Infinity
+    let top = Infinity
+    let right = -Infinity
+    let bottom = -Infinity
+    for (let index = 0; index < boxes.length; index += 1) {
+      const box = boxes[index]
+      if (!box) continue
+      const boxLeft = Number(box.left)
+      const boxTop = Number(box.top)
+      const boxRight = Number.isFinite(Number(box.right)) ? Number(box.right) : boxLeft + Number(box.width)
+      const boxBottom = Number.isFinite(Number(box.bottom)) ? Number(box.bottom) : boxTop + Number(box.height)
+      if (!Number.isFinite(boxLeft) || !Number.isFinite(boxTop) || !Number.isFinite(boxRight) || !Number.isFinite(boxBottom)) continue
+      if (!(boxRight > boxLeft) || !(boxBottom > boxTop)) continue
+      left = Math.min(left, boxLeft)
+      top = Math.min(top, boxTop)
+      right = Math.max(right, boxRight)
+      bottom = Math.max(bottom, boxBottom)
+    }
+    if (!(right > left) || !(bottom > top)) return null
+    return { left, top, width: right - left, height: bottom - top }
+  }
+
+  function measureElement(element, host, rotation, attemptBudget, angle) {
     const vertical = element.classList.contains('vertical')
     const computed = typeof getComputedStyle === 'function' ? getComputedStyle(element) : null
     const fontSize = computed ? Number.parseFloat(computed.fontSize) : 0
@@ -174,20 +314,18 @@
     const quarter = swapForQuarterTurn(rotation)
     const textNode = firstTextNode(element)
     const text = textNode ? String(textNode.nodeValue || '') : ''
+    const budget = Math.max(0, Math.floor(attemptBudget))
+    const clusters = collectGraphemes(text, budget)
     const glyphs = []
     const range = typeof document.createRange === 'function' ? document.createRange() : null
-    if (range && text) {
-      let index = 0
-      while (index < text.length && glyphs.length < MAX_LAYOUT_TEXT && glyphs.length < glyphBudget) {
-        const code = text.codePointAt(index)
-        const size = code > 0xffff ? 2 : 1
-        const character = text.slice(index, index + size)
-        range.setStart(textNode, index)
-        range.setEnd(textNode, index + size)
-        const boxes = typeof range.getClientRects === 'function' ? range.getClientRects() : []
-        const box = boxes && boxes.length > 0 ? boxes[0] : null
-        index += size
-        if (!box || !(box.width > 0) || !(box.height > 0)) continue
+    let attempts = 0
+    if (range) {
+      for (const cluster of clusters) {
+        attempts += 1
+        range.setStart(textNode, cluster.start)
+        range.setEnd(textNode, cluster.end)
+        const box = unionClientRects(typeof range.getClientRects === 'function' ? range.getClientRects() : [])
+        if (!box) continue
         const offset = unrotateOffset(
           box.left + box.width / 2 - blockCenterX,
           box.top + box.height / 2 - blockCenterY,
@@ -195,56 +333,85 @@
         )
         const glyphWidth = quarter ? box.height : box.width
         const glyphHeight = quarter ? box.width : box.height
-        // Drop characters the chip's `overflow:hidden` hides: the export paints the visible
+        // Drop clusters the chip's `overflow:hidden` hides: the export paints the visible
         // overlay, not the clipped away overflow.
         if (offset.x + glyphWidth / 2 <= -width / 2 || offset.x - glyphWidth / 2 >= width / 2) continue
         if (offset.y + glyphHeight / 2 <= -height / 2 || offset.y - glyphHeight / 2 >= height / 2) continue
-        glyphs.push({ text: character, x: offset.x, y: offset.y, width: glyphWidth, height: glyphHeight })
+        glyphs.push({
+          text: cluster.text,
+          x: offset.x,
+          y: offset.y,
+          width: glyphWidth,
+          height: glyphHeight,
+          startIndex: cluster.start,
+          endIndex: cluster.end
+        })
       }
     }
-    if (glyphs.length === 0) {
-      return { layout: { blockIndex: 0, width, height, centerX, centerY, angle, vertical, fontSize, fontFamily, lines: [] }, glyphCount: 0 }
-    }
+    // P2-07: the caller charges `attempts` (one Range.getClientRects each) against the
+    // per-block and global DOM-read budgets, whether or not the cluster survived clipping.
+    const measuredEnd = clusters.length > 0 ? clusters[clusters.length - 1].end : 0
+    let complete = measuredEnd >= text.length
     // Group consecutive glyphs into the browser's line boxes: horizontal text groups by y,
-    // vertical-rl text by x (each group is one column, right to left in DOM order).
+    // vertical-rl text by x (each group is one column, right to left in DOM order). A DOM
+    // index gap keeps a clipped-away middle from being re-joined into one painted run.
     const tolerance = Math.max(1, fontSize * 0.45)
-    const lines = []
+    const grouped = []
     let current = null
+    let previousEnd = -1
     for (const glyph of glyphs) {
       const axis = vertical ? glyph.x : glyph.y
-      if (!current || Math.abs(axis - current.axis) > tolerance) {
+      if (!current || Math.abs(axis - current.axis) > tolerance || glyph.startIndex !== previousEnd) {
+        if (grouped.length >= MAX_LAYOUT_LINES) {
+          complete = false
+          break
+        }
         current = { axis, glyphs: [] }
-        lines.push(current)
+        grouped.push(current)
       }
       current.glyphs.push(glyph)
-      if (lines.length > MAX_LAYOUT_LINES) break
+      previousEnd = glyph.endIndex
     }
     const layoutLines = []
-    for (const line of lines) {
-      const count = line.glyphs.length
+    for (const line of grouped) {
+      const kept = []
+      let lineText = ''
+      for (const glyph of line.glyphs) {
+        if (!vertical) {
+          // Horizontal lines are painted as ONE shaped run, so the retained glyphs have to
+          // match the line text exactly; cap both at the bounded line length.
+          if (lineText.length + glyph.text.length > MAX_LAYOUT_TEXT) break
+          kept.push(glyph)
+          lineText += glyph.text
+          continue
+        }
+        kept.push(glyph)
+        if (lineText.length + glyph.text.length <= MAX_LAYOUT_TEXT) lineText += glyph.text
+      }
+      if (kept.length === 0) continue
       let minX = Infinity
       let maxX = -Infinity
       let minY = Infinity
       let maxY = -Infinity
-      for (const glyph of line.glyphs) {
+      for (const glyph of kept) {
         minX = Math.min(minX, glyph.x - glyph.width / 2)
         maxX = Math.max(maxX, glyph.x + glyph.width / 2)
         minY = Math.min(minY, glyph.y - glyph.height / 2)
         maxY = Math.max(maxY, glyph.y + glyph.height / 2)
       }
-      if (count === 0 || !(maxX > minX) || !(maxY > minY)) continue
+      if (!(maxX > minX) || !(maxY > minY)) continue
       layoutLines.push({
-        text: line.glyphs.map((glyph) => glyph.text).join('').slice(0, MAX_LAYOUT_TEXT),
+        text: lineText,
         x: (minX + maxX) / 2,
         y: (minY + maxY) / 2,
         width: maxX - minX,
         height: maxY - minY,
-        glyphs: line.glyphs
+        glyphs: kept.map((glyph) => ({ text: glyph.text, x: glyph.x, y: glyph.y, width: glyph.width, height: glyph.height }))
       })
     }
     return {
       layout: {
-        blockIndex: Number.isInteger(Number(element.dataset.blockIndex)) ? Number(element.dataset.blockIndex) : 0,
+        blockIndex: 0,
         width,
         height,
         centerX,
@@ -253,8 +420,14 @@
         vertical,
         fontSize,
         fontFamily,
-        lines: layoutLines
+        lines: layoutLines,
+        // P2-07: serialised so the export/review can tell a fully measured block from one
+        // the attempts budget cut short (its visible prefix is still exported).
+        attempts,
+        complete
       },
+      attempts,
+      complete,
       glyphCount: glyphs.length
     }
   }
@@ -281,16 +454,19 @@
     const layouts = []
     try {
       for (const entry of saved) entry.element.style.transform = 'none'
-      let glyphBudget = MAX_LAYOUT_GLYPHS
+      // P2-07: the global budget is consumed by ATTEMPTED measurements, so a clipped block
+      // can never spend thousands of synchronous layout reads on a handful of visible glyphs.
+      let remainingAttempts = MAX_LAYOUT_GLYPHS
       for (const entry of saved) {
-        if (glyphBudget <= 0) break
-        const measured = measureElement(entry.element, host, rotation, glyphBudget, entry.angle)
+        if (remainingAttempts <= 0) break
+        const attemptBudget = Math.min(MAX_LAYOUT_TEXT, remainingAttempts)
+        const measured = measureElement(entry.element, host, rotation, attemptBudget, entry.angle)
         if (!measured) continue
+        remainingAttempts -= measured.attempts
         const index = Number(entry.element.dataset.blockIndex)
         measured.layout.blockIndex = Number.isInteger(index) && index >= 0
           ? index
           : layouts.length
-        glyphBudget -= measured.glyphCount
         layouts.push(measured.layout)
       }
     } finally {
@@ -299,5 +475,5 @@
     return layouts
   }
 
-  window.OcrTextOverlay = { renderBlocks, measureLayout, MAX_LAYOUT_GLYPHS, MAX_LAYOUT_BLOCKS }
+  window.OcrTextOverlay = { renderBlocks, measureLayout, MAX_LAYOUT_GLYPHS, MAX_LAYOUT_BLOCKS, MAX_LAYOUT_TEXT }
 })()

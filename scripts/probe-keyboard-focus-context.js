@@ -8,9 +8,9 @@
 //   * an ordinary text input      -> must classify as "text"     (sensitive, zero events)
 //   * a password text input       -> must classify as "password" (sensitive, zero events)
 //   * a form without text inputs  -> must classify as "safe"     (allowed demo surface)
-//   * a read-only rich text doc   -> must stay "safe"            (Document + read-only TextPattern)
-//   * a writable rich text doc    -> "text" when the provider exposes UIA_IsReadOnlyAttributeId,
-//                                    otherwise "safe" and reported as the documented residual
+//   * a read-only rich text doc   -> "safe" when the provider answers UIA_IsReadOnlyAttributeId,
+//                                    otherwise "unknown" (fail closed) with a provider-dependent note
+//   * a writable rich text doc    -> "text" or "unknown"; NEVER "safe" (the P1-3 review finding)
 // and classifies those window/control handles through the rebuilt addon's
 // `__testClassifyFocusedContext({ hwnd })` bridge. A final current-foreground call exercises the
 // production path (including the post-probe foreground/focus TOCTOU re-check).
@@ -153,19 +153,24 @@ async function main() {
     }
 
     // `expected` lists the allowed classes. The WinForms provider does not answer
-    // UIA_IsReadOnlyAttributeId for its RichTextBox document range, so a writable rich text
-    // control stays on the weaker control-type/ValuePattern rule; that residual is reported
-    // explicitly instead of being hidden.
+    // UIA_IsReadOnlyAttributeId for its RichTextBox document range. The P1-3 policy fails closed
+    // to unknown in that case, so a provider-dependent unknown is allowed and called out with a
+    // residual note; a writable text surface is never allowed to classify as safe.
     const expectations = [
       { label: 'text input', hwnd: windows.get('text').controlHandle, expected: ['text'] },
       { label: 'password input', hwnd: windows.get('password').controlHandle, expected: ['password'] },
       { label: 'non-text form', hwnd: windows.get('safe').formHandle, expected: ['safe'] },
-      { label: 'read-only rich text document', hwnd: windows.get('richtext-readonly').controlHandle, expected: ['safe'] },
+      {
+        label: 'read-only rich text document',
+        hwnd: windows.get('richtext-readonly').controlHandle,
+        expected: ['safe', 'unknown'],
+        residual: 'provider-dependent: WinForms may not answer UIA_IsReadOnlyAttributeId, and the P1-3 policy fails closed to unknown instead of accepting unreadable read-only evidence'
+      },
       {
         label: 'writable rich text document',
         hwnd: windows.get('richtext').controlHandle,
-        expected: ['text', 'safe'],
-        residual: 'provider does not expose UIA_IsReadOnlyAttributeId; weaker rule (documented residual)'
+        expected: ['text', 'unknown'],
+        residual: 'a writable text surface must never classify as safe; an unreadable read-only attribute is fail-closed unknown'
       },
       { label: 'invalid handle', hwnd: 0x12345678, expected: ['unknown'] }
     ]
@@ -176,6 +181,63 @@ async function main() {
       results.push({ label, hwnd, expected, residual: residual || '', elapsedMs: Math.round(elapsedMs), ...verdict })
       const ok = expected.includes(verdict.classification)
       if (ok && residual && verdict.classification === 'safe') console.log(`RESIDUAL ${label}: ${residual}`)
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected.join('|')} actual=${verdict.classification} ` +
+        `reason=${verdict.reason} elapsed=${Math.round(elapsedMs)}ms`)
+      if (!ok) fail(`${label} classified as ${verdict.classification} (expected ${expected.join('|')})`)
+    }
+
+    // P1-3: the ambiguous evidence classes from the delivery review must all be rejected by the
+    // rebuilt addon's production policy. These go through the native self-test bridge, so they do
+    // not need another provider/window: a present pattern whose read-only property could not be
+    // read, HWND fallback evidence that may only prove a container, a virtual password subcontrol
+    // behind that container, and a Document/Text control without read-only evidence.
+    const baseFocus = { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true }
+    const evidenceExpectations = [
+      {
+        label: 'evidence: ValuePattern present but IsReadOnly read failed',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, valuePatternPresent: true },
+        expected: ['unknown']
+      },
+      {
+        label: 'evidence: TextPattern present but IsReadOnly attribute read failed',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, textPatternPresent: true },
+        expected: ['unknown']
+      },
+      {
+        label: 'evidence: HWND fallback / container only',
+        evidence: { ...baseFocus, focusIdentityConfirmed: false },
+        expected: ['unknown']
+      },
+      {
+        label: 'evidence: virtual password subcontrol behind an unconfirmed container',
+        evidence: { ...baseFocus, focusIdentityConfirmed: false, isPassword: true },
+        expected: ['password']
+      },
+      {
+        label: 'evidence: Document/Text control without read-only evidence',
+        evidence: { ...baseFocus, focusIdentityConfirmed: true, isTextControlType: true },
+        expected: ['unknown']
+      },
+      {
+        label: 'evidence: read-only document stays safe (allowed demo page)',
+        evidence: {
+          ...baseFocus,
+          focusIdentityConfirmed: true,
+          textPatternPresent: true,
+          textPatternReadOnlyKnown: true,
+          textPatternReadOnly: true
+        },
+        expected: ['safe']
+      },
+      { label: 'evidence shorthand: containerOnly', evidence: { focus: 'containerOnly' }, expected: ['unknown'] },
+      { label: 'evidence shorthand: valueReadOnlyUnknown', evidence: { focus: 'valueReadOnlyUnknown' }, expected: ['unknown'] }
+    ]
+    for (const { label, evidence, expected } of evidenceExpectations) {
+      const startedAt = process.hrtime.bigint()
+      const verdict = addon.__testClassifyKeyboardFocus(evidence)
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6
+      results.push({ label, expected, elapsedMs: Math.round(elapsedMs), ...verdict })
+      const ok = expected.includes(verdict.classification)
       console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected.join('|')} actual=${verdict.classification} ` +
         `reason=${verdict.reason} elapsed=${Math.round(elapsedMs)}ms`)
       if (!ok) fail(`${label} classified as ${verdict.classification} (expected ${expected.join('|')})`)

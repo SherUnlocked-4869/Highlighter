@@ -198,6 +198,32 @@ test('F04/DEV-07 Rust shares one live Everything target across status, wait-read
   assert.match(source, /fn status_from_cache\(/, 'status reports the stale running snapshot while re-selecting')
   assert.match(source, /SILENT_RESELECTION_SKIP_MAX/, 're-selection is bounded')
   assert.match(cacheImpl, /last_communication_error/, 'the throttle returns the last status error')
+
+  // P2-10: an instance can answer version + IPC_IS_DB_LOADED while timing out the
+  // query probe. The display snapshot keeps dbLoaded:true, so readiness must be
+  // gated on this round's query answer, and candidate ranking must prefer an
+  // instance that answers queries over a query-silent status-healthy one.
+  assert.match(source, /fn status_sample\(/, 'the status path exposes the answered flag')
+  assert.match(source, /fn status_from_cache\([\s\S]*?\) -> \(Value, bool\) \{/, 'status_from_cache carries the answered flag')
+  assert.match(source, /fn ready_from_sample\(/, 'readiness is a pure predicate')
+  assert.match(
+    source,
+    /fn ready_from_sample\(status: &Value, answered: bool\) -> bool \{\s*answered/,
+    'readiness requires the query channel to have answered'
+  )
+  const waitReady = source.slice(source.indexOf('fn wait_ready('), source.indexOf('fn write_response('))
+  assert.ok(waitReady.length > 0, 'wait_ready must exist')
+  assert.match(waitReady, /status_sample\(reply, cache\)/, 'wait-ready samples the answered flag')
+  assert.match(waitReady, /ready_from_sample\(&status, answered\)/, 'wait-ready no longer trusts the display snapshot alone')
+  assert.doesNotMatch(waitReady, /status\["dbLoaded"\]/, 'the bare dbLoaded readiness predicate is gone')
+  assert.match(source, /fn candidate_score\(signals: &CandidateSignals\) -> i64/, 'candidate ranking is a pure scoring function')
+  assert.match(source, /fn rank_candidates\(candidates: &\[CandidateSignals\]\) -> Option<usize>/, 'candidate selection is pure and unit-testable')
+  assert.match(source, /enum ProbeState[\s\S]*?Timeout,/, 'timeout is classified as a distinct probe outcome')
+  const resolveTarget = source.slice(source.indexOf('fn resolve_target('), source.indexOf('fn is_window_live('))
+  assert.ok(resolveTarget.length > 0, 'resolve_target must exist')
+  assert.match(resolveTarget, /ProbeState::classify\(&probe_window\(reply, \*hwnd\)\)/, 'candidates feed the classified query probe into the ranking')
+  assert.match(resolveTarget, /rank_candidates\(&signals\)/, 'resolve_target uses the pure ranking helper')
+  assert.doesNotMatch(resolveTarget, /let mut best: Option<\(i64, TargetInfo\)>/, 'the old inline scoring is gone')
 })
 
 test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and safe degradation', () => {
@@ -218,7 +244,11 @@ test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and sa
     'p2_07_a_silent_probe_is_a_communication_failure_with_its_status_snapshot',
     'p2_07_a_silent_cached_target_switches_to_a_responsive_instance',
     'p2_07_silent_only_status_stays_running_and_bounds_resolution',
-    'p2_07_wait_ready_recovers_when_a_new_instance_answers'
+    'p2_07_wait_ready_recovers_when_a_new_instance_answers',
+    // P2-10: query-channel readiness and answering-candidate ranking.
+    'p2_10_wait_ready_requires_an_answering_query_channel',
+    'p2_10_wait_ready_flips_on_the_first_answering_reselection',
+    'p2_10_an_answering_empty_index_outranks_a_status_healthy_query_silent_instance'
   ]) {
     assert.match(source, new RegExp(`fn ${name}\\(\\)`), `${name} must exist (cargo test runs it)`)
   }

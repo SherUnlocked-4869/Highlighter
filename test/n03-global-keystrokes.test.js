@@ -382,18 +382,114 @@ test('P1-02: native-classified safe combo -> exactly one record; sensitive class
     foregroundAlive: true,
     foregroundIsCurrent: true,
     elementAvailable: true,
+    focusIdentityConfirmed: true,
     ...overrides
   })
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({})).classification, 'safe')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ isPassword: true })).classification, 'password')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ isTextEditControl: true })).classification, 'text')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ hasWritableValue: true })).classification, 'text')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ imeComposing: true })).classification, 'ime')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ elementAvailable: false })).classification, 'unknown')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ foregroundIsCurrent: false })).classification, 'unknown')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ ownProcess: true })).classification, 'unknown')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ probeTimedOut: true })).classification, 'unknown')
-  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({ classifierAvailable: false })).classification, 'unknown')
+  const focusClass = (overrides) => nativeAddon.__testClassifyKeyboardFocus(toEvidence(overrides))
+  assert.equal(focusClass({}).classification, 'safe', 'confirmed non-text control')
+  assert.equal(focusClass({ isPassword: true }).classification, 'password')
+  assert.equal(focusClass({ isTextEditControl: true }).classification, 'text')
+  assert.equal(focusClass({ hasWritableValue: true }).classification, 'text')
+  assert.equal(focusClass({ imeComposing: true }).classification, 'ime')
+  assert.equal(focusClass({ elementAvailable: false }).classification, 'unknown')
+  assert.equal(focusClass({ foregroundIsCurrent: false }).classification, 'unknown')
+  assert.equal(focusClass({ ownProcess: true }).classification, 'unknown')
+  assert.equal(focusClass({ probeTimedOut: true }).classification, 'unknown')
+  assert.equal(focusClass({ classifierAvailable: false }).classification, 'unknown')
+  // P1-3: an "available" element with no writability answer (the review payload) is not safe.
+  assert.equal(focusClass({ valuePatternPresent: true, valueReadOnlyKnown: false }).classification, 'unknown')
+  assert.equal(focusClass({ textPatternPresent: true, textPatternReadOnlyKnown: false }).classification, 'unknown')
+  assert.equal(focusClass({ focusIdentityConfirmed: false }).classification, 'unknown', 'container-only evidence is not safe')
+  assert.equal(focusClass({ isTextControlType: true }).classification, 'unknown')
+  assert.equal(nativeAddon.__testClassifyKeyboardFocus(toEvidence({
+    textPatternPresent: true,
+    textPatternReadOnlyKnown: true,
+    textPatternReadOnly: true
+  })).classification, 'safe', 'the allowed demo page (read-only document) stays safe')
+  // The production-shaped positive payload still crosses the whole chain.
+  assert.equal(capture.inspectGlobalKeystroke(nativePayload('Ctrl+V', BASE, 2, 'safe')).ok, true)
+})
+
+test('P1-3: unconfirmed writability or focus identity adds zero IPC messages and zero track events', { skip: !nativeAddon }, () => {
+  const host = createPointerHostFixture()
+  const classify = (focus) => JSON.parse(JSON.stringify(nativeAddon.__testClassifyKeyboardCombo({
+    vkCode: 0x53,
+    scanCode: 0x1f,
+    modifiers: 2, // Ctrl
+    focus
+  })))
+  const base = { foregroundAlive: true, foregroundIsCurrent: true, elementAvailable: true }
+  // Every class the delivery review requires to be excluded: a property that exists but could not
+  // be read, a fallback that can only prove the HWND container, a virtual password subcontrol
+  // behind that container, and a text control with no read-only evidence.
+  const excludedClasses = [
+    {
+      label: 'ValuePattern present but IsReadOnly read failed',
+      focus: { ...base, focusIdentityConfirmed: true, valuePatternPresent: true, valueReadOnlyKnown: false }
+    },
+    {
+      label: 'TextPattern present but UIA_IsReadOnlyAttributeId read failed',
+      focus: { ...base, focusIdentityConfirmed: true, textPatternPresent: true, textPatternReadOnlyKnown: false }
+    },
+    {
+      label: 'HWND fallback can only prove the container',
+      focus: { ...base, focusIdentityConfirmed: false, isTextControlType: false }
+    },
+    {
+      label: 'virtual password subcontrol behind an unconfirmed container',
+      focus: { ...base, focusIdentityConfirmed: false, isPassword: true }
+    },
+    {
+      label: 'text control type without read-only evidence',
+      focus: { ...base, focusIdentityConfirmed: true, isTextControlType: true }
+    }
+  ]
+  const timing = { mediaStartedAtWall: BASE, pausedIntervals: [], durationMs: 5000 }
+  for (const { label, focus } of excludedClasses) {
+    const native = classify(focus)
+    assert.equal(native.accepted, false, `${label}: the native channel must not accept`)
+    assert.notEqual(native.context, 'safe', label)
+    // Production-shaped forged payload: exactly the fields ProcessKeyboardEvent emits for an
+    // accepted combo. Even if the native gate is bypassed, the JS filter must drop it.
+    host.emitCombo({
+      tMs: BASE,
+      vkCode: 0x53,
+      scanCode: 0x1f,
+      modifiers: 2,
+      combo: native.combo,
+      context: native.context
+    })
+    const merged = recordDomain.mergeKeystrokeSources([], [])
+    assert.deepEqual(merged, [], `${label}: no merged keystroke`)
+    assert.deepEqual(recordDomain.buildKeystrokeTrack(merged, timing), [], `${label}: events.json track stays empty`)
+  }
+  assert.deepEqual(host.outgoing(), [], 'zero new pointer-host IPC messages for the excluded classes')
+
+  // Positive control: a confirmed read-only document (the allowed demo page) still crosses the
+  // same chain exactly once, so the hardening did not just reject everything.
+  const readOnly = classify({
+    ...base,
+    focusIdentityConfirmed: true,
+    textPatternPresent: true,
+    textPatternReadOnlyKnown: true,
+    textPatternReadOnly: true
+  })
+  assert.equal(readOnly.accepted, true)
+  assert.equal(readOnly.context, 'safe')
+  host.emitCombo({
+    tMs: BASE + 1,
+    vkCode: 0x53,
+    scanCode: 0x1f,
+    modifiers: 2,
+    combo: readOnly.combo,
+    context: readOnly.context
+  })
+  const messages = host.outgoing()
+  assert.deepEqual(messages, [{ type: 'keystroke', combo: 'Ctrl+S', at: BASE + 1 }])
+  const merged = recordDomain.mergeKeystrokeSources([], messages.map(({ at, combo }) => ({ at, combo })))
+  assert.deepEqual(recordDomain.buildKeystrokeTrack(merged, timing), [{ tMs: 1, combo: 'Ctrl+S' }])
+  // A confirmed non-text control (no ValuePattern/TextPattern) is the other accepted surface.
+  assert.equal(classify({ ...base, focusIdentityConfirmed: true }).accepted, true)
 })
 
 // ---------------------------------------------------------------------------
@@ -436,12 +532,20 @@ test('P1-02: the JS privacy filter requires the trusted safe context for every e
 
 test('P2-06: the merge keeps source identity and pairs one-to-one', () => {
   const domain = read('main/domains/record/index.js')
-  assert.match(domain, /entries\.push\(\{ at, combo: String\(entry\.combo\)\.trim\(\), source: sourceId \}\)/)
-  assert.match(domain, /unmatched\[entry\.source \^ 1\]/)
-  assert.match(domain, /const paired = candidates\.splice\(pairingIndex, 1\)\[0\]/)
-  assert.match(domain, /at: Math\.min\(paired\.at, entry\.at\)/)
-  // The old by-combo last-timestamp map (the P2-06 bug) must be gone.
+  // The by-combo grouping plus monotone per-source indices is the P2-06 follow-up fix: the two
+  // sources report the same physical press in the same order, so pairing in physical-press order
+  // maximises pairs instead of letting nearest-distance pairing cross two double reports.
+  assert.match(domain, /const byCombo = new Map\(\)/)
+  assert.match(domain, /const group = byCombo\.get\(combo\) \|\| \[\]/)
+  assert.match(domain, /entry\.source === KEYSTROKE_SOURCE_CONTROL_BAR/)
+  assert.match(domain, /entry\.source === KEYSTROKE_SOURCE_GLOBAL/)
+  assert.match(domain, /Math\.abs\(controlEntry\.at - globalEntry\.at\) <= window/)
+  assert.match(domain, /controlIndex \+= 1[\s\S]{0,120}globalIndex \+= 1/)
+  assert.match(domain, /at: Math\.min\(controlEntry\.at, globalEntry\.at\)/)
+  // The old nearest-first / by-combo last-timestamp structures (the P2-06 bug) must be gone.
   assert.doesNotMatch(domain, /lastAtByCombo/)
+  assert.doesNotMatch(domain, /pairingIndex/)
+  assert.doesNotMatch(domain, /unmatched\[/)
 })
 
 test('DEV-04: the record domain gates capture on per-take opt-in and never outside a take', () => {

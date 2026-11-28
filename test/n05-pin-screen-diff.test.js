@@ -419,7 +419,9 @@ function createScreenDiffHarness(options = {}) {
       createFromBuffer: () => ({ getSize: () => ({ width: 400, height: 200 }), isEmpty: () => false })
     },
     screen: {
-      getAllDisplays: () => options.displays || [DISPLAY_PRIMARY],
+      // Real screen.getAllDisplays() returns a fresh array per call; the snapshot fidelity
+      // matters for P2-5 (the pre-await list must not be mutated by the topology change).
+      getAllDisplays: () => (options.displays ? options.displays.slice() : [DISPLAY_PRIMARY]),
       getDisplayMatching: () => (options.displays && options.displays[0]) || DISPLAY_PRIMARY,
       getDisplayNearestPoint: () => DISPLAY_PRIMARY,
       getCursorScreenPoint: () => ({ x: 0, y: 0 })
@@ -483,7 +485,9 @@ async function withElectronModule(exportsValue, callback) {
 }
 
 // A fake desktopCapturer source whose crop/toBitmap path answers like nativeImage does.
-function screenSource(displayId, { width = 1920, height = 1080, isEmpty = false } = {}) {
+// `marker` fills the fake BGRA bitmap so a test can prove WHICH screen a delivered frame
+// came from (the P2-5 counterexamples: the wrong screen must never be cropped).
+function screenSource(displayId, { width = 1920, height = 1080, isEmpty = false, marker = 0 } = {}) {
   return {
     display_id: displayId,
     thumbnail: {
@@ -491,7 +495,7 @@ function screenSource(displayId, { width = 1920, height = 1080, isEmpty = false 
       crop: (rect) => ({
         isEmpty: () => false,
         getSize: () => ({ width: rect.width, height: rect.height }),
-        toBitmap: () => Buffer.alloc(rect.width * rect.height * 4)
+        toBitmap: () => Buffer.alloc(rect.width * rect.height * 4, marker)
       })
     }
   }
@@ -694,6 +698,171 @@ test('product: a missing secondary source never delivers primary pixels, and rec
   win._closed()
 })
 
+// P2-5 (review finding 5): the single-display elimination fallback must never contradict an
+// explicit source identity. A capturer that re-enumerated the topology can hand back exactly
+// one source that names another display; before P2-5 the stale "one display" knowledge turned
+// that into { ok:true, matched:false } and the caller cropped it with the target's rectangle.
+test('product: a conflicting single-display source is refused retryably and never cropped (P2-5)', async () => {
+  const sources = [screenSource('9', { marker: 9 })]
+  const harness = createScreenDiffHarness({
+    displays: [DISPLAY_PRIMARY],
+    winBounds: { x: 100, y: 50, width: 400, height: 200 },
+    desktopCapturer: { getSources: async () => sources }
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const refused = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(refused.ok, false, 'a source that names another display is not the target by elimination')
+  assert.equal(refused.code, 'DISPLAY_UNAVAILABLE')
+  assert.equal(refused.retryable, true, 'the capturer can re-enumerate on a later tick')
+  assert.equal(refused.pixels, undefined, 'no frame is delivered from the conflicting source')
+  // The target source comes back: the same call site delivers the target display's pixels.
+  sources[0] = screenSource('1', { marker: 21 })
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.sourceMatched, true)
+  assert.equal(recovered.width, 400)
+  assert.equal(recovered.height, 200)
+  assert.deepEqual([...recovered.pixels.slice(0, 4)], [21, 21, 21, 21])
+  win._closed()
+})
+
+// P2-5: two anonymous sources on a single-display system are ambiguous - list[0] is a coin
+// flip, and a hotplug can leave the SECOND screen's source behind. Skip the frame and retry.
+test('product: several anonymous single-display sources are refused retryably (P2-5)', async () => {
+  const sources = [screenSource(undefined, { marker: 10 }), screenSource(null, { marker: 11 })]
+  const harness = createScreenDiffHarness({
+    displays: [DISPLAY_PRIMARY],
+    winBounds: { x: 100, y: 50, width: 400, height: 200 },
+    desktopCapturer: { getSources: async () => sources }
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const refused = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(refused.ok, false, 'two anonymous sources cannot be disambiguated by elimination')
+  assert.equal(refused.code, 'SOURCE_UNIDENTIFIED')
+  assert.equal(refused.retryable, true)
+  assert.equal(refused.pixels, undefined)
+  // An identity-confirmed source restores delivery.
+  sources[0] = screenSource('1', { marker: 22 })
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.sourceMatched, true)
+  assert.equal(recovered.pixels[0], 22)
+  win._closed()
+})
+
+// P2-5: the tightened fallback must not break the case it exists for - a driver that omits
+// display_id on a genuine single-display host.
+test('product: a single anonymous source on a genuine single-display system still captures (P2-5)', async () => {
+  const harness = createScreenDiffHarness({
+    displays: [DISPLAY_PRIMARY],
+    winBounds: { x: 100, y: 50, width: 400, height: 200 },
+    desktopCapturer: { getSources: async () => [screenSource(undefined, { marker: 7 })] }
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const frame = await harness.domain.captureScreenUnderPin(win, { x: 0, y: 0, width: 400, height: 200 })
+  assert.equal(frame.ok, true, `the driver-omitted-id fallback must still work (${frame.code})`)
+  assert.equal(frame.sourceMatched, false)
+  assert.equal(frame.width, 400)
+  assert.equal(frame.height, 200)
+  assert.equal(frame.pixels[0], 7)
+  win._closed()
+})
+
+// P2-5: screen.getAllDisplays() is read BEFORE the getSources() await; a hotplug or driver
+// re-enumeration in between means the plan's rectangle and the source list can describe two
+// different topologies. Re-read the list after the await: a changed count refuses the frame
+// (retryable) instead of cropping the new topology's source with the old rectangle.
+test('product: a display added during getSources is a retryable topology change, not a frame (P2-5)', async () => {
+  const topology = [DISPLAY_SCALED]
+  let call = 0
+  let recoveredSources = []
+  const desktopCapturer = {
+    getSources: async () => {
+      call += 1
+      if (call === 1) {
+        // While getSources was awaiting, the primary display came back and the capturer
+        // re-enumerated the NEW topology: its only usable source is the primary screen.
+        topology.push(DISPLAY_PRIMARY)
+        return [screenSource('1', { marker: 1 })]
+      }
+      return recoveredSources
+    }
+  }
+  const harness = createScreenDiffHarness({
+    displays: topology,
+    winBounds: { x: 2000, y: 100, width: 400, height: 200 },
+    desktopCapturer
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const stale = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  // Before P2-5 the stale one-display list allowed the elimination fallback to crop the
+  // primary source with the secondary display's 600x300 rectangle.
+  assert.equal(stale.ok, false)
+  assert.equal(stale.code, 'TOPOLOGY_CHANGED')
+  assert.equal(stale.retryable, true)
+  assert.equal(stale.pixels, undefined)
+  // The target display is back; the capturer omits its display_id (single-display
+  // elimination is valid again) and the delivered frame must be the SECONDARY display's
+  // crop: 400x200 DIP at 1.5x = 600x300, carrying the secondary pixels only.
+  topology.splice(0, topology.length, DISPLAY_SCALED)
+  recoveredSources = [screenSource(undefined, { marker: 33 })]
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.width, 600)
+  assert.equal(recovered.height, 300)
+  assert.equal(recovered.pixels.length, 600 * 300 * 4)
+  assert.deepEqual(recovered.plan.dipRect, { x: 2000, y: 100, width: 400, height: 200 })
+  assert.equal(recovered.plan.scaleFactor, 1.5)
+  assert.equal(recovered.pixels[0], 33, 'only the recovered target display pixels may be delivered')
+  win._closed()
+})
+
+// P2-5: a display swap can keep the display COUNT the same while the target id disappears.
+// Only the "target id still present" check can catch that; counting alone (or the stale
+// single-display flag) would deliver the replacement screen's pixels.
+test('product: a vanished target display id during getSources is refused even at unchanged count (P2-5)', async () => {
+  const topology = [DISPLAY_SCALED]
+  let call = 0
+  let recoveredSources = []
+  const desktopCapturer = {
+    getSources: async () => {
+      call += 1
+      if (call === 1) {
+        // The pin's display was swapped for another single display during the await: the
+        // count is still one, so only the target-id check can reveal the stale plan.
+        topology.splice(0, topology.length, DISPLAY_PRIMARY)
+        return [screenSource('1', { marker: 1 })]
+      }
+      return recoveredSources
+    }
+  }
+  const harness = createScreenDiffHarness({
+    displays: topology,
+    winBounds: { x: 2000, y: 100, width: 400, height: 200 },
+    desktopCapturer
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const imageBounds = { x: 0, y: 0, width: 400, height: 200 }
+  const stale = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(stale.ok, false)
+  assert.equal(stale.code, 'TOPOLOGY_CHANGED')
+  assert.equal(stale.retryable, true)
+  assert.equal(stale.pixels, undefined)
+  // The target display id is back: only its pixels are delivered.
+  topology.splice(0, topology.length, DISPLAY_SCALED)
+  recoveredSources = [screenSource(undefined, { marker: 44 })]
+  const recovered = await harness.domain.captureScreenUnderPin(win, imageBounds)
+  assert.equal(recovered.ok, true, `recovery capture failed: ${recovered.code}`)
+  assert.equal(recovered.width, 600)
+  assert.equal(recovered.height, 300)
+  assert.equal(recovered.plan.scaleFactor, 1.5)
+  assert.equal(recovered.pixels[0], 44)
+  win._closed()
+})
+
 test('product: refuses without content protection, and the menu offers the opt-in with its side effect', async () => {
   const bare = createScreenDiffHarness({ noProtection: true })
   const bareWin = bare.domain.createPinWindow(ORIGINAL, {})
@@ -791,6 +960,60 @@ test('pickScreenSource delivers only an identity-confirmed source (P2-03)', () =
   assert.equal(single.matched, false)
   assert.equal(single.fallback, 'single-display')
   assert.equal(single.source.display_id, undefined)
+})
+
+// P2-5 (review finding 5): the elimination fallback is valid only when the source list cannot
+// contradict it - exactly ONE usable source and that source has no display_id. A unique source
+// that explicitly names ANOTHER display, or several anonymous sources, may belong to a
+// topology that changed while getSources() was awaiting; list[0] must not be served.
+test('pickScreenSource only eliminates when the single source cannot contradict the target (P2-5)', () => {
+  const usable = (displayId) => ({ display_id: displayId, thumbnail: { isEmpty: () => false } })
+  // The review's two deterministic counterexamples.
+  assert.deepEqual(diff.pickScreenSource([usable('9')], '1', { singleDisplay: true }), {
+    ok: false,
+    code: 'DISPLAY_UNAVAILABLE'
+  })
+  assert.deepEqual(diff.pickScreenSource([usable(undefined), usable(null)], '1', { singleDisplay: true }), {
+    ok: false,
+    code: 'SOURCE_UNIDENTIFIED'
+  })
+  // A single anonymous source on a genuinely single-display system is still the target by
+  // elimination, including the empty-string id some drivers report.
+  for (const anonymous of [undefined, null, '']) {
+    const only = diff.pickScreenSource([usable(anonymous)], '1', { singleDisplay: true })
+    assert.equal(only.ok, true, `anonymous id ${String(anonymous)} must still fall back`)
+    assert.equal(only.matched, false)
+    assert.equal(only.fallback, 'single-display')
+  }
+  // The tightened fallback never relaxes the multi-display contract.
+  assert.deepEqual(diff.pickScreenSource([usable(undefined)], '1'), { ok: false, code: 'SOURCE_UNIDENTIFIED' })
+  assert.deepEqual(diff.pickScreenSource([usable('2')], '1'), { ok: false, code: 'DISPLAY_UNAVAILABLE' })
+})
+
+// P2-5: the caller re-reads screen.getAllDisplays() after await getSources(); this pure check
+// states when the plan and the sources still describe the same topology.
+test('checkDisplayTopology refuses a count change or a vanished target id (P2-5)', () => {
+  const primary = { id: 1 }
+  const secondary = { id: 2 }
+  assert.deepEqual(diff.checkDisplayTopology([primary], [primary], 1), { ok: true })
+  // A display was added or removed between the plan and the sources.
+  assert.deepEqual(diff.checkDisplayTopology([primary], [primary, secondary], 1), {
+    ok: false,
+    code: 'TOPOLOGY_CHANGED'
+  })
+  assert.deepEqual(diff.checkDisplayTopology([primary, secondary], [primary], 2), {
+    ok: false,
+    code: 'TOPOLOGY_CHANGED'
+  })
+  // The count is unchanged but the target id is gone (a display swap / re-enumeration).
+  assert.deepEqual(diff.checkDisplayTopology([secondary], [primary], 2), {
+    ok: false,
+    code: 'TOPOLOGY_CHANGED'
+  })
+  // Electron display ids are numbers; sources compare their ids as strings.
+  assert.deepEqual(diff.checkDisplayTopology([{ id: 1 }], [{ id: '1' }], '1'), { ok: true })
+  // A target without an id cannot be presence-checked; the count remains the signal.
+  assert.deepEqual(diff.checkDisplayTopology([{ id: null }], [{ id: null }], null), { ok: true })
 })
 
 test('wiring: the opt-in diff mode is reachable, bounded, and flash stays the default', () => {

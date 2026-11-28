@@ -1118,9 +1118,11 @@ test('global shortcut capture is a separate session-only opt-in', async () => {
 
   const { api, calls } = createApi(workbenchState())
   let failNextStart = false
+  let nextStartResult = null
   api.workbenchStart = async (payload) => {
     calls.start.push(plain(payload))
-    return failNextStart ? { ok: false, code: 'display-unavailable' } : { ok: true }
+    if (failNextStart) return { ok: false, code: 'display-unavailable' }
+    return nextStartResult || { ok: true }
   }
   const harness = createHarness({ electronAPI: api })
   harness.run('renderRecording()')
@@ -1187,8 +1189,31 @@ test('global shortcut capture is a separate session-only opt-in', async () => {
   assert.equal(windowStart.config.demoKeystrokes, true, 'window mode forwards the opt-in for its own take')
   assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'and consumes it after the start')
 
+  // P1-01 review: focusing the running bar is NOT a new take, and a cancelled region overlay is
+  // NOT a take either. Both must keep the one-shot opt-in armed; only a created receipt consumes
+  // it. These are the three workbench start state transitions the review asked to cover.
+  queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].onclick()
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true')
+  nextStartResult = { ok: true, focused: true }
+  const focusedStart = await startAndRead(5)
+  assert.equal(focusedStart.config.demoKeystrokes, true, 'the focused start still carried the armed choice')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true', 'focusing the running bar does not consume the one-shot opt-in')
+  nextStartResult = { ok: true, created: false }
+  const cancelledStart = await startAndRead(6)
+  assert.equal(cancelledStart.config.demoKeystrokes, true, 'the cancelled region start still carried the armed choice')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'true', 'a cancelled region selection does not consume the opt-in')
+  nextStartResult = { ok: true, created: true }
+  const createdStart = await startAndRead(7)
+  assert.equal(createdStart.config.demoKeystrokes, true)
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'a created region take consumes the opt-in')
+  assert.equal(harness.run('recordingWorkbenchChoices.demoKeystrokes'), false, 'the next payload is built opted out')
+  nextStartResult = null
+
   // The one-shot reset is a pure decision on the start result; the unrelated
   // demoEnhance switch is never part of it.
+  assert.match(routeSource, /function recordingStartCreatedRecording\(result\)/, 'the receipt predicate is a single helper')
+  assert.match(routeSource, /result\.focused === true/, 'focus-only is not a created take')
+  assert.match(routeSource, /result\.created === false/, 'a cancelled overlay is not a created take')
   assert.match(routeSource, /function choicesAfterRecordingStart\(choices, result\)/, 'the one-shot reset is a single helper, not scattered mutations')
   assert.match(routeSource, /button\.setAttribute\('aria-checked'/, 'the live switch is repainted, not rebuilt')
   const afterSuccess = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true, demoEnhance: true }, { ok: true }))'))
@@ -1196,6 +1221,12 @@ test('global shortcut capture is a separate session-only opt-in', async () => {
   assert.equal(afterSuccess.demoEnhance, true, 'the helper only touches the shortcut switch')
   const afterFailure = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: false, code: "display-unavailable" }))'))
   assert.equal(afterFailure.demoKeystrokes, true, 'a failed start is not a take')
+  const afterFocusOnly = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, focused: true }))'))
+  assert.equal(afterFocusOnly.demoKeystrokes, true, 'focusing the running bar is not a take')
+  const afterCancelledRegion = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, created: false }))'))
+  assert.equal(afterCancelledRegion.demoKeystrokes, true, 'a cancelled region selection is not a take')
+  const afterCreatedRegion = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: true, created: true }))'))
+  assert.equal(afterCreatedRegion.demoKeystrokes, false, 'a created region take consumes the opt-in')
   const afterNoResult = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }))'))
   assert.equal(afterNoResult.demoKeystrokes, false, 'a channel that resolved without a result still started the take')
 })

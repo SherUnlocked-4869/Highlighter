@@ -287,9 +287,21 @@ function buildRecordingStartPayload(choices) {
 // from the same page begins opted out; a failed start keeps the user's choice so
 // the retry does not silently lose it. demoEnhance has a different privacy scope
 // and its own tested contract, so it is never part of this decision.
+//
+// P1-01 follow-up: "started" now needs a real receipt. The main process answers
+// {ok:true, focused:true} when the repeat entry only brought the running bar forward, and
+// {ok:true, created:false} when the region overlay was cancelled/replaced. Neither created a
+// new recording, so neither may consume the opt-in.
+function recordingStartCreatedRecording(result) {
+  if (result && result.ok === false) return false
+  if (result && result.focused === true) return false
+  if (result && result.created === false) return false
+  return true
+}
+
 function choicesAfterRecordingStart(choices, result) {
   if (!choices || typeof choices !== 'object') return choices
-  if (result && result.ok === false) return choices
+  if (!recordingStartCreatedRecording(result)) return choices
   return { ...choices, demoKeystrokes: false }
 }
 
@@ -1411,6 +1423,9 @@ async function startRecordingFromWorkbench() {
       return
     }
     if (result && result.focused === true) toast(t('recording.workbench.started-focused'))
+    // P1-01 follow-up: a cancelled region selection is not a started take; it must not toast
+    // "recording started" and must not consume the one-shot shortcut opt-in.
+    else if (result && result.created === false) { /* selection cancelled */ }
     else if (choices.mode === 'window') toast(t('recording.workbench.started-window'))
     else toast(choices.mode === 'region' ? t('recording.workbench.started-region') : t('recording.workbench.started-display'))
     // P2-01: this take really exists, so the one-shot shortcut opt-in it was

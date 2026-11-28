@@ -262,16 +262,23 @@
   // display's coordinates out of another screen's pixels (P2-03), so a multi-display
   // setup returns a typed retryable failure instead.
   //
-  // `options.singleDisplay: true` is the only safe fallback: when the whole system has one
-  // display, the single usable source IS the target by elimination, so an omitted
-  // display_id (some drivers omit it) can still be served. The caller states that fact;
-  // this module never guesses it from the source list (a missing secondary source on a
-  // two-display system also leaves exactly one usable source).
+  // `options.singleDisplay: true` is the only safe fallback, and ONLY when the source list
+  // cannot contradict it: exactly ONE usable source AND that source carries no display_id,
+  // so it IS the target by elimination (some drivers omit the id on a genuine single-display
+  // host). The caller states the topology; this module never guesses it from the source list
+  // (a missing secondary source on a two-display system also leaves exactly one usable
+  // source).
+  //
+  // P2-5 (review finding 5): a source list that contradicts the elimination - a unique
+  // source that explicitly names another display, or several anonymous sources - may belong
+  // to a topology that changed while getSources() was awaiting. Serving list[0] there crops
+  // the target display's rectangle out of another screen, so the ambiguous list is refused
+  // and retried instead.
   //
   // Returns { ok: true, source, matched } on success; a typed { ok: false, code } on
   // refusal: NO_SOURCES (nothing usable), DISPLAY_UNAVAILABLE (sources exist and carry
   // ids, but not the target's) and SOURCE_UNIDENTIFIED (usable sources exist but none has
-  // an id, so identity cannot be confirmed on a multi-display system).
+  // an id and elimination is unavailable - multi-display, or ambiguous on a single display).
   function pickScreenSource(sources, displayId, options = {}) {
     const settings = options && typeof options === 'object' ? options : {}
     const usable = (entry) => {
@@ -283,11 +290,33 @@
     if (!list.length) return { ok: false, code: 'NO_SOURCES' }
     const matched = list.find((entry) => displayId != null && String(entry.display_id ?? '') === String(displayId))
     if (matched) return { ok: true, source: matched, matched: true }
-    if (settings.singleDisplay === true) {
+    const identified = list.some((entry) => entry.display_id != null && String(entry.display_id) !== '')
+    // Elimination requires BOTH halves of P2-5: one usable source, and no id to contradict
+    // the single-display topology statement.
+    if (settings.singleDisplay === true && list.length === 1 && !identified) {
       return { ok: true, source: list[0], matched: false, fallback: 'single-display' }
     }
-    const identified = list.some((entry) => entry.display_id != null && String(entry.display_id) !== '')
     return { ok: false, code: identified ? 'DISPLAY_UNAVAILABLE' : 'SOURCE_UNIDENTIFIED' }
+  }
+
+  // P2-5 (review finding 5): the caller reads screen.getAllDisplays() BEFORE await
+  // getSources(), so a hotplug or driver re-enumeration during the await can make the source
+  // list belong to a different topology than the capture plan. The caller re-reads the
+  // display list afterwards and asks this pure check whether the two enumerations still
+  // describe the same topology: the display count must be unchanged and the target display
+  // id must still be present (the count alone cannot see a display swap). A target without
+  // an id cannot be presence-checked - the count is then the only signal; production
+  // displays always carry one, and an id-less display cannot be matched to a source anyway.
+  function checkDisplayTopology(displaysBefore, displaysAfter, targetDisplayId) {
+    const before = Array.isArray(displaysBefore) ? displaysBefore : []
+    const after = Array.isArray(displaysAfter) ? displaysAfter : []
+    if (before.length !== after.length) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    if (targetDisplayId != null) {
+      const present = after.some((display) => display != null && display.id != null &&
+        String(display.id) === String(targetDisplayId))
+      if (!present) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    return { ok: true }
   }
 
   // Frame-rate / in-flight / byte budget state machine. Everything is injected so node
@@ -438,6 +467,7 @@
     normalizeDisplays,
     pickDisplay,
     pickScreenSource,
+    checkDisplayTopology,
     bgraToRgba,
     planScreenCapture,
     resampleRgba,
