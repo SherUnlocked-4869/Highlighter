@@ -4805,6 +4805,19 @@ async function buildPinEditableSnapshot() {
     baseImagePng: png
   }
 }
+// U02 / DEV-01: which confirmation REPLACES the original pin's image and therefore must
+// carry the editable snapshot? The two pin buttons do; in a pin RE-ANNOTATION session the
+// `copy` action (Enter, the copy button, double-click-copy when enabled) is routed to
+// captureAPI.pin and commits back to the SAME pin window, so it replaces that pin's image
+// as well. A normal copy is clipboard-only and never touches a pin. Keeping this decision
+// in ONE predicate is what stops a confirm entry from silently flattening the vectors: the
+// main process releases the old snapshot whenever it replaces the display image, so a
+// `copy` commit without a fresh snapshot leaves a flat bitmap whose old rectangle can no
+// longer be selected/moved/deleted (P1-03).
+function pinConfirmReplacesPin(action) {
+  if (action === 'pin' || action === 'pin-copy') return true
+  return action === 'copy' && !!initData?.editPin
+}
 
 
 // Feature D3 (plan §7.1): drop (or shrink) magnifiers whose source rect left the crop. Runs inside
@@ -5200,7 +5213,9 @@ async function performAction(action) {
     // U02 / DEV-01: the optional non-destructive snapshot rides the EXISTING pin payload
     // (meta.pinEditable), so no new IPC channel exists. It is built from the same frozen
     // session state as the exported PNG and never from a second read of the screen.
-    if(action==='pin'||action==='pin-copy'){
+    // EVERY confirm entry that replaces the original pin's image uses this one path -
+    // including `copy` inside a pin re-annotation session (see pinConfirmReplacesPin).
+    if(pinConfirmReplacesPin(action)){
       const pinEditableSnapshot=await buildPinEditableSnapshot()
       if(pinEditableSnapshot)meta.pinEditable=pinEditableSnapshot
     }

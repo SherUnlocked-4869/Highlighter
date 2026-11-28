@@ -381,6 +381,48 @@ test('pin domain: re-annotation reopens the snapshot session (base bitmap + vect
   assert.ok(win._ops.includes('hide'))
 })
 
+test('pin domain: a confirmed re-annotation keeps BOTH artefacts, so the next reopen still has the old vectors', async () => {
+  // P1-03 half of the contract: every confirm entry that REPLACES the pin's display image
+  // must also hand the domain a fresh snapshot. The domain side here proves the chain the
+  // renderer feeds: replace image + attach snapshot -> both artefacts released/attached in
+  // lockstep -> the reopened editor payload still carries the existing rectangle.
+  const captureOptions = []
+  const harness = createPinHarness({
+    getCreateCaptureWindow: () => async (options) => {
+      captureOptions.push(options)
+      return null
+    }
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {}, { editableSnapshot: validSnapshot() })
+  const firstImageId = win._pinData.imageId
+  const confirmed = validSnapshot()
+  harness.domain.updatePinWindow(win, makePng(120, 80), {}, { editableSnapshot: confirmed })
+  assert.notEqual(win._pinData.imageId, firstImageId, 'the display image generation changed')
+  assert.equal(win._pinData.pinEditable.imageId, win._pinData.imageId, 'the snapshot is bound to the NEW image generation')
+  assert.deepEqual(win._pinData.pinEditable.baseImage.bytes, confirmed.baseImagePng)
+  assert.equal(harness.domain.getPinSnapshotBytes(), confirmed.baseImagePng.length, 'old base released, new base attached exactly once')
+
+  await harness.domain.startPinReannotation(win, { x: 0, y: 0, width: 120, height: 80 })
+  const reopened = captureOptions.at(-1)
+  assert.ok(reopened, 'the confirmed pin must reopen in the vector editor')
+  assert.equal(reopened.editPin, true)
+  assert.equal(reopened.pinEditable.document.annotations.length, 2)
+  const rect = reopened.pinEditable.document.annotations.find((item) => item.type === 'rect')
+  assert.ok(rect, 'the old rectangle must still be selectable after a confirmed re-annotation')
+  assert.deepEqual([rect.x, rect.y], [10, 12])
+
+  // The unchanged degradation: an update that arrives WITHOUT a snapshot releases the old
+  // base and the pin becomes a flat bitmap again (this is why the renderer must always send
+  // it - the bug P1-03 fixes). Nothing leaks, and the next reopen is bitmap-only.
+  harness.domain.updatePinWindow(win, makePng(120, 80), {})
+  assert.equal(win._pinData.pinEditable, null)
+  assert.equal(harness.domain.getPinSnapshotBytes(), 0)
+  await harness.domain.startPinReannotation(win, { x: 0, y: 0, width: 120, height: 80 })
+  const reopenedFlat = captureOptions.at(-1)
+  assert.equal(reopenedFlat.pinEditable, null)
+  assert.deepEqual(reopenedFlat.imageBuffer, (await harness.pinImages.read(win._pinData.imageId)).bytes)
+})
+
 test('pin domain: an old flat pin keeps today\'s bitmap-only re-annotation', async () => {
   let capturedOptions = null
   const harness = createPinHarness({
@@ -525,10 +567,14 @@ test('wiring: the snapshot rides existing payloads and the renderer strips/gates
   const pinDomainSource = read('main', 'domains', 'pin', 'index.js')
   const captureDomainSource = read('main', 'domains', 'capture', 'index.js')
   // Capture side: built from the same frozen session state as the exported PNG and only
-  // for the pin outputs.
+  // for the pin-replacement confirm entries.
   assert.match(script, /function buildPinEditableSnapshot\(/)
   assert.match(script, /meta\.pinEditable=pinEditableSnapshot/)
-  assert.match(script, /if\(action==='pin'\|\|action==='pin-copy'\)/)
+  assert.match(script, /function pinConfirmReplacesPin\(action\)/)
+  assert.match(script, /if\(pinConfirmReplacesPin\(action\)\)/)
+  // P1-03: 'copy' inside an editPin session REPLACES the original pin, so it must carry
+  // the snapshot exactly like the pin buttons (Enter / copy button / double-click-copy).
+  assert.match(script, /return action === 'copy' && !!initData\?\.editPin/)
   assert.match(script, /if \(skipHistoryThisCapture\) return null/)
   assert.match(script, /if \(initData\?\.editPin && !pinEditable\) return null/)
   assert.match(script, /createPinEditableDocument\(/)
