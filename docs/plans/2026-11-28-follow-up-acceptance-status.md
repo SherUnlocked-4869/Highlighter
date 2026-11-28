@@ -89,6 +89,15 @@
 | R02 实际安装、更新与数据保全 · Windows QA | 干净 Win10 22H2 x64 / Win11 隔离会话用 R01 资产静默安装；旧版种入测试数据再覆盖升级；核对版本/托盘/删历史后磁盘占用/配置根/登录项；卸载检查用户数据保留；便携版独立目录启动；采集默认 NSIS 前 2 分钟与跨 24 h 的更新域名流量，再手动检查一次 | `not-run` | 本机不是干净隔离安装环境，也没有可安装的签名候选；更新域名流量需要受控网络与 24 h 时钟推进，安装/升级/卸载需真实 NSIS 与用户配置目录。这些都无法由单元测试或本机模拟替代 | 在隔离 Win10/11 会话执行完整安装/升级/卸载矩阵，附退出码、实际运行文件版本、目录差异、登录项与网络计数（默认自动检查关闭时两点为 0、手动一次仅一次请求且不启动定时器、portable 不调用 NSIS 更新器） |
 | R03 硬件矩阵和逐单结论 · 发布负责人 | 汇合 V01–V10 与 R02，在真实设备补 100/125/150/200% DPI、混合 DPI 负坐标双屏、锁屏/睡眠/唤醒、RDP、双音轨、慢盘；F03 三家硬编引用 V10 原始样本；`npm run collect:hardware` 与 runtime probe，证据存 `docs/releases/evidence/<version>/`，再用 `npm run verify:hardware -- --version … --source-commit …` 汇总 | `not-run` | 缺硬件（GPU 编码器/慢盘/第二屏/RDP/双音轨设备）且缺签名候选；`collect:hardware` 只能采到本机开发机环境，不能代表矩阵，也不能作为晋级证据 | 用签名候选跑完整矩阵，按 claim 登记包型与环境，P0/P1 失败停止晋级、P2 附问题链接与规避；缺实物或缺必需 claim 记为“待补证据”，不能用本机数据冒充 |
 
+> **2026-11-28 补充（R01 部分证据，不改变状态）**：为验证本批代码，分支 `feat/review-optimization-2026-11-26`
+> 以 `workflow_dispatch` 跑通 `Windows CI`（run [`46104498694`](https://github.com/SherUnlocked-4869/Highlighter/actions/runs/46104498694)，
+> sha `b40c96ac6e34dfa997eb3472becf8b8c9d3cd831`）：quality 与 package 两个 job 全绿，package job 产出并校验了
+> **unsigned** 候选（`verify:package` 输出 `{"version":"5.1.1","signed":false,"setup":"Highlighter-Setup-5.1.1.exe",
+> "portable":"Highlighter-5.1.1-portable.exe","manifests":["latest.yml"],"checksums":"SHA256SUMS.txt"}`，Electron fuses
+> 全部按预期：RunAsNode=off / CookieEncryption=on / NodeOptions=off / InspectArgs=off / AsarIntegrity=on / OnlyLoadAppFromAsar=on；
+> 候选 artifact `Highlighter-Windows-b40c96ac…`，bundle sha256 `ca7e89830b8afee32d49cb8334f84d2ba33b55eb840d7fd0b818b7e4906515d1`）。
+> 这属于 R01 的**功能诊断级**证据；签名渠道、Authenticode 发布者/时间戳、`verify:release`、隔离安装与 R02/R03 仍未执行。
+
 ## 5. 状态汇总（本台账行数）
 
 | 类别 | 行数 | 状态分布 |

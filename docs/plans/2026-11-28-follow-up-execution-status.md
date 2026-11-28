@@ -2,8 +2,8 @@
 
 2026-11-28 · 依据 [后续开发与缺陷验收任务](2026-11-28-review-optimization-follow-up-tasks.md) §4/§6、
 [交接记录](2026-11-28-review-optimization-handoff.md)、[5.1.1 后续验收台账](2026-11-28-follow-up-acceptance-status.md)。
-代码基线为 root 已提交的 DEV 批次并含 DEV-08 采用提交（HEAD `0ccc397`，接 `c2e6003` 计划提交），
-E01/DEV-03 记录随 `be11fa8` 入库；集成复跑结果见 §5。
+代码基线为 root 已提交的 DEV 批次并含 DEV-08 采用提交；目标提交 `b40c96ac6e34dfa997eb3472becf8b8c9d3cd831`
+已在 CI 上跑通两个 job（见 §5.2），E01/DEV-03 记录随 `be11fa8` 入库，集成复跑结果见 §5.1。
 
 **本记录只登记“实现/提交/自动化回归/未做项”的事实，不做真机或发布验收结论。** 凡写“已实现”均指
 代码已提交且仓库内存在对应回归文件；真机门槛一律引用验收台账，未执行的真机步骤不得由本记录冒充通过。
@@ -39,7 +39,7 @@ E01/DEV-03 记录随 `be11fa8` 入库；集成复跑结果见 §5。
 
 | 单号 | 状态 | 事实 | 剩余条件 |
 |---|---|---|---|
-| E01 计时失败归因 | `attribution complete / CI pending` | 归因**负载引起**（非测试、非产品）：低负载 3/3 通过、summary p95 41–45 ms；16 CPU hog 满载时 2/2 失败、summary p95 169.6/177.4 ms（复现交接记录的 110–180 ms），各视图 p50/p95 同步膨胀 2.2–3.7 倍；15 个真实测试文件并行仍通过，只有全量套件的进程/侧车叠加能复现。可重复门禁 `scripts/run-perf-gate.js`（串行跑 `usage-query` + `capture-first-paint`，保留原断言与预算，输出 `PERF_GATE_RESULT=<json>`）两次验证通过；`package.json` 增加 `test:perf`，CI 在 `Run tests` 之后增加串行 perf 步骤与 `perf-gate.json` artifact；`npm test` 仍按原预算执行同一用例一次 | 关闭条件剩“目标提交 CI 中查到实际结果”：分支推送后需用 `workflow_dispatch` 跑一次 `windows-ci` 并记录 perf gate 输出；已知 flake 复验：`clipboard-coordination` 独跑 2/2 通过，但 `test:coverage` 的 c8 并发全量 3/3 次在 `Lease round 1/42/2` 失败（同命令串行同阈值 exit 0），按 E01 “全量红、单跑绿”保留两份记录并归因到 CPU 过载；`capture-first-paint` 独跑 2/2（首帧样本 176.9–274.6 ms，门限 600 ms） |
+| E01 计时失败归因 | `closed（CI 已可查）` | 归因**负载引起**（非测试、非产品）：低负载 3/3 通过、summary p95 41–45 ms；16 CPU hog 满载时 2/2 失败、summary p95 169.6/177.4 ms（复现交接记录的 110–180 ms），各视图 p50/p95 同步膨胀 2.2–3.7 倍；15 个真实测试文件并行仍通过，只有全量套件的进程/侧车叠加能复现。可重复门禁 `scripts/run-perf-gate.js`（串行跑 `usage-query` + `capture-first-paint`，保留原断言与预算，输出 `PERF_GATE_RESULT=<json>`）本地与 CI 均通过；`package.json` 增加 `test:perf`，CI 在 `Run tests` 之后串行 perf 步骤与 `perf-gate.json` artifact（`if: always()`）；`npm test` 仍按原预算执行同一用例一次 | 关闭条件已满足：CI run [`46104498694`](https://github.com/SherUnlocked-4869/Highlighter/actions/runs/46104498694)（sha `b40c96ac…`）中 `Run isolated performance gate` **success**，artifact `perf-gate-result` sha256 `25f37a53…`，CI 数值 summary p95 57.26 / daily 100.76 / breakdown 161.22（预算 100/150/300），capture-first-paint 通过。已记录的已知 flake 复验：`clipboard-coordination` 独跑 2/2 通过，但 `test:coverage` 的 c8 并发全量 3/3 次在 `Lease round 1/42/2` 失败（同命令串行同阈值 exit 0），按 E01 “全量红、单跑绿”保留两份记录并归因到 CPU 过载；`capture-first-paint` 独跑 2/2（首帧样本 176.9–274.6 ms，门限 600 ms） |
 | E02 架构/IPC/三语预算 | `closed（本轮集成全绿）` | 最终树 `npm run check` 全绿：语法 627 文件；`main.js` **1204 行 / 上限 1205**、最长行 **158/160**、domains 11；i18n **TOTAL 602/606**（新增可见文案全部进 `shared/locales/*` 三语，pin/capture/record 扫描区无新增中文）；评审证据门禁 2 登记表/50 工单/9 必需 P0 通过。**无新增 IPC 通道**：`main/services/ipc-security.js`、`IPC_SURFACES`、registrar 均未改动——DEV-01/02/08 复用 `pin:context-menu` 有界命令信封，DEV-04 的采集配置走既有 `record:workbench-start` 载荷，新增的主→渲染消息不需要发送方策略；`ipc-security`/`ipc-module-contracts`/`architecture-gate`/`i18n` 契约测试在全量中通过 | — |
 | E03 原生构建 | `closed（本轮集成全绿）` | 以逐条构建替代 `npm run build:native` 包装（包装首步 `stop:app` 会关闭用户正在运行的已安装程序，本次拆开执行同一批脚本）：smart-select、ocr、everything、selection（node-gyp）、clipboard、device-battery、shutter-sound、focused-window 全部 exit 0；跟踪的 `native/everything-search/bin/HighlighterEverything.exe` 由 `9fcd5f7` 重建入库。build-id/原生回归：`test:clipboard:native` **176/176**、`test/selection-native-build.test.js` 通过；`cargo test --locked`：ocr **10/10**、everything **16/16**、clipboard exit 0（两个需桌面的用例按设计 ignored） | — |
 
@@ -61,6 +61,9 @@ E01/DEV-03 记录随 `be11fa8` 入库；集成复跑结果见 §5。
 | `d204885` | 契约测试 | 跟随 DEV-01 的 `pinEditable` 遮罩分支与 DEV-04 的载荷键 |
 | `36da1fe` | e2e | 诊断预览改用 id 定位，消除备份预览按钮造成的严格模式歧义（既有缺陷） |
 | `0ccc397` | DEV-08（采用） | 真实像素比对接入产品（显式可选）+ 屏采排除实测探针与测量记录 |
+| `a12725e` | 集成证据 | 集成门禁记录、DEV-08 状态与 CI perf 步骤（`if: always()`） |
+| `8899b7d` | 计划 | 计划文档指向执行/验收记录 |
+| `b40c96a` | 测试健壮性 | N02 源码接线断言改为行尾无关（CI CRLF checkout），使 CI 复跑全绿 |
 
 ## 4. 证据登记表的收录约束（为什么有两组文件在表外）
 
@@ -98,16 +101,13 @@ npm run check:i18n           # → TOTAL 602 / 606
 node scripts/check-review-evidence.js   # → 见更新后的登记表（U02/N03/N05 三行）
 ```
 
-**未执行、不得据本记录冒充：** 完整 `npm test` / `npm run check`、`npm run test:e2e`、真实 Electron
-探针、`npm run build:native` 全量、`cargo test`（everything/ocr/clipboard/selection 原生构建）、
-`test/recording-export.test.js`（含真实 ffmpeg 用例）、`test/ocr-service.test.js`、`test/selection-native-build.test.js`
-以及所有真机步骤。
+**仍不得据本记录冒充的项：** 计划 §2 的 V01–V10 全部真机步骤、§5 的签名/隔离安装/硬件矩阵（R01–R03），
+以及 DEV 各行的真机门槛（见 §6）。本记录 §5.1/§5.2 的自动化与 CI 结果只证明代码与门禁状态，不替代真机验收。
 
 ## 5.1 集成复跑（root，2026-11-28，本机）
 
 以下为 root 在全部 dev 提交完成后、对集成树执行的门禁结果（环境按 `AGENTS.md`：清 `ELECTRON_RUN_AS_NODE`、
 `TMP/TEMP/HIGHLIGHTER_E2E_DATA_ROOT_BASE` 指向仓内 `.tmp-work`、直接探针注入 `--no-sandbox`）：
-
 ```powershell
 npm run check                    # ✔ 语法 627；架构 main.js 1204/1205、158/160、domains 11；i18n 602/606；证据门禁 ✔
 npm test                         # ✔ 3353 tests / 3353 pass / 0 fail（基线 3237 + 本批 116；含 DEV-08 采用后新增用例）
@@ -134,7 +134,29 @@ node scripts/probe-pin-screen-diff.js   # ✔ DEV-08 采用门禁 {adopt:true, r
   单跑绿保留两份记录”处理，未改断言、未开缺陷单。
 - `npm run build:native` 未按包装执行：其首步 `npm run stop:app` 会关闭用户正在运行的已安装程序；本次按
   `E03` 逐条执行同一批构建脚本，结果等价（全部 exit 0）。
-- `verify:package` / `verify:release` 未执行：本地无目标 tag 的已签名候选产物与隔离安装会话（R01–R03 见 §6）。
+- `verify:package` / `verify:release` 本机未执行：本机无签名证书/隔离安装会话（CI 的 unsigned 候选结果见 §5.2；R01–R03 见 §6）。
+
+## 5.2 CI 复跑（目标提交 `b40c96ac6e34dfa997eb3472becf8b8c9d3cd831`）
+
+分支已推送，并用 `workflow_dispatch` 在 `feat/review-optimization-2026-11-26` 上跑 `Windows CI`：
+
+- **首轮** run [`46104049776`](https://github.com/SherUnlocked-4869/Highlighter/actions/runs/46104049776)：`Run tests` 失败，
+  唯一失败是既有 `N02 wiring` 源码正则——CI 该次 checkout 把 LF blob 落成了 CRLF（日志中为 `'use strict'\r\n`），
+  而该用例用 `\n` 锚定源码。同一 run 的 `Run isolated performance gate` 已 **success**（artifact 已上传）。
+  把该用例的源码读取改为行尾无关（`b40c96a`）后重跑。
+- **第二轮** run [`46104498694`](https://github.com/SherUnlocked-4869/Highlighter/actions/runs/46104498694)：**两个 job 全绿**
+  - `Check and test`：语法、`check:version`、`npm test`、isolated perf gate、renderer E2E、coverage 阈值、
+    long-capture、`audit:dependencies` 全部 success；
+  - perf gate artifact `perf-gate-result`（sha256 `25f37a53cb9abdfb566984e5510735a720e0328edee235883e3b178d07f0f423`）：
+    `ok:true`，usage summary p95 **57.26 ms**、daily **100.76**、breakdown **161.22**（预算 100/150/300），
+    capture-first-paint 通过（1274 ms）；CI runner 为 4 vCPU/16 GiB，数值比本机更紧但仍在原预算内。
+  - `Build hardened unsigned candidate`：`build:native`、strict runtime、unsigned NSIS+portable 构建、
+    CycloneDX SBOM、`verify:package`、fuses 校验、artifact 上传全部 success。`verify:package` 输出
+    `{"version":"5.1.1","signed":false,"setup":"Highlighter-Setup-5.1.1.exe","portable":"Highlighter-5.1.1-portable.exe","manifests":["latest.yml"],"checksums":"SHA256SUMS.txt"}`；
+    fuses 为 RunAsNode=off / CookieEncryption=on / NodeOptions=off / InspectArgs=off / AsarIntegrity=on /
+    OnlyLoadAppFromAsar=on。候选 artifact `Highlighter-Windows-b40c96ac…`（bundle sha256
+    `ca7e89830b8afee32d49cb8334f84d2ba33b55eb840d7fd0b818b7e4906515d1`，405,202,706 B）。
+    这是 unsigned 的功能诊断候选：签名渠道、`verify:release`、隔离安装/升级与 R02/R03 仍未执行。
 
 ## 6. 剩余真机 / 发布门槛
 
@@ -145,8 +167,10 @@ node scripts/probe-pin-screen-diff.js   # ✔ DEV-08 采用门禁 {adopt:true, r
 - **DEV-08 已是显式可选功能（不是默认行为）**：默认仍是闪烁/洋葱皮；真实像素比对只在用户于贴图菜单显式
   开启时运行，且会将该贴图从屏采/录屏中排除（菜单文案已披露）。剩余真机项见 DEV-08 行。
 - **DEV-03 已按测量结论关闭为“试验未达采用门槛”**：预热与 SmartSelect 复用均不采用，产品保持按需创建。
-- **E01 关闭条件只剩目标提交的 CI 实际结果**：归因（负载引起）与可重复门禁已提交；CI 步骤已加到
-  `.github/workflows/windows-ci.yml`（`Run tests` 之后串行 perf + artifact）。推送分支并以 `workflow_dispatch`
-  跑一次 `windows-ci` 后在 CI 运行记录中填结果即可关闭。
+- **E01 已关闭**：归因（负载引起）+ 可重复门禁 + CI 实际结果均已在目标提交上取得（run `46104498694`，
+  `Run isolated performance gate` success，数值见 §5.2）；之后只需在新提交上重复该步骤。
+- **R01 已有 unsigned 功能诊断候选（CI）**：run `46104498694` 的 package job 产出并通过 `verify:package`/fuses
+  校验的 NSIS+portable（`signed:false`，见 §5.2 与验收台账 R01 行补充）；签名晋级、`verify:release`、隔离安装与
+  R02/R03 仍未执行。
 - **DEV-04/DEV-05/DEV-06/DEV-07/DEV-10 的真机门槛**（真实键盘矩阵、真实项目导出对照、真实 OCR 模型、
   真实 Everything 1.4/1.5、VS Code/Cursor 集成终端）必须人工执行并附日志/截图，不能由本记录的自动化结果替代。
