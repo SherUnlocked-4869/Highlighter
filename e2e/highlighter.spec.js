@@ -136,7 +136,10 @@ test('settings persist through the real preload and authorized IPC surface', asy
 test('main-context dialog stubs support diagnostics and the close button hides cleanly', async ({ highlighter }) => {
   const { mainWindow: page, savePath } = highlighter
   await navigate(page, 'settings-system', '系统与数据')
-  await page.getByRole('button', { name: '预览' }).click()
+  // The system page now also carries the local-backup "预览备份包" button, whose
+  // accessible name contains 预览; target the diagnostics control by id so the
+  // locator cannot go ambiguous as more previews appear on the page.
+  await page.locator('#previewDiagnostics').click()
   await expect(page.locator('#diagnosticsPreview')).toBeVisible()
   await expect(page.locator('#diagnosticsPreview')).toContainText('"offline": true')
 
