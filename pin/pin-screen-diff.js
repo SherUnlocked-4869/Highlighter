@@ -16,7 +16,8 @@
 // the probe:
 //   * DIP -> display-local PHYSICAL capture rectangle (multi-screen, mixed DPI, rotation,
 //     negative coordinates, edge clamping, pixel budget);
-//   * desktopCapturer source choice by display_id with a bounded fallback;
+//   * desktopCapturer source choice by display_id, identity-confirmed (single-display
+//     fallback by elimination only, never another screen's pixels);
 //   * BGRA -> RGBA normalisation for nativeImage.toBitmap();
 //   * RGBA diff + nearest-neighbour resampling for alignment checks;
 //   * a bounded 1 Hz / one-in-flight / failure-capped sampler;
@@ -256,24 +257,45 @@
   }
 
   // Pick the desktopCapturer source for one display. display_id is the authoritative
-  // match; the bounded fallback is the first source with real pixels (Electron may omit
-  // display_id on some platforms/driver combinations). Returns null if nothing usable.
-  function pickScreenSource(sources, displayId) {
+  // match; nothing else may be substituted while the identity of the target display is
+  // unconfirmed. Delivering a frame from an unidentified source would crop the target
+  // display's coordinates out of another screen's pixels (P2-03), so a multi-display
+  // setup returns a typed retryable failure instead.
+  //
+  // `options.singleDisplay: true` is the only safe fallback: when the whole system has one
+  // display, the single usable source IS the target by elimination, so an omitted
+  // display_id (some drivers omit it) can still be served. The caller states that fact;
+  // this module never guesses it from the source list (a missing secondary source on a
+  // two-display system also leaves exactly one usable source).
+  //
+  // Returns { ok: true, source, matched } on success; a typed { ok: false, code } on
+  // refusal: NO_SOURCES (nothing usable), DISPLAY_UNAVAILABLE (sources exist and carry
+  // ids, but not the target's) and SOURCE_UNIDENTIFIED (usable sources exist but none has
+  // an id, so identity cannot be confirmed on a multi-display system).
+  function pickScreenSource(sources, displayId, options = {}) {
+    const settings = options && typeof options === 'object' ? options : {}
     const usable = (entry) => {
       if (!entry || !entry.thumbnail) return false
       const thumbnail = entry.thumbnail
       return !(typeof thumbnail.isEmpty === 'function' && thumbnail.isEmpty())
     }
     const list = Array.isArray(sources) ? sources.filter(usable) : []
-    if (!list.length) return null
+    if (!list.length) return { ok: false, code: 'NO_SOURCES' }
     const matched = list.find((entry) => displayId != null && String(entry.display_id ?? '') === String(displayId))
-    if (matched) return { source: matched, matched: true }
-    return { source: list[0], matched: false }
+    if (matched) return { ok: true, source: matched, matched: true }
+    if (settings.singleDisplay === true) {
+      return { ok: true, source: list[0], matched: false, fallback: 'single-display' }
+    }
+    const identified = list.some((entry) => entry.display_id != null && String(entry.display_id) !== '')
+    return { ok: false, code: identified ? 'DISPLAY_UNAVAILABLE' : 'SOURCE_UNIDENTIFIED' }
   }
 
   // Frame-rate / in-flight / byte budget state machine. Everything is injected so node
   // tests drive a fake clock and fake capture promises. The experiment aborts after
-  // MAX_CONSECUTIVE_FAILURES failures instead of retrying forever.
+  // MAX_CONSECUTIVE_FAILURES failures instead of retrying forever - but only GENUINE
+  // capture errors count: a frame the capturer marks `retryable` (display/source
+  // temporarily unavailable, P2-03) is counted separately and never stops the session,
+  // so sampling resumes by itself once the target display/source recovers.
   function createDiffSampler(options = {}) {
     const settings = options && typeof options === 'object' ? options : {}
     const captureFrame = typeof settings.captureFrame === 'function' ? settings.captureFrame : null
@@ -287,6 +309,10 @@
     let skippedRate = 0
     let failures = 0
     let consecutiveFailures = 0
+    // Retryable failures are a transient environment state, not a capture defect: reported
+    // for diagnostics, never compared with the failure cap.
+    let retryableFailures = 0
+    let lastRetryableCode = ''
     let stopped = false
     let stopCode = ''
     let maxBytesSeen = 0
@@ -303,6 +329,8 @@
         skippedRate,
         failures,
         consecutiveFailures,
+        retryableFailures,
+        lastRetryableCode,
         inFlight,
         stopped,
         stopCode,
@@ -324,7 +352,9 @@
       inFlight = true
       try {
         const frame = await captureFrame()
-        if (!frame || frame.ok !== true) return fail(frame?.code || 'CAPTURE_FAILED')
+        if (!frame || frame.ok !== true) {
+          return fail(frame?.code || 'CAPTURE_FAILED', frame?.retryable === true)
+        }
         const pixels = frame.pixels
         const width = Math.round(finiteOr(frame.width, 0))
         const height = Math.round(finiteOr(frame.height, 0))
@@ -352,11 +382,16 @@
       }
     }
 
-    function fail(code) {
+    function fail(code, retryable = false) {
+      if (retryable) {
+        retryableFailures += 1
+        lastRetryableCode = code
+        return { ok: false, code, retryable: true, failures, consecutiveFailures, retryableFailures }
+      }
       failures += 1
       consecutiveFailures += 1
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) stop('FAILURE_LIMIT')
-      return { ok: false, code, failures, consecutiveFailures }
+      return { ok: false, code, failures, consecutiveFailures, retryableFailures }
     }
 
     return { sample, stop, getStats }

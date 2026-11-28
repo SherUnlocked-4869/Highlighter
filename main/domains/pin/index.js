@@ -1119,6 +1119,21 @@ function createPinDomain(deps) {
   const injectedSetContentProtection = typeof deps.setContentProtection === 'function'
     ? deps.setContentProtection
     : null
+  // P1-01: the production default must resolve the desktopCapturer OBJECT, not a factory.
+  // The shipped wiring (main.js createPinDomain) does not inject one, and returning
+  // `() => require('electron').desktopCapturer` made the first production frame fail with
+  // "capturer.getSources is not a function" (CAPTURE_THREW), which the 1 Hz failure cap
+  // then turned into a permanent stop after 3 seconds. The lazy require mirrors the dialog
+  // defaults above and keeps the pure node tests Electron-free unless they take this path.
+  function resolveDesktopCapturer() {
+    if (injectedDesktopCapturer) return injectedDesktopCapturer
+    try {
+      return require('electron').desktopCapturer || null
+    } catch (error) {
+      log('Pin screen capture could not resolve desktopCapturer:', error.message)
+      return null
+    }
+  }
   const realDiffIntervalMs = Number.isFinite(Number(deps.realDiffIntervalMs)) && Number(deps.realDiffIntervalMs) >= 250
     ? Number(deps.realDiffIntervalMs)
     : DEFAULT_REAL_DIFF_INTERVAL_MS
@@ -1163,17 +1178,35 @@ function createPinDomain(deps) {
       displays
     })
     if (!plan || plan.ok !== true) return plan || { ok: false, code: 'PLAN_FAILED' }
-    const capturer = injectedDesktopCapturer || (() => require('electron').desktopCapturer)
+    const capturer = resolveDesktopCapturer()
+    // A typed, RETRYABLE failure: a display/source can be temporarily unavailable while a
+    // session runs, and the sampler must keep retrying instead of treating it as a real
+    // capture error (see createDiffSampler's retryable handling).
+    if (!capturer || typeof capturer.getSources !== 'function') {
+      return { ok: false, code: 'CAPTURER_UNAVAILABLE', retryable: true }
+    }
     let sources = []
     try {
       sources = await capturer.getSources({ types: ['screen'], thumbnailSize: plan.thumbnail })
     } catch (error) {
       return { ok: false, code: 'CAPTURE_THREW', message: error.message }
     }
-    // display_id is the authoritative match; the bounded fallback is the first usable
-    // source (some drivers omit display_id). The probe reports which path was taken.
-    const picked = pinScreenDiff.pickScreenSource(sources, plan.display.id)
-    if (!picked) return { ok: false, code: 'NO_SOURCES' }
+    // display_id is the authoritative match. There is deliberately NO blind fallback: with
+    // more than one display an unidentified source could be the primary screen, and the
+    // caller would then crop the target display's coordinates out of the wrong pixels
+    // (P2-03). The single-display case is safe by elimination - the only screen source IS
+    // the target one - and pickScreenSource states that explicitly.
+    const displaysCount = Array.isArray(displays) ? displays.length : 1
+    const picked = pinScreenDiff.pickScreenSource(sources, plan.display.id, {
+      singleDisplay: displaysCount === 1
+    })
+    if (!picked || picked.ok !== true) {
+      return {
+        ok: false,
+        code: picked?.code || 'SOURCE_UNIDENTIFIED',
+        retryable: true
+      }
+    }
     const thumbnail = picked.source.thumbnail
     let cropped = null
     try {
@@ -1299,7 +1332,11 @@ function createPinDomain(deps) {
         stopRealPixelCompare(win, stats.stopCode || 'failure-limit')
         return result
       }
-      if (!result.ok && result.code !== 'BUSY' && result.code !== 'RATE_LIMITED') session.failures += 1
+      if (!result.ok && result.code !== 'BUSY' && result.code !== 'RATE_LIMITED') {
+        // P2-03: a retryable source/display failure is counted separately inside the
+        // sampler and never stops the session; only genuine capture errors reach the cap.
+        if (result.retryable !== true) session.failures += 1
+      }
       return result
     }
     session.sampleOnce = sampleOnce

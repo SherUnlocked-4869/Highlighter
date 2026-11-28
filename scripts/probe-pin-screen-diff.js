@@ -21,17 +21,24 @@
 //   * NEGATIVE COORDINATES: the same checks for a window placed at the secondary display's
 //     negative-origin edge (this host's secondary display starts at y = -136);
 //   * ALIGNMENT: consecutive protected frames of an unchanged desktop must diff to ~0 with
-//     the shared RGBA diff, and the frame bytes/interval feed the adoption gate.
+//     the shared RGBA diff, and the frame bytes/interval feed the adoption gate;
+//   * PRODUCTION ENTRY (P1-01): the PRODUCT domain (createPinDomain) is constructed
+//     WITHOUT `screenDiffDesktopCapturer` - exactly like main.js - and asked for its first
+//     frame, a couple of 1 Hz updates and a manual stop. This is the wiring the review
+//     found broken ("capturer.getSources is not a function"): the direct desktopCapturer
+//     checks above deliberately bypass it, so this section is the only one that proves the
+//     shipped entry works.
 //
 // Verdict uses pin/pin-screen-diff.js thresholds (selfCaptureRatio, alignmentRatio, frame
 // budget, rate); the JSON keeps every raw ratio so the conclusion is reproducible.
 
 const fs = require('node:fs')
 const path = require('node:path')
-const { app, BrowserWindow, screen, desktopCapturer } = require('electron')
+const { app, BrowserWindow, screen, desktopCapturer, clipboard, nativeImage, Menu, ipcMain } = require('electron')
 
 const ROOT = path.join(__dirname, '..')
 const diffApi = require(path.join(ROOT, 'pin', 'pin-screen-diff.js'))
+const { createPinDomain } = require(path.join(ROOT, 'main', 'domains', 'pin'))
 
 const COLOUR_TOP = { r: 0xe1, g: 0x1d, b: 0x48 } // #e11d48, the "pin" window
 const COLOUR_BOTTOM = { r: 0x25, g: 0x63, b: 0xeb } // #2563eb, what is behind it
@@ -114,8 +121,15 @@ function displaysSnapshot() {
 
 async function grabFrame(display, plan) {
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: plan.thumbnail })
-  const picked = diffApi.pickScreenSource(sources, display.id)
-  if (!picked) throw new Error('no usable screen source')
+  // P2-03: identity-confirmed source only. A single-display host may fall back by
+  // elimination (drivers that omit display_id); a multi-display host must match display_id
+  // or the frame is refused rather than cropped from the wrong screen.
+  const picked = diffApi.pickScreenSource(sources, display.id, {
+    singleDisplay: screen.getAllDisplays().length === 1
+  })
+  if (!picked || picked.ok !== true) {
+    throw new Error('no usable screen source: ' + String(picked?.code || 'UNKNOWN'))
+  }
   const full = picked.source.thumbnail
   const fullSize = full.getSize()
   const rect = {
@@ -154,6 +168,148 @@ function planFor(win, displays) {
       rotation: 0
     })
   }
+}
+
+// P1-01: the PRODUCTION entry, deliberately NOT the direct desktopCapturer used above.
+// The pin domain is constructed with the same dependency surface main.js provides and
+// WITHOUT `screenDiffDesktopCapturer`, so only its own default resolution can find
+// Electron's desktopCapturer. A visible frameless window placed on the chosen display
+// stands in for the pin window the capture path expects (AGENTS.md: visible automation
+// windows belong on the secondary display). Sequence: first frame -> two 1 Hz updates ->
+// manual stop.
+async function runProductionEntry(display) {
+  const entry = {
+    windowBounds: null,
+    firstFrame: null,
+    start: false,
+    updates: 0,
+    deliveredFrames: 0,
+    stopped: false,
+    protectionCalls: []
+  }
+  const domain = createPinDomain({
+    BrowserWindow,
+    clipboard,
+    nativeImage,
+    screen,
+    Menu,
+    path,
+    rootDirectory: ROOT,
+    // The capture path never creates windows, so this only satisfies the domain's guard.
+    createLocalWindow: (pagePath, options) => new BrowserWindow(options),
+    getSettings: () => ({ fixedContent: { opacity: 1, zoomWithMouse: true }, plugins: {}, pinned: {} }),
+    saveImageBuffer: async () => '',
+    createRecognitionWindow: () => {},
+    recognizePin: () => {},
+    getCreateCaptureWindow: () => async () => null,
+    // Memory-only store: the production entry check must not write user data.
+    pinImages: {
+      add: () => 'probe-image',
+      read: async () => ({ bytes: Buffer.from([1]), mime: 'image/png' }),
+      retain: () => true,
+      release: () => {},
+      stats: () => ({ resident: 0, assets: 0, handles: 0 })
+    },
+    log: (...args) => log('[domain]', ...args),
+    ipcMain
+  })
+  const bounds = {
+    x: display.workArea.x + 120,
+    y: display.workArea.y + 100,
+    width: 420,
+    height: 280
+  }
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    useContentSize: true,
+    backgroundColor: '#e11d48',
+    webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
+  })
+  try {
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+      '<!doctype html><html><body style="margin:0;background:#e11d48;width:100vw;height:100vh"></body></html>'
+    ))
+    win.showInactive()
+    await sleep(600)
+    // The window-level fields the real createPinWindow sets and the capture path reads.
+    win._pinData = { rotation: 0 }
+    win._onionMode = 'off'
+    win._pinContentProtection = false
+    win._realPixelCompare = null
+    entry.windowBounds = win.getBounds()
+    const originalSetContentProtection = win.setContentProtection.bind(win)
+    win.setContentProtection = (enabled) => {
+      entry.protectionCalls.push(enabled === true)
+      return originalSetContentProtection(enabled === true)
+    }
+    const delivered = []
+    const originalSend = win.webContents.send.bind(win.webContents)
+    win.webContents.send = (channel, payload) => {
+      if (channel === 'pin:screen-diff-frame') delivered.push(payload)
+      return originalSend(channel, payload)
+    }
+    const content = win.getContentBounds()
+    const imageBounds = { x: 0, y: 0, width: content.width, height: content.height }
+    const first = await domain.captureScreenUnderPin(win, imageBounds)
+    entry.firstFrame = first.ok
+      ? {
+          ok: true,
+          width: first.width,
+          height: first.height,
+          bytes: first.bytes,
+          sourceMatched: first.sourceMatched,
+          displayId: first.plan.display.id,
+          physicalRect: first.plan.physicalRect,
+          thumbnail: first.plan.thumbnail
+        }
+      : { ok: false, code: first.code, message: first.message || '' }
+    // The frame itself is dropped here on purpose: the probe never retains pixels.
+    const started = domain.startRealPixelCompare(win, imageBounds)
+    entry.start = started.ok === true
+    if (started.ok) {
+      for (let index = 0; index < 2; index += 1) {
+        const update = await started.sampleNow()
+        if (update && update.ok) entry.updates += 1
+        if (index === 0) await sleep(FRAME_INTERVAL_MS)
+      }
+      const stats = started.getStats()
+      entry.deliveredFrames = delivered.filter((payload) => payload && payload.pixels).length
+      entry.session = {
+        frames: stats.frames,
+        retryableFailures: stats.retryableFailures,
+        lastRetryableCode: stats.lastRetryableCode,
+        stopped: stats.stopped
+      }
+      const firstPayload = delivered[0]
+      if (firstPayload) {
+        entry.frame = {
+          width: firstPayload.width,
+          height: firstPayload.height,
+          pixels: firstPayload.pixels.length,
+          dipRect: firstPayload.dipRect,
+          scaleFactor: firstPayload.scaleFactor
+        }
+      }
+      entry.stopped = started.stop('probe-done') === true
+      entry.protectionRestored = win._pinContentProtection !== true
+    }
+  } catch (error) {
+    entry.error = error && (error.stack || error.message)
+  } finally {
+    if (!win.isDestroyed()) win.destroy()
+    await sleep(300)
+  }
+  entry.proven = entry.firstFrame?.ok === true && entry.start === true && entry.updates >= 1 &&
+    entry.deliveredFrames >= 1 && entry.stopped === true && entry.protectionRestored === true &&
+    entry.protectionCalls[0] === true && entry.protectionCalls.at(-1) === false
+  return entry
 }
 
 async function run() {
@@ -383,6 +539,12 @@ async function run() {
   negativeWin.destroy()
   await sleep(300)
 
+  // ---- Check G: the production domain entry (P1-01) -------------------------------
+  // Everything above talks to desktopCapturer directly; this check asks the SHIPPED
+  // domain (no injected capturer) for a first frame + a couple of 1 Hz updates + a manual
+  // stop, which is the path a real user takes from the pin menu.
+  result.checks.productionEntry = await runProductionEntry(display)
+
   // ---- Verdict ---------------------------------------------------------------
   const single = result.checks.single
   const gateAlignmentRatio = result.checks.stacked?.alignment?.controlledAlignmentRatio
@@ -412,7 +574,8 @@ async function run() {
     alignmentProven: Number.isFinite(adoptionInput.alignmentRatio) &&
       adoptionInput.alignmentRatio <= diffApi.ALIGNMENT_TOLERANCE_RATIO,
     stackedPinsProven: result.checks.stacked.proven,
-    negativeCoordinatesProven: result.checks.negativeCoordinates.proven
+    negativeCoordinatesProven: result.checks.negativeCoordinates.proven,
+    productionEntryProven: result.checks.productionEntry.proven
   }
   result.status = 'measured'
   return result

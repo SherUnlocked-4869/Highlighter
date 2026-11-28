@@ -225,6 +225,55 @@ test('sampler: the onFrame callback is the only consumer and can abort delivery'
   assert.equal(sampler.getStats().frames, 1)
 })
 
+test('sampler: retryable display/source failures never stop the session and recovery resumes', async () => {
+  let now = 1000
+  let next = { ok: false, code: 'DISPLAY_UNAVAILABLE', retryable: true }
+  const frames = []
+  const sampler = diff.createDiffSampler({
+    now: () => { const value = now; now += 2000; return value },
+    intervalMs: 1000,
+    captureFrame: async () => next,
+    onFrame: (frame) => { frames.push(frame); return true }
+  })
+  // The target display is temporarily missing. Eight consecutive samples are all refused
+  // (no frame may be delivered from an unconfirmed source) and NONE of them counts against
+  // the failure cap: the 1 Hz sampler keeps running instead of stopping permanently.
+  for (let index = 0; index < 8; index += 1) {
+    const result = await sampler.sample()
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'DISPLAY_UNAVAILABLE')
+    assert.equal(result.retryable, true)
+    assert.equal(sampler.getStats().stopped, false)
+  }
+  const waiting = sampler.getStats()
+  assert.equal(waiting.failures, 0)
+  assert.equal(waiting.consecutiveFailures, 0)
+  assert.equal(waiting.retryableFailures, 8)
+  assert.equal(waiting.lastRetryableCode, 'DISPLAY_UNAVAILABLE')
+  assert.equal(frames.length, 0, 'no frame may be delivered while the display identity is unconfirmed')
+  // The display/source recovers: the very next tick delivers a frame and the session is
+  // still the same live one (nothing to restart).
+  next = { ok: true, pixels: rgbaFrame(1, 1, 7), width: 1, height: 1 }
+  const recovered = await sampler.sample()
+  assert.equal(recovered.ok, true)
+  assert.equal(recovered.delivered, true)
+  assert.equal(frames.length, 1)
+  assert.equal(sampler.getStats().frames, 1)
+  assert.equal(sampler.getStats().stopped, false)
+  // A GENUINE capture error (no retryable flag) still hits the consecutive-failure cap.
+  const failing = diff.createDiffSampler({
+    now: () => { now += 2000; return now },
+    intervalMs: 1000,
+    captureFrame: async () => ({ ok: false, code: 'CAPTURE_THREW' })
+  })
+  await failing.sample()
+  await failing.sample()
+  await failing.sample()
+  assert.equal(failing.getStats().failures, 3)
+  assert.equal(failing.getStats().stopped, true)
+  assert.equal(failing.getStats().stopCode, 'FAILURE_LIMIT')
+})
+
 // ---------------------------------------------------------------------------
 // 4. Adoption gate: missing evidence is a reject.
 // ---------------------------------------------------------------------------
@@ -263,13 +312,14 @@ function createScreenDiffHarness(options = {}) {
   const sends = []
   const events = {}
   const menus = []
+  const winBounds = options.winBounds || { x: 100, y: 50, width: 400, height: 200 }
   const win = {
     _pinData: null,
     _destroyed: false,
     isDestroyed: () => win._destroyed,
     isVisible: () => true,
-    getBounds: () => ({ x: 100, y: 50, width: 400, height: 200 }),
-    getContentBounds: () => ({ x: 100, y: 50, width: 400, height: 200 }),
+    getBounds: () => ({ ...winBounds }),
+    getContentBounds: () => ({ ...winBounds }),
     setBounds: () => {},
     setPosition: () => {},
     setContentSize: () => {},
@@ -313,15 +363,15 @@ function createScreenDiffHarness(options = {}) {
     }
   }
   const { createPinDomain } = require('../main/domains/pin')
-  const domain = createPinDomain({
+  const deps = {
     BrowserWindow: { fromWebContents: () => win },
     clipboard: { writeImage: () => {} },
     nativeImage: {
       createFromBuffer: () => ({ getSize: () => ({ width: 400, height: 200 }), isEmpty: () => false })
     },
     screen: {
-      getAllDisplays: () => [DISPLAY_PRIMARY],
-      getDisplayMatching: () => DISPLAY_PRIMARY,
+      getAllDisplays: () => options.displays || [DISPLAY_PRIMARY],
+      getDisplayMatching: () => (options.displays && options.displays[0]) || DISPLAY_PRIMARY,
       getDisplayNearestPoint: () => DISPLAY_PRIMARY,
       getCursorScreenPoint: () => ({ x: 0, y: 0 })
     },
@@ -346,15 +396,57 @@ function createScreenDiffHarness(options = {}) {
       stats: () => ({})
     },
     getCreateCaptureWindow: () => async () => null,
-    screenDiffDesktopCapturer: desktopCapturer,
     realDiffIntervalMs: options.intervalMs || 250,
     log: () => {},
     ipcMain: { on: (channel, handler) => { handlers.set(channel, handler) } }
-  })
-  return { domain, win, protectionCalls, capturedThumbnails, sends, events, menus, handlers }
+  }
+  // P1-01: the production wiring (main.js createPinDomain) does NOT inject a capturer.
+  // `injectCapturer: false` reproduces exactly that, so the test drives the domain's own
+  // default resolution instead of bypassing it with the test seam.
+  if (options.injectCapturer !== false) deps.screenDiffDesktopCapturer = desktopCapturer
+  const domain = createPinDomain(deps)
+  return { domain, win, protectionCalls, capturedThumbnails, sends, events, menus, handlers, desktopCapturer }
 }
 
 const ORIGINAL = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4, 5])
+
+// P1-01: drive the domain's PRODUCTION default branch by mocking the electron module for
+// the duration of one call. The pin domain requires('electron') lazily (the same pattern
+// as its dialog defaults), so replacing the require.cache entry reproduces "main.js did
+// not inject screenDiffDesktopCapturer" without an Electron runtime.
+async function withElectronModule(exportsValue, callback) {
+  const electronPath = require.resolve('electron')
+  const previous = require.cache[electronPath]
+  require.cache[electronPath] = {
+    id: electronPath,
+    filename: electronPath,
+    loaded: true,
+    exports: exportsValue,
+    children: [],
+    paths: []
+  }
+  try {
+    return await callback()
+  } finally {
+    if (previous) require.cache[electronPath] = previous
+    else delete require.cache[electronPath]
+  }
+}
+
+// A fake desktopCapturer source whose crop/toBitmap path answers like nativeImage does.
+function screenSource(displayId, { width = 1920, height = 1080, isEmpty = false } = {}) {
+  return {
+    display_id: displayId,
+    thumbnail: {
+      isEmpty: () => isEmpty,
+      crop: (rect) => ({
+        isEmpty: () => false,
+        getSize: () => ({ width: rect.width, height: rect.height }),
+        toBitmap: () => Buffer.alloc(rect.width * rect.height * 4)
+      })
+    }
+  }
+}
 
 test('product: start/stop toggles content protection exactly once per transition', async () => {
   const harness = createScreenDiffHarness()
@@ -439,6 +531,120 @@ test('product: sampler is rate limited, single-flight and stops after the failur
   assert.ok(failing.sends.some(({ channel, payload }) => channel === 'pin:onion-mode' && payload.mode === 'off' && payload.reason === 'FAILURE_LIMIT'))
 })
 
+test('product: the un-injected production default captures through the real desktopCapturer object (P1-01)', async () => {
+  // main.js createPinDomain does NOT pass screenDiffDesktopCapturer, so this harness has
+  // no test capturer either: only the domain's own default can make a frame work. The old
+  // default returned a FUNCTION (`() => require('electron').desktopCapturer`), so the first
+  // production frame failed with CAPTURE_THREW "capturer.getSources is not a function".
+  const harness = createScreenDiffHarness({ injectCapturer: false })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const calls = []
+  const fakeCapturer = {
+    getSources: async ({ types, thumbnailSize }) => {
+      calls.push({ types, thumbnailSize })
+      return [screenSource('1')]
+    }
+  }
+  const report = await withElectronModule({ desktopCapturer: fakeCapturer }, async () => {
+    const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+    assert.equal(started.ok, true)
+    const frame = await started.sampleNow()
+    // A second tick through the same production default delivers sequence 2 (the
+    // sampler's own 250 ms timer may take it, which is exactly the production 1 Hz
+    // behaviour). Keep the fake electron module installed for the whole window: the
+    // timer resolves the default lazily on every tick, like production.
+    const secondDeadline = Date.now() + 2000
+    while (Date.now() < secondDeadline) {
+      if (harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length >= 2) break
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    const frames = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length
+    // Manual stop restores content protection and drops the session.
+    const stopped = started.stop('test-done')
+    return { frame, frames, stopped }
+  })
+  assert.equal(report.frame.ok, true, `the production default must return a first frame (got ${report.frame.code})`)
+  assert.equal(report.frame.delivered, true)
+  assert.equal(report.frame.width, 400)
+  assert.equal(report.frame.height, 200)
+  assert.equal(report.frame.bytes, 400 * 200 * 4)
+  // The capturer OBJECT itself was used: a factory function has no getSources to call.
+  assert.equal(calls.length >= 2, true, 'continuous updates must keep using the resolved capturer')
+  assert.deepEqual(calls[0].types, ['screen'])
+  assert.deepEqual(calls[0].thumbnailSize, { width: 1920, height: 1080 })
+  assert.equal(report.frames, 2, 'continuous updates must keep flowing')
+  assert.equal(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')[0].payload.pixels.length, 400 * 200 * 4)
+  // Manual stop restores content protection and drops the session (no capture left behind).
+  assert.equal(report.stopped, true)
+  assert.equal(win._realPixelCompare, null)
+  assert.deepEqual(harness.protectionCalls, [true, false])
+  win._closed()
+})
+
+test('product: a missing desktopCapturer degrades to a typed retryable failure (P1-01)', async () => {
+  const harness = createScreenDiffHarness({ injectCapturer: false })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const missing = await withElectronModule({}, () => harness.domain.captureScreenUnderPin(win, { x: 0, y: 0, width: 400, height: 200 }))
+  assert.equal(missing.ok, false)
+  assert.equal(missing.code, 'CAPTURER_UNAVAILABLE', 'an unavailable capturer is a typed state, not a CAPTURE_THREW')
+  assert.equal(missing.retryable, true, 'the sampler must keep retrying instead of burning the failure cap')
+  win._closed()
+})
+
+test('product: a missing secondary source never delivers primary pixels, and recovery resumes (P2-03)', async () => {
+  const DISPLAY_SECONDARY = {
+    id: 2,
+    bounds: { x: 1920, y: 0, width: 2560, height: 1440 },
+    workArea: { x: 1920, y: 0, width: 2560, height: 1400 },
+    scaleFactor: 1.5
+  }
+  // The pin sits on the secondary display; the capturer only reports the PRIMARY screen
+  // source. Before P2-03, pickScreenSource fell back to that first source and the caller
+  // cropped the secondary display's coordinates out of primary pixels.
+  let sources = [screenSource('1', { width: 1920, height: 1080 }), screenSource('9', { isEmpty: true })]
+  const desktopCapturer = { getSources: async () => sources }
+  const harness = createScreenDiffHarness({
+    displays: [DISPLAY_PRIMARY, DISPLAY_SECONDARY],
+    winBounds: { x: 2000, y: 100, width: 400, height: 200 },
+    desktopCapturer,
+    intervalMs: 250
+  })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  assert.equal(started.ok, true)
+  // Let the 250 ms sampler tick at least twice with the secondary source absent.
+  await new Promise((resolve) => setTimeout(resolve, 520))
+  assert.equal(
+    harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length,
+    0,
+    'no frame may be delivered from an unconfirmed (primary) source'
+  )
+  assert.ok(win._realPixelCompare, 'a transient display-unavailable state must not stop the session')
+  const waiting = started.getStats()
+  assert.equal(waiting.stopped, false)
+  assert.equal(waiting.failures, 0, 'display-unavailable is not a genuine capture error')
+  assert.ok(waiting.retryableFailures >= 1)
+  assert.equal(waiting.lastRetryableCode, 'DISPLAY_UNAVAILABLE')
+  // The target display/source comes back: sampling resumes inside the SAME session.
+  sources = [screenSource('1', { width: 1920, height: 1080 }), screenSource('2', { width: 2560, height: 1440 })]
+  const deadline = Date.now() + 2500
+  while (Date.now() < deadline && harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  const delivered = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')
+  assert.equal(delivered.length, 1, 'the recovered secondary source must resume delivery')
+  // The frame is the SECONDARY display's physical crop, not a primary-sized frame:
+  // 2560x1440 primary at 1.5x would be 1280x720; the pin crop is 400x200 DIP -> 600x300.
+  assert.equal(delivered[0].payload.width, 600)
+  assert.equal(delivered[0].payload.height, 300)
+  assert.deepEqual(delivered[0].payload.dipRect, { x: 2000, y: 100, width: 400, height: 200 })
+  assert.equal(delivered[0].payload.scaleFactor, 1.5)
+  assert.ok(win._realPixelCompare, 'the resumed session is the same live one')
+  assert.equal(started.getStats().stopped, false)
+  started.stop('test-done')
+  win._closed()
+})
+
 test('product: refuses without content protection, and the menu offers the opt-in with its side effect', async () => {
   const bare = createScreenDiffHarness({ noProtection: true })
   const bareWin = bare.domain.createPinWindow(ORIGINAL, {})
@@ -510,17 +716,32 @@ test('bgraToRgba swaps channels and forces opaque pixels; bad lengths are refuse
   assert.equal(diff.bgraToRgba(null), null)
 })
 
-test('pickScreenSource prefers the display_id match and falls back only to usable sources', () => {
+test('pickScreenSource delivers only an identity-confirmed source (P2-03)', () => {
   const usable = (displayId) => ({ display_id: displayId, thumbnail: { isEmpty: () => false } })
   const empty = { display_id: '9', thumbnail: { isEmpty: () => true } }
+  // The authoritative display_id match always wins.
   const matched = diff.pickScreenSource([empty, usable('7'), usable('9')], '7')
+  assert.equal(matched.ok, true)
   assert.equal(matched.matched, true)
   assert.equal(matched.source.display_id, '7')
-  const fallback = diff.pickScreenSource([empty, usable('7')], 'unknown')
-  assert.equal(fallback.matched, false)
-  assert.equal(fallback.source.display_id, '7')
-  assert.equal(diff.pickScreenSource([], '7'), null)
-  assert.equal(diff.pickScreenSource([empty], '9'), null)
+  // Nothing usable at all: typed refusal, never a blind fallback.
+  assert.deepEqual(diff.pickScreenSource([], '7'), { ok: false, code: 'NO_SOURCES' })
+  assert.deepEqual(diff.pickScreenSource([empty], '9'), { ok: false, code: 'NO_SOURCES' })
+  // Multi-display: the target id is absent from the source list -> refuse and retry later.
+  // Delivering the first source here would crop the target display's coordinates out of
+  // another screen's pixels, which is exactly the P2-03 defect.
+  assert.deepEqual(diff.pickScreenSource([usable('1')], '2'), { ok: false, code: 'DISPLAY_UNAVAILABLE' })
+  // Multi-display with driver-omitted display_id: identity cannot be confirmed, so refuse.
+  assert.deepEqual(diff.pickScreenSource([usable(undefined), usable(null)], '2'), {
+    ok: false,
+    code: 'SOURCE_UNIDENTIFIED'
+  })
+  // Single display: the only usable source IS the target by elimination (safe fallback).
+  const single = diff.pickScreenSource([usable(undefined)], '2', { singleDisplay: true })
+  assert.equal(single.ok, true)
+  assert.equal(single.matched, false)
+  assert.equal(single.fallback, 'single-display')
+  assert.equal(single.source.display_id, undefined)
 })
 
 test('wiring: the opt-in diff mode is reachable, bounded, and flash stays the default', () => {
