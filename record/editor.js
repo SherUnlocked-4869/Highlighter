@@ -59,6 +59,8 @@
     'split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit',
     'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    // DEV-05: burn the recorded shortcut capsules into the exported film.
+    'export-keystrokes',
     'demo-canvas', 'ripple-layer',
     'demo-enabled', 'demo-background', 'demo-background-custom',
     'demo-padding', 'demo-padding-value', 'demo-radius', 'demo-radius-value',
@@ -996,6 +998,15 @@
         String(video.fps),
         !editable || !videoFormat
       )
+      // DEV-05: the capsule overlay is only offered when the take recorded shortcuts; the choice
+      // is session-only (controller state) and works for MP4, WebM and GIF alike.
+      if (elements['export-keystrokes']) {
+        const toggle = element('export-keystrokes')
+        const keystrokes = snapshot && snapshot.keystrokes ? snapshot.keystrokes : null
+        const available = !!(keystrokes && keystrokes.available)
+        toggle.checked = available && keystrokes.exportSelected === true
+        toggle.disabled = !editable || !available
+      }
 
       const output = element('export-output-size')
       if (output) {
@@ -2623,6 +2634,12 @@
       })
       on(element('export-fps'), 'change', () => {
         controller?.setVideoFps(element('export-fps').value)
+        render()
+      })
+      // DEV-05: opt-in capsule overlay for the exported film. The controller owns the choice so a
+      // request rebuild (retry, format switch) always carries the latest selection.
+      on(element('export-keystrokes'), 'change', () => {
+        controller?.setExportKeystrokes(element('export-keystrokes').checked)
         render()
       })
       on(element('export-button'), 'click', () => { runSafely(exportSelection()) })

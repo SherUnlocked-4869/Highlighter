@@ -175,6 +175,12 @@
             <span data-i18n="recording.editor.output-size">Output size</span>
             <strong id="export-output-size"></strong>
           </div>
+          <!-- DEV-05: the take's recorded shortcut capsules are available in the preview HUD; this
+               switch decides whether they are also burned into the exported MP4/WebM/GIF. -->
+          <label class="demo-toggle export-capsule-toggle">
+            <input id="export-keystrokes" type="checkbox" data-testid="export-keystrokes" data-i18n-title="recording.editor.keystrokes.export-title">
+            <span data-i18n="recording.editor.keystrokes.export">Shortcuts in video</span>
+          </label>
           <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
         </section>
 

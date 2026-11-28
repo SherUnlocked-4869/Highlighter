@@ -913,3 +913,161 @@ test('N03: the analysis and capture modules load in plain node without Electron'
   assert.ok(root.startsWith(path.parse(root).root))
   assert.ok(fs.existsSync(os.tmpdir()))
 })
+
+// ---------------------------------------------------------------------------
+// 7. DEV-05: the export choice carries the capsule overlay through the request
+// ---------------------------------------------------------------------------
+
+test('DEV-05: the controller only sends keystrokes when the user opted in and the take has them', async () => {
+  const controller = createProjectController()
+  controller.applyEventTrack({
+    pointer: [],
+    clicks: [],
+    keystrokes: [
+      { tMs: 900, combo: 'Ctrl+Shift+P' },
+      { tMs: 1200, combo: 'F5' },
+      { tMs: 400, combo: 'hello world' }
+    ]
+  }, {})
+  assert.equal(controller.state().keystrokes.available, true)
+  assert.equal(controller.state().keystrokes.exportSelected, false, 'the overlay is opt-in')
+
+  const requests = []
+  const submit = async (payload) => {
+    requests.push(payload)
+    return { status: 'accepted', task: { taskId: `task-${requests.length}`, state: 'running' } }
+  }
+  const failTask = (controllerRef, index) => {
+    controllerRef.applyTask({ taskId: `task-${index}`, state: 'failed', error: { code: 'encode-failed' } })
+    assert.equal(controllerRef.prepareRetry(), true)
+  }
+
+  // Default: no `keystrokes` field, i.e. the pre-DEV-05 request/argv path.
+  await controller.startExport({ submit })
+  assert.equal('keystrokes' in requests[0].request, false)
+  failTask(controller, 1)
+
+  // Opted in: source-time capsules ride the request; the main process projects them.
+  assert.equal(controller.setExportKeystrokes(true), true)
+  assert.equal(controller.state().keystrokes.exportSelected, true)
+  await controller.startExport({ submit })
+  assert.deepEqual(requests[1].request.keystrokes, {
+    enabled: true,
+    items: [
+      { tMs: 900, combo: 'Ctrl+Shift+P' },
+      { tMs: 1200, combo: 'F5' }
+    ]
+  })
+  failTask(controller, 2)
+
+  // GIF supports the overlay too (the exporter has its own palette-path chain).
+  controller.setFormat('gif')
+  await controller.startExport({ submit })
+  assert.equal(requests[2].request.format, 'gif')
+  assert.equal(requests[2].request.keystrokes.enabled, true)
+  failTask(controller, 3)
+
+  // The choice is session state: it survives a format switch, and it is frozen during an export.
+  await controller.startExport({ submit })
+  assert.equal(requests[3].request.keystrokes.enabled, true)
+  assert.equal(controller.setExportKeystrokes(false), false, 'a running export freezes the choice')
+  assert.equal(controller.state().keystrokes.exportSelected, true)
+  controller.applyTask({ taskId: 'task-4', state: 'succeeded', receipt: { fileName: 'a.gif' } })
+  assert.equal(controller.resetAfterExport(), true)
+  // After the task settles the switch is editable again; turning it off clears the request field.
+  assert.equal(controller.setExportKeystrokes(false), false)
+  assert.equal(controller.state().keystrokes.exportSelected, false)
+  await controller.startExport({ submit })
+  assert.equal('keystrokes' in requests[4].request, false, 'turning the switch off restores the old request')
+})
+
+test('DEV-05: a track with no shortcuts and a frozen controller refuse the export switch', () => {
+  const empty = createProjectController()
+  empty.applyEventTrack({ pointer: [], clicks: [] }, {})
+  assert.equal(empty.state().keystrokes.available, false)
+  assert.equal(empty.setExportKeystrokes(true), false)
+  assert.equal(empty.state().keystrokes.exportSelected, false)
+  // Loading a track without shortcuts resets a previously selected export choice.
+  const controller = createProjectController()
+  controller.applyEventTrack({ pointer: [], clicks: [], keystrokes: [{ tMs: 100, combo: 'F5' }] }, {})
+  assert.equal(controller.setExportKeystrokes(true), true)
+  controller.applyEventTrack({ pointer: [], clicks: [] }, {})
+  assert.equal(controller.state().keystrokes.exportSelected, false)
+})
+
+test('DEV-05: the editor export switch is offered only for a take with shortcuts', async (t) => {
+  const boot = await bootEditor({ ok: true, track: N03_TRACK })
+  t.after(() => boot.view.destroy())
+  const toggle = boot.harness.elements.get('export-keystrokes')
+  assert.ok(toggle, 'editor.html exposes #export-keystrokes')
+  assert.equal(toggle.disabled, false, 'a take with shortcuts can burn them into the export')
+  assert.equal(toggle.checked, false, 'off by default')
+
+  toggle.checked = true
+  toggle.dispatch('change')
+  assert.equal(boot.view.getController().state().keystrokes.exportSelected, true)
+  assert.equal(toggle.checked, true)
+
+  toggle.checked = false
+  toggle.dispatch('change')
+  assert.equal(boot.view.getController().state().keystrokes.exportSelected, false)
+  assert.equal(toggle.checked, false)
+})
+
+test('DEV-05: the export switch degrades to disabled without a keystroke track', async (t) => {
+  const boot = await bootEditor({ ok: true, track: { ...N03_TRACK, keystrokes: [] } })
+  t.after(() => boot.view.destroy())
+  const toggle = boot.harness.elements.get('export-keystrokes')
+  assert.equal(toggle.disabled, true)
+  assert.equal(boot.view.getController().setExportKeystrokes(true), false)
+})
+
+test('DEV-05: markup, styles and three-language copy expose the export capsule switch', () => {
+  const html = read('record/editor.html')
+  assert.match(html, /id="export-keystrokes"/)
+  assert.match(html, /data-testid="export-keystrokes"/)
+  assert.match(html, /data-i18n="recording\.editor\.keystrokes\.export"/)
+  assert.match(html, /data-i18n-title="recording\.editor\.keystrokes\.export-title"/)
+  const css = read('record/editor.css')
+  assert.match(css, /\.export-capsule-toggle/)
+
+  // The error code the main process can now answer with maps to an editor message.
+  const trimSource = read('record/trim-controller.js')
+  assert.match(trimSource, /'invalid-keystroke-option': 'recording\.editor\.error\.invalid-keystroke-option'/)
+  assert.match(trimSource, /recording\.editor\.keystrokes\.export/)
+
+  globalThis.__LOCALES = {}
+  for (const name of ['zh-CN.js', 'en-US.js', 'zh-TW.js', 'record.js', 'recording-editor.js']) {
+    const file = path.join(root, 'shared', 'locales', name)
+    delete require.cache[require.resolve(file)]
+    require(file)
+  }
+  const tables = globalThis.__LOCALES
+  for (const key of [
+    'recording.editor.keystrokes.export',
+    'recording.editor.keystrokes.export-title',
+    'recording.editor.error.invalid-keystroke-option'
+  ]) {
+    for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+      assert.equal(typeof tables[language][key], 'string', language + ' must define ' + key)
+    }
+  }
+  // The old N03 keys stay present (additive change only).
+  for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+    assert.equal(typeof tables[language]['recording.editor.keystrokes.toggle'], 'string')
+  }
+})
+
+test('DEV-05: the main process forwards the overlay request verbatim to the exporter', () => {
+  const domainSource = read('main/domains/record/index.js')
+  assert.match(domainSource, /forwardedRequest\.keystrokes = request\.keystrokes/)
+  // The shipped service rasterises capsule assets with the same cleanup discipline as demo
+  // assets, and the shared module owns the geometry both sides use.
+  const serviceSource = read('main/services/recording-export-service.js')
+  assert.match(serviceSource, /buildKeystrokeAssets\(task\)/)
+  assert.match(serviceSource, /cleanupKeystrokeAssets\(task\)/)
+  assert.match(serviceSource, /keystrokeCapsuleMetrics/)
+  const sharedSource = read('shared/recording-export-options.js')
+  assert.match(sharedSource, /function resolveKeystrokeSurface/)
+  assert.match(sharedSource, /function appendKeystrokeOverlay/)
+})

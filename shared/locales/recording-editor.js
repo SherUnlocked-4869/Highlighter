@@ -155,6 +155,9 @@
     // N03: shortcut capsule HUD + one-click dead-air removal.
     'recording.editor.keystrokes.toggle': '快捷键胶囊',
     'recording.editor.keystrokes.toggle-title': '播放时在画面底部显示录制中记录的快捷键组合（仅修饰键组合与功能键，不记录普通输入）',
+    'recording.editor.keystrokes.export': '导出画面显示快捷键',
+    'recording.editor.keystrokes.export-title': '把录制中记录的快捷键胶囊叠加进导出成片，显示时长与位置和预览一致（约 1.1 秒）',
+    'recording.editor.error.invalid-keystroke-option': '快捷键覆盖层参数无效，已停止本次导出；请关闭该选项后重试。',
     'recording.editor.pause.cut': '一键裁剪空白停顿',
     'recording.editor.pause.applied': '已移除 {count} 段静音停顿（约 {removed}），可撤销',
     'recording.editor.pause.nothing': '没有可裁剪的静音停顿',
@@ -305,6 +308,9 @@
     // N03: shortcut capsule HUD + one-click dead-air removal.
     'recording.editor.keystrokes.toggle': 'Shortcut capsules',
     'recording.editor.keystrokes.toggle-title': 'Show the shortcut combinations recorded during the capture at the bottom of the preview (modifier chords and function keys only; plain typing is never recorded)',
+    'recording.editor.keystrokes.export': 'Show shortcuts in the exported video',
+    'recording.editor.keystrokes.export-title': 'Burn the recorded shortcut capsules into the exported video; the 1.1 s display window and position match the preview',
+    'recording.editor.error.invalid-keystroke-option': 'The shortcut overlay settings were rejected, so the export was stopped. Turn the option off and try again.',
     'recording.editor.pause.cut': 'Remove silent pauses',
     'recording.editor.pause.applied': 'Removed {count} silent pause(s) (~{removed}); undo is available',
     'recording.editor.pause.nothing': 'No silent pause to remove',
@@ -455,6 +461,9 @@
     // N03: shortcut capsule HUD + one-click dead-air removal.
     'recording.editor.keystrokes.toggle': '快捷鍵膠囊',
     'recording.editor.keystrokes.toggle-title': '播放時在畫面底部顯示錄製中記錄的快捷鍵組合（僅修飾鍵組合與功能鍵，不記錄一般輸入）',
+    'recording.editor.keystrokes.export': '匯出畫面顯示快速鍵',
+    'recording.editor.keystrokes.export-title': '把錄製中記錄的快速鍵膠囊疊加進匯出成片，顯示時間與位置和預覽一致（約 1.1 秒）',
+    'recording.editor.error.invalid-keystroke-option': '快速鍵覆蓋層參數無效，已停止本次匯出；請關閉該選項後重試。',
     'recording.editor.pause.cut': '一鍵裁剪空白停頓',
     'recording.editor.pause.applied': '已移除 {count} 段靜音停頓（約 {removed}），可復原',
     'recording.editor.pause.nothing': '沒有可裁剪的靜音停頓',

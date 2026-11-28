@@ -707,6 +707,8 @@ body[data-format="gif"] .demo-card { opacity: .72; }
 }
 .size-row span { color: var(--muted); }
 .size-row strong { font: 700 12px/1 var(--font-mono); }
+/* DEV-05: the capsule-overlay switch sits between the size row and the export hint. */
+.export-capsule-toggle { margin: 6px 0 2px; }
 .export-hint { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 /* GIF-only rows follow the same `body[data-format]` rule the trim view used; the mp4/webm

@@ -271,7 +271,11 @@
     'recording.editor.error.fps-above-source',
     'recording.editor.error.too-many-segments',
     'recording.editor.error.overlapping-segments',
-    'recording.editor.error.ambiguous-selection'
+    'recording.editor.error.ambiguous-selection',
+    // N03/DEV-05: exported capsule overlay (label + validation error).
+    'recording.editor.keystrokes.export',
+    'recording.editor.keystrokes.export-title',
+    'recording.editor.error.invalid-keystroke-option'
   ])
 
   // Stable code -> locale key. Every code the export service can return has an entry; an
@@ -310,7 +314,9 @@
     'fps-above-source': 'recording.editor.error.fps-above-source',
     'too-many-segments': 'recording.editor.error.too-many-segments',
     'overlapping-segments': 'recording.editor.error.overlapping-segments',
-    'ambiguous-selection': 'recording.editor.error.ambiguous-selection'
+    'ambiguous-selection': 'recording.editor.error.ambiguous-selection',
+    // N03/DEV-05: a keystroke overlay payload the main process refused.
+    'invalid-keystroke-option': 'recording.editor.error.invalid-keystroke-option'
   })
 
   function errorKey(code) {
@@ -405,6 +411,9 @@
       // read-only derived data; they never enter the draft. `loading` means the events load has not
       // answered yet, so a click can explain "still analysing" instead of claiming unavailability.
       keystrokes: [],
+      // N03/DEV-05: the user's export choice for the capsule overlay (session-only, like the video
+      // options: it is not part of the draft and a reopened project starts with it off).
+      exportKeystrokes: false,
       pauseAnalysis: { status: 'loading', code: '', cuts: [], removedMs: 0 },
       ignoredSuggestions: [],
       suggestions: [],
@@ -675,7 +684,9 @@
         keystrokes: {
           available: model.keystrokes.length > 0,
           count: model.keystrokes.length,
-          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo })),
+          // DEV-05: the export choice plus whether the track can support it at all.
+          exportSelected: model.keystrokes.length > 0 && model.exportKeystrokes === true
         },
         pauseAnalysis: {
           status: model.pauseAnalysis.status,
@@ -1160,6 +1171,9 @@
       // track the main process sent.
       const rawKeystrokes = track && typeof track === 'object' ? track.keystrokes : null
       model.keystrokes = normalizeKeystrokeCapsules(rawKeystrokes, model.metadata.durationMs)
+      // A project without shortcuts (or a reload after one lost its track) must not keep an export
+      // switch that promises capsules it cannot render.
+      if (model.keystrokes.length === 0) model.exportKeystrokes = false
       model.pauseAnalysis = normalizePauseAnalysis(pauseAnalysis, model.metadata.durationMs)
       // Ripples need clicks; without an event track the switch must not pretend to work.
       if ((!model.eventTrack || model.eventTrack.clicks.length === 0) && model.demo.style.ripples) {
@@ -1169,6 +1183,19 @@
       recomputeSuggestions()
       notify({ reason: 'events-loaded' })
       return true
+    }
+
+    // N03/DEV-05: the export switch for the capsule overlay. Only meaningful when the take has a
+    // keystroke track and only target formats the exporter can composite (mp4/webm/gif all can).
+    // Session-only: it is not persisted in the draft and does not touch the segment undo stack.
+    function setExportKeystrokes(enabled) {
+      if (isFrozen()) return false
+      const available = model.keystrokes.length > 0
+      const next = enabled === true && available
+      if (next === model.exportKeystrokes) return next
+      model.exportKeystrokes = next
+      notify({ reason: 'keystroke-export' })
+      return next
     }
 
     function setDemoStylePatch(patch, reason = 'demo-style') {
@@ -1552,6 +1579,16 @@
           }
         }
       }
+      // N03/DEV-05: the capsule overlay choice rides the frozen request (source-time capsules;
+      // the main process projects them onto the kept segments and clips at cut boundaries).
+      // Omitted when off or when the take has no shortcuts, so a pre-N03 project keeps the old
+      // request and the old argv path.
+      if (model.exportKeystrokes && model.keystrokes.length > 0) {
+        request.keystrokes = {
+          enabled: true,
+          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+        }
+      }
       return request
     }
 
@@ -1709,6 +1746,8 @@
       resetEdits,
       // N03: one-click dead-air removal (segment complement of the main-process suggestion).
       applyPauseCuts,
+      // N03/DEV-05: user's choice to burn the shortcut capsules into the exported film.
+      setExportKeystrokes,
       moveBoundary,
       moveJunction,
       beginEdit,

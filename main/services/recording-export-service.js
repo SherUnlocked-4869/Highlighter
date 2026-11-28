@@ -41,8 +41,11 @@ const {
   buildExportArgs,
   durationToleranceMs,
   isTerminalTaskState,
+  keystrokeCapsuleMetrics,
+  keystrokeOverlayMarginBottom,
   normalizeExportRequest,
   requestSignature,
+  resolveKeystrokeSurface,
   taskTransition
 } = require('../../shared/recording-export-options')
 
@@ -72,8 +75,9 @@ const EXPORT_ERROR_CODES = Object.freeze([
   'invalid-video-option',
   'fps-above-source',
   'empty-selection',
-  // R5 demo-rendering validation (contract §3.2).
+  // R5 demo-rendering validation (contract §3.2) + N03/DEV-05 keystroke capsule overlay.
   'invalid-demo-option',
+  'invalid-keystroke-option',
   'gif-too-long',
   'gif-invalid-fps',
   'gif-invalid-edge',
@@ -106,6 +110,36 @@ function hexToRgb(value) {
     g: parseInt(text.slice(3, 5), 16),
     b: parseInt(text.slice(5, 7), 16)
   }
+}
+
+// N03/DEV-05: the exported shortcut capsule. Same visual language as the editor HUD
+// (record/editor.css .keystroke-capsule: translucent near-black pill, hairline white border,
+// bold light text), rasterised with sharp's SVG renderer so the exporter needs no font path.
+// The label is validated against the frozen capture allowlist by the shared normaliser before it
+// can reach this function, and it is XML-escaped anyway so the SVG can never be injected into.
+function escapeSvgText(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function buildKeystrokeCapsuleSvg({ combo, metrics } = {}) {
+  const label = typeof combo === 'string' ? combo : ''
+  const width = Math.max(1, Math.round(Number(metrics?.width) || 0))
+  const height = Math.max(1, Math.round(Number(metrics?.height) || 0))
+  const fontSize = Math.max(1, Math.round(Number(metrics?.fontSize) || 0))
+  const radius = Math.max(0, Math.min(height / 2, Math.round(Number(metrics?.radius) || 0)))
+  // The pill is drawn at the full PNG size; the text is vertically centred by baseline offset.
+  const baseline = Math.round(height / 2 + fontSize * 0.35)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
+    `<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="${radius}" ry="${radius}" ` +
+    'fill="#0c0e12" fill-opacity="0.86" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1"/>' +
+    `<text x="${width / 2}" y="${baseline}" font-family="Segoe UI, Arial, sans-serif" ` +
+    `font-size="${fontSize}" font-weight="600" letter-spacing="0.4" fill="#f5f7fa" ` +
+    `text-anchor="middle">${escapeSvgText(label)}</text></svg>`
 }
 
 class RecordingExportService {
@@ -506,14 +540,21 @@ class RecordingExportService {
     if (task.request.demo && task.request.demo.rendered === true) {
       demoAssets = await this.buildDemoAssets(task)
     }
+    // N03/DEV-05: the keystroke capsule overlay needs one small PNG per distinct shortcut label,
+    // built beside the temp file with the same cleanup discipline as the demo assets.
+    let keystrokeAssets = null
+    if (task.request.keystrokes && task.request.keystrokes.enabled === true) {
+      keystrokeAssets = await this.buildKeystrokeAssets(task)
+    }
     // The normalised request is the single source of truth for the assembly (§4.3). Spread
-    // it so segments/video/demo/hasAudio reach buildExportArgs exactly as the UI was
+    // it so segments/video/demo/keystrokes/hasAudio reach buildExportArgs exactly as the UI was
     // validated against; only the main-process-owned paths/assets are added here.
     const { args } = buildExportArgs({
       ...task.request,
       inputPath: lease.inputPath,
       outputPath: task.tempPath,
-      demoAssets
+      demoAssets,
+      keystrokeAssets
     })
     const spanMs = Number(task.request.totalDurationMs) || 0
 
@@ -666,6 +707,7 @@ class RecordingExportService {
     // Removed BEFORE the success is announced, for the same reason the failure path waits: the
     // state a caller observes must never imply files that are still on disk.
     await this.cleanupDemoAssets(task)
+    await this.cleanupKeystrokeAssets(task)
     this.transition(task, 'succeed')
     task.progress = 100
     task.receipt = this.makeReceipt(task)
@@ -784,6 +826,7 @@ class RecordingExportService {
       }
     }
     await this.cleanupDemoAssets(task)
+    await this.cleanupKeystrokeAssets(task)
     return removed
   }
 
@@ -815,7 +858,7 @@ class RecordingExportService {
       this.sharp = sharp
       return sharp
     } catch (error) {
-      throw new Error(`demo-renderer-unavailable: ${error?.message || error}`)
+      throw new Error(`raster-renderer-unavailable: ${error?.message || error}`)
     }
   }
 
@@ -894,6 +937,63 @@ class RecordingExportService {
     return assets
   }
 
+  // ---------- N03/DEV-05 keystroke capsule raster assets ----------
+
+  // Builds one small pill PNG per DISTINCT shortcut label beside the task's temp file, sized for
+  // the FINAL output surface (demo canvas / GIF / encoded video) so the ffmpeg overlay can place
+  // it at `(W-w)/2`, `H-h-margin` in output pixels. Assets are tracked on task.keystrokeAssets so
+  // cancel, encode failure and publish all remove them (DEV-05 temp-resource cleanup).
+  async buildKeystrokeAssets(task) {
+    const overlay = task.request.keystrokes
+    const sharp = await this.loadSharp()
+    const directory = this.path.dirname(task.tempPath)
+    const base = this.path.basename(task.tempPath)
+    const surface = resolveKeystrokeSurface(task.request)
+    if (!(surface.width > 0) || !(surface.height > 0)) {
+      throw new Error('keystroke-surface-unavailable')
+    }
+    const assets = { labels: [], surfaceWidth: surface.width, surfaceHeight: surface.height }
+    task.keystrokeAssets = assets
+    const byCombo = new Map()
+    for (const item of Array.isArray(overlay.items) ? overlay.items : []) {
+      const combo = typeof item?.combo === 'string' ? item.combo : ''
+      if (!combo || byCombo.has(combo)) continue
+      const metrics = keystrokeCapsuleMetrics({
+        surfaceWidth: surface.width,
+        surfaceHeight: surface.height,
+        combo
+      })
+      const filePath = this.path.join(directory, `${base}.keystroke-${byCombo.size}.png`)
+      const svg = buildKeystrokeCapsuleSvg({ combo, metrics })
+      await sharp(Buffer.from(svg, 'utf8')).png().toFile(filePath)
+      const label = { combo, path: filePath, width: metrics.width, height: metrics.height }
+      byCombo.set(combo, label)
+      assets.labels.push(label)
+    }
+    assets.marginBottomPx = keystrokeOverlayMarginBottom(surface.height)
+    return assets
+  }
+
+  // Removes the capsule label PNGs. Same idempotent discipline as cleanupDemoAssets: the tracked
+  // asset object is cleared only after the deletions actually ran.
+  async cleanupKeystrokeAssets(task) {
+    const assets = task?.keystrokeAssets
+    if (!assets) return false
+    const labels = Array.isArray(assets.labels) ? assets.labels : []
+    let removed = false
+    for (const label of labels) {
+      if (typeof label?.path !== 'string' || !label.path) continue
+      try {
+        await this.fs.rm(label.path, { force: true })
+        removed = true
+      } catch (error) {
+        this.log('Recording keystroke asset cleanup failed:', error?.message || error)
+      }
+    }
+    if (task.keystrokeAssets === assets) task.keystrokeAssets = null
+    return removed
+  }
+
   // ---------- status ----------
 
   // `{ taskId }` or `{ sessionId, requestId }` (plan §8.3: "query by taskId or by the same
@@ -956,5 +1056,6 @@ function createRecordingExportService(options) {
 module.exports = {
   EXPORT_ERROR_CODES,
   RecordingExportService,
+  buildKeystrokeCapsuleSvg,
   createRecordingExportService
 }

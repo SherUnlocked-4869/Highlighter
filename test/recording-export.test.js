@@ -31,18 +31,23 @@ const ffmpegAvailable = !!ffmpegPath && fs.existsSync(ffmpegPath)
 
 const { createMediaProbe, parseProbeOutput, parseProgressEndTime } = require('../main/services/recording-probe')
 const { RecordingService } = require('../main/services/recording-service')
-const { createRecordingExportService, EXPORT_ERROR_CODES } = require('../main/services/recording-export-service')
+const { createRecordingExportService, EXPORT_ERROR_CODES, buildKeystrokeCapsuleSvg } = require('../main/services/recording-export-service')
 const {
+  KEYSTROKE_OVERLAY_LIMITS,
   LIMITS,
   buildExportArgs,
   computeGifDimensions,
   durationToleranceMs,
   estimateGifFrames,
   exportWindow,
+  keystrokeCapsuleMetrics,
+  keystrokeOverlayMarginBottom,
   normalizeExportRequest,
   normalizeGifOptions,
+  normalizeKeystrokeOverlay,
   normalizeRange,
   requestSignature,
+  resolveKeystrokeSurface,
   sessionTransition,
   taskTransition,
   toExportRequest
@@ -395,7 +400,10 @@ test('GIF argv concatenates the kept segments then applies one palette pass and 
   assert.match(graph, /\[0:v\]trim=start=0\.000000:end=1\.000000/)
   assert.match(graph, /\[1:v\]trim=start=1\.500000:end=2\.000000/)
   assert.match(graph, /concat=n=2:v=1:a=0\[outv\]/)
-  assert.match(graph, /\[outv\]fps=15,scale=320:240:flags=lanczos,split\[gifA\]\[gifB\]/)
+  // DEV-05 splits the historical one-liner into scale -> (optional capsule overlay) -> split, so
+  // a keystroke overlay can sit between the final scale pass and the palette budget.
+  assert.match(graph, /\[outv\]fps=15,scale=320:240:flags=lanczos\[gifScaled\]/)
+  assert.match(graph, /\[gifScaled\]split\[gifA\]\[gifB\]/)
   assert.match(graph, /palettegen/)
   assert.match(graph, /paletteuse/)
   assert.equal(graph.includes('[0:a]'), false, 'GIF carries no audio')
@@ -447,8 +455,17 @@ test('export request normalisation rejects a renderer-supplied path or a missing
     request: { format: 'mp4', range: { startMs: 1, endMs: 2 }, targetPath: 'C:/evil.mp4', argv: ['-i'] }
   })
   assert.equal(ok.ok, true)
-  assert.deepEqual(Object.keys(ok.value).sort(), ['demo', 'format', 'gif', 'range', 'requestId', 'segments', 'sessionId', 'video'].sort())
+  assert.deepEqual(Object.keys(ok.value).sort(), ['demo', 'format', 'gif', 'keystrokes', 'range', 'requestId', 'segments', 'sessionId', 'video'].sort())
   assert.equal('targetPath' in ok.value, false, 'a renderer path must never survive normalisation')
+  // DEV-05: the frozen payload carries the capsule overlay choice, but a legacy renderer that
+  // does not send it still produces the old shape (keystrokes: null).
+  assert.equal(ok.value.keystrokes, null)
+  const withKeystrokes = toExportRequest({
+    sessionId: 's',
+    requestId: 'r',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 500 }], keystrokes: { enabled: true, items: [{ tMs: 100, combo: 'F5' }] } }
+  })
+  assert.deepEqual(withKeystrokes.value.keystrokes, { enabled: true, items: [{ tMs: 100, combo: 'F5' }] })
   const v2 = toExportRequest({
     sessionId: 's',
     requestId: 'r',
@@ -2326,4 +2343,437 @@ test('a failed demo export reports `failed` only after its raster assets are gon
   assert.deepEqual(rasterRmDelays.length > 0, true, 'the demo plan really did produce raster assets')
   const leftovers = (await fsp.readdir(path.dirname(target))).filter((name) => name !== path.basename(target))
   assert.deepEqual(leftovers, [], 'the failed state must not be observable while raster cleanup is in flight')
+})
+
+// ---------------------------------------------------------------------------
+// N03/DEV-05: keystroke capsule overlay in the exported film
+//   * schema: request.keystrokes { enabled, items:[{tMs,combo}] } in SOURCE time is projected
+//     onto the kept segments (trimmed-out time never shows a capsule, the 1100 ms preview window
+//     is clipped at a cut, same-time priority = the later capsule wins);
+//   * the pre-N03 export path stays byte-identical when the field is absent;
+//   * ffmpeg argv composites the capsules for MP4, WebM and GIF and on the demo canvas;
+//   * real encodes are frame-sampled to prove the pill appears and disappears at the right times;
+//   * cancel/error leave no capsule PNGs behind.
+// ---------------------------------------------------------------------------
+
+const KEYSTROKE_METADATA = { durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: true } }
+
+function keystrokeRequest(overrides = {}) {
+  return {
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 2000 }, { startMs: 2500, endMs: 4000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' },
+    keystrokes: { enabled: true, items: [] },
+    ...overrides
+  }
+}
+
+function capsuleAssets(combos) {
+  return {
+    labels: combos.map((combo, index) => ({
+      combo,
+      path: `/tmp/task.keystroke-${index}.png`,
+      width: keystrokeCapsuleMetrics({ surfaceWidth: 640, surfaceHeight: 360, combo }).width,
+      height: keystrokeCapsuleMetrics({ surfaceWidth: 640, surfaceHeight: 360, combo }).height
+    }))
+  }
+}
+
+test('request.keystrokes is projected onto the kept segments and clips at cut boundaries', () => {
+  const normalized = normalizeExportRequest(keystrokeRequest({
+    keystrokes: {
+      enabled: true,
+      items: [
+        { tMs: 1000, combo: 'Ctrl+Shift+P' },
+        { tMs: 1800, combo: 'Alt+Tab' },
+        // Trimmed out: source time 2000..2500 is not in any kept segment.
+        { tMs: 2300, combo: 'Ctrl+C' },
+        { tMs: 2600, combo: 'F5' },
+        // Half-open segment bounds: the exact end of a kept range owns no frame.
+        { tMs: 4000, combo: 'Ctrl+S' },
+        // Garbage never reaches the encoder asset pipeline.
+        { tMs: 500, combo: 'typed text' },
+        { tMs: 'junk', combo: 'Ctrl+Z' },
+        { tMs: -1, combo: 'Ctrl+Z' }
+      ]
+    }
+  }), KEYSTROKE_METADATA)
+  assert.equal(normalized.ok, true)
+  assert.equal(normalized.value.keystrokes.enabled, true)
+  assert.equal(normalized.value.keystrokes.displayMs, 1100)
+  assert.deepEqual(normalized.value.keystrokes.items, [
+    // Same-time priority: Alt+Tab (1800) wins from its first frame, so the earlier capsule is
+    // cut short instead of stacking; the window is clipped at the segment's output end (2000).
+    { tMs: 1000, endMs: 1800, combo: 'Ctrl+Shift+P' },
+    { tMs: 1800, endMs: 2000, combo: 'Alt+Tab' },
+    // The cut shifts the second segment left: source 2600 -> output 2100, 1100 ms window.
+    { tMs: 2100, endMs: 3200, combo: 'F5' }
+  ])
+  assert.equal(normalized.value.keystrokes.truncated, false)
+  assert.equal(normalized.value.video.copy, false, 'a capsule overlay always re-encodes')
+
+  // Overlay off (or absent) is the old path: no extra inputs, no extra expected field.
+  const off = normalizeExportRequest(keystrokeRequest({ keystrokes: { enabled: false, items: [{ tMs: 1000, combo: 'F5' }] } }), KEYSTROKE_METADATA)
+  assert.equal(off.value.keystrokes, null)
+  const absent = normalizeExportRequest(keystrokeRequest({ keystrokes: undefined }), KEYSTROKE_METADATA)
+  assert.equal(absent.value.keystrokes, null)
+  assert.equal(absent.value.video.copy, false)
+
+  // A full-range WebM would normally stream-copy; asking for capsules forces the real encode.
+  const webm = normalizeExportRequest({
+    format: 'webm',
+    segments: [{ startMs: 0, endMs: 5000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' },
+    keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'Ctrl+S' }] }
+  }, KEYSTROKE_METADATA)
+  assert.equal(webm.value.video.copy, false)
+
+  // GIF keeps its own budget and gets the overlay too.
+  const gif = normalizeExportRequest({
+    format: 'gif', gif: { edge: 640, fps: 10 }, keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'Ctrl+S' }] }
+  }, KEYSTROKE_METADATA)
+  assert.equal(gif.ok, true)
+  assert.deepEqual(gif.value.keystrokes.items, [{ tMs: 1000, endMs: 2100, combo: 'Ctrl+S' }])
+})
+
+test('illegal keystroke payloads are refused with invalid-keystroke-option', () => {
+  const cases = [
+    'not-an-object',
+    { enabled: 'yes', items: [] },
+    { enabled: true, items: 'nope' },
+    { enabled: true, items: {} }
+  ]
+  for (const keystrokes of cases) {
+    assert.equal(
+      normalizeExportRequest(keystrokeRequest({ keystrokes }), KEYSTROKE_METADATA).code,
+      'invalid-keystroke-option',
+      JSON.stringify(keystrokes)
+    )
+  }
+  // An overlay with no usable output surface is refused rather than placed in a guessed space.
+  assert.equal(normalizeExportRequest(keystrokeRequest({
+    video: { resolution: 'source', quality: 'standard', fps: 'source' },
+    keystrokes: { enabled: true, items: [{ tMs: 100, combo: 'F5' }] }
+  }), { durationMs: 5000, video: {}, audio: { exists: false } }).code, 'invalid-keystroke-option')
+  // normalizeKeystrokeOverlay is the pure rule table the tests and the service share.
+  assert.equal(normalizeKeystrokeOverlay({ enabled: true, items: [] }, [{ startMs: 0, endMs: 5000 }], 5000).value.items.length, 0)
+  assert.equal(KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS, 500)
+  assert.equal(KEYSTROKE_OVERLAY_LIMITS.DISPLAY_MS, 1100)
+})
+
+test('the keystroke request signature covers the capsule plan', () => {
+  const metadata = KEYSTROKE_METADATA
+  const base = keystrokeRequest({ keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'F5' }] } })
+  const first = normalizeExportRequest(base, metadata).value
+  const same = normalizeExportRequest(base, metadata).value
+  assert.equal(requestSignature(first), requestSignature(same))
+  const otherItems = normalizeExportRequest(keystrokeRequest({
+    keystrokes: { enabled: true, items: [{ tMs: 1200, combo: 'Alt+Tab' }] }
+  }), metadata).value
+  assert.notEqual(requestSignature(first), requestSignature(otherItems))
+  const off = normalizeExportRequest(keystrokeRequest({ keystrokes: undefined }), metadata).value
+  assert.notEqual(requestSignature(first), requestSignature(off))
+})
+
+test('buildExportArgs composites capsules for MP4, WebM and GIF at final-canvas coordinates', () => {
+  const assets = capsuleAssets(['Ctrl+Shift+P', 'Alt+Tab', 'F5'])
+  const normalized = normalizeExportRequest(keystrokeRequest({
+    keystrokes: {
+      enabled: true,
+      items: [{ tMs: 1000, combo: 'Ctrl+Shift+P' }, { tMs: 1800, combo: 'Alt+Tab' }, { tMs: 2600, combo: 'F5' }]
+    }
+  }), KEYSTROKE_METADATA).value
+  const durationSeconds = ((2000 - 0) + (4000 - 2500)) / 1000
+
+  const mp4 = buildExportArgs({ ...normalized, inputPath: 'in.webm', outputPath: 'out.mp4', keystrokeAssets: assets })
+  assert.equal(mp4.expected.keystrokesRendered, true)
+  assert.deepEqual(mp4.expected.width, 640)
+  assert.equal(mp4.expected.durationMs, 3500)
+  const mp4Graph = mp4.args[mp4.args.indexOf('-filter_complex') + 1]
+  assert.match(mp4Graph, /\[outv\]\[2:v\]overlay=x=\(W-w\)\/2:y=H-h-18:enable='between\(t,1\.000000,1\.800000\)'/)
+  assert.match(mp4Graph, /overlay=x=\(W-w\)\/2:y=H-h-18:enable='between\(t,2\.100000,3\.200000\)'/)
+  assert.equal(mp4.args[mp4.args.indexOf('-map') + 1], '[keystroke2]')
+  // Each capsule label PNG is a looped input bounded to the film duration.
+  const labelInputIndex = mp4.args.indexOf(assets.labels[0].path)
+  assert.ok(labelInputIndex > 0)
+  assert.deepEqual(
+    mp4.args.slice(labelInputIndex - 7, labelInputIndex + 1),
+    ['-loop', '1', '-framerate', '10', '-t', durationSeconds.toFixed(6), '-i', assets.labels[0].path]
+  )
+
+  // WebM re-encode path uses the same overlay chain.
+  const normalizedWebm = normalizeExportRequest(keystrokeRequest({
+    format: 'webm',
+    segments: [{ startMs: 0, endMs: 5000 }],
+    keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'F5' }] }
+  }), KEYSTROKE_METADATA).value
+  const webm = buildExportArgs({ ...normalizedWebm, inputPath: 'in.webm', outputPath: 'out.webm', keystrokeAssets: assets })
+  assert.equal(webm.expected.keystrokesRendered, true)
+  assert.match(webm.args[webm.args.indexOf('-filter_complex') + 1], /overlay=x=\(W-w\)\/2/)
+
+  // GIF: overlay runs between the scale pass and the palette split, in GIF pixels.
+  const normalizedGif = normalizeExportRequest({
+    format: 'gif', gif: { edge: 1280, fps: 15 }, keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'F5' }] }
+  }, { durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: false } }).value
+  const gif = buildExportArgs({ ...normalizedGif, inputPath: 'in.webm', outputPath: 'out.gif', keystrokeAssets: capsuleAssets(['F5']) })
+  assert.equal(gif.expected.keystrokesRendered, true)
+  const gifGraph = gif.args[gif.args.indexOf('-filter_complex') + 1]
+  const scaledIndex = gifGraph.indexOf('[gifScaled]')
+  const overlayIndex = gifGraph.indexOf('overlay=x=(W-w)/2')
+  const splitIndex = gifGraph.indexOf('[gifA][gifB]')
+  const paletteIndex = gifGraph.indexOf('palettegen')
+  assert.ok(scaledIndex >= 0 && overlayIndex > scaledIndex && splitIndex > overlayIndex && paletteIndex > splitIndex,
+    'GIF order must be scale -> capsules -> palette')
+  assert.equal(gif.expected.width, 640)
+  assert.equal(gif.expected.height, 360)
+
+  // Demo canvas: capsules sit ON TOP of the final canvas (not inside the zoom/crop transform).
+  const normalizedDemo = normalizeExportRequest(keystrokeRequest({
+    segments: [{ startMs: 0, endMs: 2000 }],
+    demo: { style: { enabled: true, background: '#0f1115', padding: 0.1, radius: 16, shadow: false, ripples: false } },
+    keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'Ctrl+Shift+P' }] }
+  }), KEYSTROKE_METADATA).value
+  const demoAssets = { bgPath: '/tmp/task.bg.png', maskPath: '/tmp/task.mask.png' }
+  const demoBuilt = buildExportArgs({ ...normalizedDemo, inputPath: 'in.webm', outputPath: 'out.mp4', demoAssets, keystrokeAssets: capsuleAssets(['Ctrl+Shift+P']) })
+  const demoGraph = demoBuilt.args[demoBuilt.args.indexOf('-filter_complex') + 1]
+  const canvasIndex = demoGraph.indexOf('[demoCanvas]')
+  const capsuleIndex = demoGraph.indexOf('[demoCanvas]', canvasIndex + 1)
+  assert.ok(capsuleIndex > canvasIndex, 'capsules composite after the demo canvas is formed')
+  assert.ok(demoGraph.indexOf('format=yuv420p[demoOut]') > capsuleIndex, 'capsules are drawn before the yuv420p tail')
+  assert.equal(demoBuilt.expected.keystrokesRendered, true)
+
+  // Without the field the argv and expected stay exactly the pre-DEV-05 shape.
+  const plain = normalizeExportRequest(keystrokeRequest({ keystrokes: undefined }), KEYSTROKE_METADATA).value
+  const disabled = normalizeExportRequest(keystrokeRequest({ keystrokes: { enabled: false, items: [{ tMs: 1000, combo: 'F5' }] } }), KEYSTROKE_METADATA).value
+  const plainBuilt = buildExportArgs({ ...plain, inputPath: 'in.webm', outputPath: 'out.mp4' })
+  const disabledBuilt = buildExportArgs({ ...disabled, inputPath: 'in.webm', outputPath: 'out.mp4' })
+  assert.deepEqual(disabledBuilt, plainBuilt, 'the absent vs disabled request is one export path')
+  assert.equal('keystrokesRendered' in plainBuilt.expected, false)
+  assert.doesNotMatch(plainBuilt.args[plainBuilt.args.indexOf('-filter_complex') + 1], /overlay/)
+})
+
+test('capsule assets are allowlisted, bounded labels rendered into a pill SVG', () => {
+  const metrics = keystrokeCapsuleMetrics({ surfaceWidth: 1920, surfaceHeight: 1080, combo: 'Ctrl+Shift+P' })
+  assert.deepEqual(
+    [metrics.height, metrics.fontSize, metrics.radius, metrics.marginBottom],
+    [56, 26, 28, 54]
+  )
+  assert.ok(metrics.width >= metrics.height * 2)
+  assert.equal(keystrokeOverlayMarginBottom(360), 18)
+  assert.equal(keystrokeOverlayMarginBottom(0), 6)
+  const svg = buildKeystrokeCapsuleSvg({ combo: 'Ctrl+Shift+P', metrics })
+  assert.match(svg, /<rect[^>]*rx="28"/)
+  assert.match(svg, />Ctrl\+Shift\+P</)
+  assert.match(svg, /fill="#f5f7fa"/)
+  // The SVG builder escapes text even though the allowlist would never produce these characters.
+  assert.doesNotMatch(buildKeystrokeCapsuleSvg({ combo: '<script>', metrics }), /<script>/)
+  assert.match(buildKeystrokeCapsuleSvg({ combo: '<script>', metrics }), /&lt;script&gt;/)
+  // Surface resolution: demo canvas, GIF output, else encoded video.
+  assert.deepEqual(resolveKeystrokeSurface(normalizeExportRequest(keystrokeRequest({
+    segments: [{ startMs: 0, endMs: 2000 }],
+    demo: { style: { enabled: true, padding: 0.1 } }
+  }), KEYSTROKE_METADATA).value), { width: 800, height: 450 })
+  assert.deepEqual(resolveKeystrokeSurface({ format: 'gif', gif: { width: 640, height: 360 } }), { width: 640, height: 360 })
+  assert.deepEqual(resolveKeystrokeSurface({ format: 'mp4', video: { width: 1280, height: 720 } }), { width: 1280, height: 720 })
+})
+
+// Real-encoder frame assertions: a dark pill must appear at the bottom centre during the 1100 ms
+// window and vanish afterwards, and a capsule whose source time was trimmed out must never show.
+async function renderKeystrokeFilm({ scratch, probe, session, requestId, keystrokes, segments, format = 'mp4', name }) {
+  const exporter = createRecordingExportService({
+    getRecordingService: () => session.recordingService,
+    probe,
+    log: () => {}
+  })
+  const request = {
+    format,
+    ...(format === 'gif' ? { gif: { edge: 640, fps: 10 } } : { video: { resolution: 'source', quality: 'standard', fps: 'source' } }),
+    segments,
+    keystrokes
+  }
+  const target = scratch.pathFor(`out/${name}.${format}`)
+  const submitted = await exporter.submit({ sessionId: session.sessionId, requestId, request, targetPath: target })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const terminal = await waitForTerminal(exporter, submitted.task.taskId)
+  assert.equal(terminal.state, 'succeeded', JSON.stringify(terminal.error || null))
+  await exporter.dispose()
+  return target
+}
+
+async function bottomCentreLuminance(filePath, seconds, scratch, name) {
+  const frame = await extractFramePixels(filePath, seconds, scratch, name)
+  // Average the centre of the capsule band (the pill is H-18-24 .. H-18 at 640x360).
+  let total = 0
+  let count = 0
+  for (let y = 320; y < 342; y += 2) {
+    for (let x = 300; x < 340; x += 2) {
+      total += frame.luminance(x, y)
+      count += 1
+    }
+  }
+  return total / Math.max(1, count)
+}
+
+test('a shortcut capsule renders at its output time and disappears after 1100 ms', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  // Flat light capture with a real audio track (DEV-05 acceptance: the overlay must not disturb
+  // the audio branch): the dark translucent pill is unambiguous.
+  const fixture = makeStaticWebmSample(scratch.pathFor('light.webm'), {
+    lavfi: 'color=c=0xf5f2ea:size=640x360:rate=10:duration=3',
+    withAudio: true
+  })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await recordingService.dispose() })
+  const seeded = await seedStaticSession(recordingService, fixture)
+  const session = { recordingService, sessionId: seeded.id }
+
+  const film = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session,
+    requestId: 'keystroke-mp4',
+    name: 'keystroke-mp4',
+    segments: [{ startMs: 0, endMs: 3000 }],
+    keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'F5' }] }
+  })
+  const before = await bottomCentreLuminance(film, 0.5, scratch, 'ks-before')
+  const during = await bottomCentreLuminance(film, 1.3, scratch, 'ks-during')
+  const after = await bottomCentreLuminance(film, 2.6, scratch, 'ks-after')
+  assert.ok(before > 200, `no capsule before the shortcut (${before})`)
+  assert.ok(during < 120, `the dark capsule pill is visible during the 1100 ms window (${during})`)
+  assert.ok(after > 200, `the capsule is gone after its window (${after})`)
+  // Boundary precision: at 10 fps one output frame is 100 ms; the pill is on from the frame that
+  // owns t=1000 ms (frame 10 -> 1.0 s) and absent from the frame at 0.9 s.
+  const beforeBoundary = await bottomCentreLuminance(film, 0.9, scratch, 'ks-before-boundary')
+  const atBoundary = await bottomCentreLuminance(film, 1.05, scratch, 'ks-at-boundary')
+  assert.ok(beforeBoundary > 200, 'the frame before the shortcut has no capsule')
+  assert.ok(atBoundary < 120, 'the capsule is drawn from the first output frame inside its window')
+  // The audio branch is untouched by the overlay.
+  const filmProbe = await createMediaProbe({ ffmpegPath }).probe(film)
+  assert.equal(filmProbe.ok, true)
+  assert.equal(filmProbe.metadata.audio.exists, true, 'a keystroke overlay keeps the audio track')
+
+  // Overlay off: the same timeline renders without any pill.
+  const plainFilm = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session,
+    requestId: 'keystroke-off',
+    name: 'keystroke-off',
+    segments: [{ startMs: 0, endMs: 3000 }],
+    keystrokes: undefined
+  })
+  const plainDuring = await bottomCentreLuminance(plainFilm, 1.3, scratch, 'ks-off-during')
+  assert.ok(plainDuring > 200, 'the switch-off export has no capsule')
+
+  // Two adjacent shortcuts: the later one replaces the earlier from its first frame.
+  const adjacent = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session,
+    requestId: 'keystroke-adjacent',
+    name: 'keystroke-adjacent',
+    segments: [{ startMs: 0, endMs: 3000 }],
+    keystrokes: { enabled: true, items: [
+      { tMs: 600, combo: 'F5' },
+      { tMs: 1200, combo: 'Alt+Tab' }
+    ] }
+  })
+  const firstSlot = await bottomCentreLuminance(adjacent, 0.8, scratch, 'ks-adj-1')
+  const secondSlot = await bottomCentreLuminance(adjacent, 1.6, scratch, 'ks-adj-2')
+  assert.ok(firstSlot < 120 && secondSlot < 120, 'both adjacent capsules are drawn')
+
+  // Trimmed-out source time never produces a capsule; a capsule in the kept head is clipped at
+  // the cut instead of leaking into the next segment.
+  const cut = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session,
+    requestId: 'keystroke-cut',
+    name: 'keystroke-cut',
+    segments: [{ startMs: 0, endMs: 1200 }, { startMs: 2000, endMs: 3000 }],
+    keystrokes: { enabled: true, items: [
+      { tMs: 1000, combo: 'F5' },
+      { tMs: 1500, combo: 'Alt+Tab' }
+    ] }
+  })
+  const keptHead = await bottomCentreLuminance(cut, 1.0, scratch, 'ks-cut-head')
+  const afterCut = await bottomCentreLuminance(cut, 1.4, scratch, 'ks-cut-next')
+  const nextSegment = await bottomCentreLuminance(cut, 2.0, scratch, 'ks-cut-late')
+  assert.ok(keptHead < 120, 'the capsule in the kept head is visible')
+  assert.ok(afterCut > 200, 'the capsule does not leak across the cut')
+  assert.ok(nextSegment > 200, 'the capsule trimmed out of the selection never appears')
+
+  // GIF supports the same overlay.
+  const gifFilm = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session,
+    requestId: 'keystroke-gif',
+    name: 'keystroke-gif',
+    format: 'gif',
+    segments: [{ startMs: 0, endMs: 3000 }],
+    keystrokes: { enabled: true, items: [{ tMs: 1000, combo: 'F5' }] }
+  })
+  const gifDuring = await bottomCentreLuminance(gifFilm, 1.3, scratch, 'ks-gif-during')
+  const gifBefore = await bottomCentreLuminance(gifFilm, 0.4, scratch, 'ks-gif-before')
+  assert.ok(gifDuring < 140, `the GIF capsule is visible (${gifDuring})`)
+  assert.ok(gifBefore > 180, `the GIF frame before the shortcut stays light (${gifBefore})`)
+})
+
+test('a failed or cancelled keystroke export removes its capsule PNGs', { skip: !sharpModule && 'sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+  t.after(async () => { await recordingService.dispose() })
+  const keystrokes = { enabled: true, items: [{ tMs: 100, combo: 'Ctrl+Shift+P' }, { tMs: 200, combo: 'F5' }] }
+
+  // Failure path: fake ffmpeg exits non-zero AFTER the capsule assets were rasterised.
+  const failing = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe({ video: { width: 640, height: 360, frameRate: 10 } }),
+    spawnProcess: makeFakeFfmpeg({ code: 1, bytes: 'partial' }).spawn,
+    log: () => {}
+  })
+  t.after(() => failing.dispose())
+  const failureTarget = scratch.pathFor('out/keystroke-failure.mp4')
+  const submitted = await failing.submit({
+    sessionId: session.id,
+    requestId: 'keystroke-failure',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 }, keystrokes },
+    targetPath: failureTarget
+  })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const settled = await waitForTerminal(failing, submitted.task.taskId)
+  assert.equal(settled.state, 'failed')
+  assert.equal(settled.error.code, 'encode-failed')
+  const leftovers = (await fsp.readdir(path.dirname(failureTarget))).filter((name) => name !== path.basename(failureTarget))
+  assert.deepEqual(leftovers, [], 'capsule PNGs must not survive a failed export')
+
+  // Cancel path: a hanging encoder is killed and its capsule assets are cleaned before the
+  // terminal state is reported.
+  const fakeCancel = makeFakeFfmpeg({ hang: true })
+  const hanging = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe({ video: { width: 640, height: 360, frameRate: 10 } }),
+    spawnProcess: fakeCancel.spawn,
+    log: () => {}
+  })
+  t.after(() => hanging.dispose())
+  const cancelTarget = scratch.pathFor('out/keystroke-cancel.mp4')
+  const running = await hanging.submit({
+    sessionId: session.id,
+    requestId: 'keystroke-cancel',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 }, keystrokes },
+    targetPath: cancelTarget
+  })
+  assert.equal(running.ok, true, JSON.stringify(running))
+  while (fakeCancel.calls.length === 0) await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal((await hanging.cancel({ taskId: running.task.taskId })).ok, true)
+  const cancelled = await waitForTerminal(hanging, running.task.taskId, 10000)
+  assert.equal(cancelled.state, 'cancelled')
+  const cancelLeftovers = (await fsp.readdir(path.dirname(cancelTarget))).filter((name) => name !== path.basename(cancelTarget))
+  assert.deepEqual(cancelLeftovers, [], 'capsule PNGs must not survive a cancelled export')
 })
