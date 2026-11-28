@@ -46,7 +46,11 @@ fail-before，再在修复树上复跑通过。三处 P1 反例（取消区域�
     `created:false` 结算并作废旧槽；退出路径（`disposeRecordingResources`）结算未完成请求。
   - 捕获域把请求 ID 存在覆盖窗对象上（不经渲染层，不可伪造），区域确认时随 `selectionBounds`
     传给录制域；快捷入口没有 ID，因此永远不会继承别人的授权。
-  - 工作台只在收到 created 回执后消费一次性开关；`focused:true` 与 `created:false` 都保留选择。
+  - 工作台只在“本次启动确实产生了录制”时消费一次性开关：区域流程以 `{ok:true, created:true}`
+    表示创建成功，`{ok:true, created:false}` 与 `{ok:true, focused:true}` 都保留选择；显示器/窗口
+    模式仍沿用旧的 `{ok:true}` 回执（无 `created` 字段），页面按“没有明确拒绝即视为已启动”消费。
+    该判定是 `recordingStartCreatedRecording()`，不是“只在显式收到 created:true 时消费”——后一种
+    说法超出了代码保证，2026-11-28 再评审已指出并在此更正。
 - **回归（先失败后通过）**：`test/record-domain.test.js` 新增 4 例（取消→快捷入口、创建回执恰好
   一次、无关请求 ID 不消费、替换旧选框只作废旧请求）；`test/capture-domain.test.js` 断言工作台窗
   携带 `regionRequestId`、快捷入口传空 ID；`test/recording-workbench-ui.test.js` 覆盖
