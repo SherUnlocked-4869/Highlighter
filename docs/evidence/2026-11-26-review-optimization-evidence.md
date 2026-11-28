@@ -25,14 +25,14 @@
 | F05 | P1 | 已实现 | test/f05-clipboard-performance.test.js | 真机 4K PNG 复制/粘贴的屏障持锁时长与租约超时；clipboard 侧车需按源码重建 |
 | F06 | P1 | 已实现 | test/f06-capture-performance.test.js | 真机长截图语料（matcher shift 一致性与耗时）、贴图 LRU 驻留内存曲线 |
 | U01 | P1 | 已实现 | test/u01-capture-ux.test.js | 真机多选拖拽手感、中文输入法内联编辑、微软雅黑下 CJK 包围盒与 PDF 结果条 |
-| U02 | P1 | 已实现（贴图矢量重标注/导出离屏合成未做） | test/u02-longpin-ux.test.js | 真机 100%/150% 双屏贴图松手、5 万 px 长图预览与固定悬浮栏剥离 |
+| U02 | P1 | 已实现（DEV-01 贴图矢量重标注、DEV-02 当前视图离屏导出已提交；真机门槛未验） | test/u02-longpin-ux.test.js, test/u02-pin-reedit.test.js, test/u02-pin-view-export.test.js | 真机 100%/150% 贴图“改旧标注→保存→重开”往返与私密截图工件检查、离屏导出像素/无闪烁录像、双屏松手、5 万 px 长图预览与固定悬浮栏剥离（执行记录见[后续批次执行记录](../plans/2026-11-28-follow-up-execution-status.md)） |
 | U04 | P1 | 已实现（表格/搜索、划词锁/终端保护/粘贴时序） | test/u04-table-search.test.js, test/u04-selection-lock.test.js | 真机终端内 Ctrl+C 注入防护、真实 Everything 目录 isFolder、双窗口并发长考、粘贴时序手感 |
-| N03 | P2 | 已实现（导出合成为编辑器播放覆盖层） | test/n03-recording-hud.test.js | 真机录制快捷键胶囊（需焦点在控制条，见风险）、真实音轨静音分析与一键裁剪 |
+| N03 | P2 | 已实现（DEV-05 导出成片覆盖层、DEV-04 全局快捷键采集已提交；真机键盘矩阵未验） | test/n03-recording-hud.test.js, test/recording-export.test.js | 真机控制条/演示页/文本框/密码框/拼音组字间切换的快捷键矩阵（DEV-04）、真实音轨静音分析与一键裁剪；预览 vs 导出逐帧对照与硬件编码器（DEV-05）。DEV-04 原生/接线证据另见 test/selection-keyboard-combos.test.js、test/n03-global-keystrokes.test.js、test/recording-workbench-ui.test.js（文件内未标 N03，登记表格式门禁不收录，见[执行记录](../plans/2026-11-28-follow-up-execution-status.md)） |
 | N06 | P2 | 已实现（DEV-09 决定延续现行策略：备份与 `.hlbackup.zip` 均不含 API Key） | test/n06-config-search-backup.test.js, test/data-root-backup.test.js | DEV-09 决策见[决策记录](../plans/2026-11-28-dev09-credential-migration-decision.md)；凭据边界已自动化覆盖（明文/加密归档无 Key、错误密码/篡改在写入目标前失败、三语重配提示）。真机仍待：安装候选上 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
 | N01 | P2 | 已实现 | test/n01-auto-redact.test.js | 真机真实 OCR 模型下的脱敏命中/漏报与手动删除体验 |
 | N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作；真机反馈的三项交互修复见下节） | test/n02-history-ocr.test.js, test/n02-history-ocr-ux.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型；三项交互修复的真机门槛见下节 |
 | N04 | P2 | 已实现（原生拖拽投递需真机） | test/n04-search-quicklook.test.js | 真机拖到微信/钉钉/VS Code/浏览器、可见窗口 blur 清理 |
-| N05 | P2 | 已实现（桌面像素差分需屏采） | test/n05-pin-onion-snapshot.test.js | 真机多显示器贴图快照恢复/挂起、洋葱皮可视比对 |
+| N05 | P2 | 已实现（DEV-08 真实像素比对已按实测采用为显式可选模式，默认仍为闪烁/洋葱皮） | test/n05-pin-onion-snapshot.test.js, test/n05-pin-screen-diff.test.js, test/n05-pin-diff-view.test.js | 真机多显示器贴图快照恢复/挂起、洋葱皮可视比对；DEV-08 屏采排除已在本机实测（自身命中 0/30 帧、正面对照 0.986、叠加/负坐标/移动均通过，见[测量记录](../plans/2026-11-28-dev08-screen-diff-measurement.md)），仍需真机跨 DPI 拖动、锁屏/睡眠/RDP、10 分钟 CPU/GPU 曲线与第三方录屏检查 |
 | U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
 | U03 | P1 | 已实现 | test/u03-record-ux.test.js | 真机 window 模式重录、高分屏 4K 窗口录制、双路混音爆音与 Direct-Track 标注入口 |
 

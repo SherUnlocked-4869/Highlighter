@@ -57,6 +57,9 @@ jobs:
       # at a time with the original budgets so a commit can be compared on numbers
       # instead of a flaky red. The full suite above still runs the same tests once.
       - name: Run isolated performance gate
+        # Always: the perf numbers are the E01 diagnostic, and a known CI-only test
+        # failure earlier in this job must not hide them.
+        if: always()
         run: node scripts/run-perf-gate.js --out perf-gate.json
         timeout-minutes: 8
 
