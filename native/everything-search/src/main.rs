@@ -91,6 +91,11 @@ const WAIT_READY_DEFAULT_MS: u64 = 30000;
 const WAIT_READY_MAX_MS: u64 = 120000;
 const WAIT_READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const MAX_PROBED_WINDOWS: usize = 6;
+/// P2-07: maximum number of status/query calls skipped between re-selection attempts
+/// while the only known instance stays alive but does not answer. The first failure
+/// re-resolves at once; a target that keeps staying silent then pays a doubling skip
+/// (1, 1, 2, 4, 8, 8, ...) instead of a full desktop enumeration on every poll.
+const SILENT_RESELECTION_SKIP_MAX: u32 = 8;
 
 static NEXT_QUERY_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -523,13 +528,51 @@ fn is_cached_target_live(target: &TargetInfo) -> bool {
 /// `is_live` accepts it, otherwise resolves at most once. `attempt` may refresh
 /// the volatile fields of the target (`dbLoaded`, probe total, version); a
 /// communication failure clears the cache so the next call re-resolves.
+///
+/// P2-07: a still-running but unresponsive instance is a communication failure too
+/// (`refresh_status` reports it through the error payload). The status surface keeps
+/// showing that instance from the carried snapshot, while the cache runs the bounded
+/// re-selection below instead of sticking to the silent HWND until `wait-ready` times
+/// out. `last_communication_error` is what a skipped backoff call returns.
 struct TargetCache {
     target: Option<TargetInfo>,
+    /// Consecutive communication failures since the last successful attempt.
+    silent_failures: u32,
+    /// Calls still to skip before the next re-resolution attempt.
+    resolve_skip: u32,
+    /// Last communication failure, carrying the stale display snapshot (if any).
+    last_communication_error: Option<Value>,
 }
 
 impl TargetCache {
     fn new() -> Self {
-        Self { target: None }
+        Self {
+            target: None,
+            silent_failures: 0,
+            resolve_skip: 0,
+            last_communication_error: None,
+        }
+    }
+
+    fn reset_silence(&mut self) {
+        self.silent_failures = 0;
+        self.resolve_skip = 0;
+        self.last_communication_error = None;
+    }
+
+    /// P2-07: the first re-selection after a failure is immediate; afterwards a
+    /// doubling backoff keeps a permanently silent instance from sweeping the desktop
+    /// on every 300 ms `wait-ready` poll.
+    fn skip_after_silent_failure(&mut self) {
+        self.silent_failures = self.silent_failures.saturating_add(1);
+        let exponent = self.silent_failures.saturating_sub(2).min(3);
+        self.resolve_skip = (1u32 << exponent).min(SILENT_RESELECTION_SKIP_MAX);
+    }
+
+    fn stale_status_error(&self) -> Value {
+        self.last_communication_error.clone().unwrap_or_else(|| {
+            json!({ "code": "not-running", "message": "IPC window not found" })
+        })
     }
 
     fn run<T>(
@@ -541,26 +584,50 @@ impl TargetCache {
         if let Some(target) = self.target.as_mut() {
             if is_live(target) {
                 match attempt(target) {
-                    Ok(result) => return Ok(result),
+                    Ok(result) => {
+                        self.reset_silence();
+                        return Ok(result);
+                    }
                     Err(error) if is_communication_failure(&error) => {
                         // Stop reusing this handle, then fall through to exactly
                         // one re-resolution instead of retrying in a loop.
+                        self.target = None;
+                        self.silent_failures = 0;
+                        self.resolve_skip = 0;
+                        self.last_communication_error = Some(error);
                     }
                     Err(error) => return Err(error),
                 }
+            } else {
+                self.target = None;
+                self.reset_silence();
             }
         }
-        self.target = None;
+        // P2-07: a silent target that keeps failing only pays a bounded number of
+        // re-selection attempts; skipped calls return the last status error unchanged
+        // so the display keeps reporting the instance that still exists.
+        if self.resolve_skip > 0 {
+            self.resolve_skip -= 1;
+            return Err(self.stale_status_error());
+        }
         let mut target = match resolve() {
             Some(target) => target,
             None => {
+                self.reset_silence();
                 return Err(json!({ "code": "not-running", "message": "IPC window not found" }));
             }
         };
         let result = attempt(&mut target);
         match &result {
-            Ok(_) => self.target = Some(target),
-            Err(error) if is_communication_failure(error) => self.target = None,
+            Ok(_) => {
+                self.target = Some(target);
+                self.reset_silence();
+            }
+            Err(error) if is_communication_failure(error) => {
+                self.skip_after_silent_failure();
+                self.last_communication_error = Some(error.clone());
+                self.target = None;
+            }
             // A malformed reply is not a communication failure: keep the
             // identity so a bad payload does not pay for another desktop sweep.
             Err(_) => self.target = Some(target),
@@ -807,6 +874,44 @@ fn status_snapshot(info: &TargetInfo) -> Value {
 /// DEV-07: re-reads the volatile readiness fields of the cached target on every
 /// call. `dbLoaded` and `probeTotal` are sampled from Everything each time, so a
 /// loading index becomes ready without re-enumerating the desktop.
+///
+/// P2-07: the query probe is also the status path's liveness check. A probe that
+/// reports "send-failed"/"timeout" means the window exists but no longer talks to us;
+/// that surfaces as a communication failure (with the still-true running snapshot in
+/// the error) so the cache re-selects instead of treating silence as a healthy status.
+fn apply_probe_result(
+    target: &mut TargetInfo,
+    db_loaded: bool,
+    probe: Result<u32, String>,
+) -> Result<(), Value> {
+    match probe {
+        Ok(total) => {
+            target.db_loaded = db_loaded || total > 0;
+            target.probe_total = total;
+            Ok(())
+        }
+        Err(message) if message == "send-failed" || message == "timeout" => {
+            // The HWND still exists but is not taking the probe (for example an
+            // instance blocked by UIPI, or a hung Everything.exe). Keep the same
+            // display shape as before, but tell the cache this is a failure.
+            target.db_loaded = db_loaded;
+            target.probe_total = 0;
+            Err(json!({
+                "code": "send-failed",
+                "message": message,
+                "status": status_snapshot(target),
+            }))
+        }
+        // It answered, so a malformed payload is not a communication failure and
+        // must not pay for another desktop sweep.
+        Err(_) => {
+            target.db_loaded = db_loaded;
+            target.probe_total = 0;
+            Ok(())
+        }
+    }
+}
+
 fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<Value, Value> {
     // Version is stable for one instance, but it is sampled again because an
     // in-place upgrade replaces the window while `wait-ready` may still be
@@ -819,32 +924,36 @@ fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<Value,
         (major, minor_version as u32, revision, build)
     });
     let db_loaded = send_ipc_command(target.hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
-    let probe_total = match probe_window(reply, target.hwnd) {
-        Ok(total) => total,
-        Err(message) if message == "send-failed" => {
-            // The HWND still exists but is not taking the probe (for example an
-            // instance blocked by UIPI). `resolve_target` reports that silent
-            // instance as running through its fallback; keep the same shape
-            // instead of turning a transient hang into "not running".
-            target.probe_total = 0;
-            target.db_loaded = db_loaded;
-            return Ok(status_snapshot(target));
-        }
-        Err(_) => 0,
-    };
-    target.db_loaded = db_loaded || probe_total > 0;
-    target.probe_total = probe_total;
+    apply_probe_result(target, db_loaded, probe_window(reply, target.hwnd))?;
     Ok(status_snapshot(target))
 }
 
+/// P2-07: the status surface keeps reporting a still-running but silent instance
+/// (the communication error carries its last snapshot) while the cache performs
+/// bounded re-selection; once an instance answers again the fresh snapshot wins.
+fn status_from_cache(
+    cache: &mut TargetCache,
+    is_live: impl Fn(&TargetInfo) -> bool,
+    resolve: impl FnMut() -> Option<TargetInfo>,
+    attempt: impl FnMut(&mut TargetInfo) -> Result<Value, Value>,
+) -> Value {
+    match cache.run(is_live, resolve, attempt) {
+        Ok(status) => status,
+        Err(error) => error
+            .get("status")
+            .filter(|status| status.is_object())
+            .cloned()
+            .unwrap_or_else(not_running_status),
+    }
+}
+
 fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
-    cache
-        .run(
-            is_cached_target_live,
-            || resolve_target(reply),
-            |target| refresh_status(reply, target),
-        )
-        .unwrap_or_else(|_| not_running_status())
+    status_from_cache(
+        cache,
+        is_cached_target_live,
+        || resolve_target(reply),
+        |target| refresh_status(reply, target),
+    )
 }
 
 /// DEV-07: the readiness polling loop is kept separate from the Win32 plumbing
@@ -1305,6 +1414,163 @@ mod tests {
             not_running_status(),
             json!({ "running": false, "dbLoaded": false, "version": null, "instance": null })
         );
+    }
+
+    // ===================== P2-07: silent instance re-selection =====================
+
+    fn silent_status_error(status: Value) -> Value {
+        json!({ "code": "send-failed", "status": status })
+    }
+
+    // P2-07: the status probe is the liveness check. A silent instance must surface as a
+    // communication failure carrying its display snapshot, while a malformed reply is
+    // still an answer and keeps the cache.
+    #[test]
+    fn p2_07_a_silent_probe_is_a_communication_failure_with_its_status_snapshot() {
+        let mut info = target(0x1111);
+        info.db_loaded = false;
+        info.probe_total = 0;
+        assert!(
+            apply_probe_result(&mut info, false, Err("bad-reply".to_string())).is_ok(),
+            "a malformed reply came from the instance and is not a communication failure"
+        );
+        assert_eq!(info.probe_total, 0);
+        assert!(apply_probe_result(&mut info, false, Ok(12)).is_ok());
+        assert_eq!(info.probe_total, 12);
+        assert!(info.db_loaded);
+        for message in ["send-failed", "timeout"] {
+            let mut silent = target(0x1111);
+            silent.version = None;
+            silent.db_loaded = false;
+            silent.probe_total = 0;
+            let error = apply_probe_result(&mut silent, false, Err(message.to_string()))
+                .expect_err("silence is not a healthy status");
+            assert_eq!(error.get("code").and_then(Value::as_str), Some("send-failed"));
+            assert!(is_communication_failure(&error), "{message} invalidates the cached identity");
+            let status = error.get("status").expect("the silent snapshot rides the error");
+            assert_eq!(status["running"], true, "the instance still exists");
+            assert_eq!(status["ipcAvailable"], false);
+            assert_eq!(status["probeTotal"], 0);
+            assert_eq!(silent.probe_total, 0);
+        }
+    }
+
+    // P2-07: an unresponsive cached HWND must not pin status/wait-ready to it while a
+    // newly started instance is already answering. The new snapshot wins and the cache
+    // switches identity after a single bounded re-resolution.
+    #[test]
+    fn p2_07_a_silent_cached_target_switches_to_a_responsive_instance() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let status = status_from_cache(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |cached| {
+                attempted.push(cached.hwnd);
+                if cached.hwnd == 0x1111 {
+                    let mut snapshot = target(0x1111);
+                    snapshot.version = None;
+                    snapshot.db_loaded = false;
+                    snapshot.probe_total = 0;
+                    Err(silent_status_error(status_snapshot(&snapshot)))
+                } else {
+                    Ok(status_snapshot(cached))
+                }
+            },
+        );
+        assert_eq!(status["running"], true);
+        assert_eq!(status["dbLoaded"], true, "the answering instance is reported");
+        assert_eq!(status["probeTotal"], 10);
+        assert_eq!(attempted, vec![0x1111, 0x2222], "one bounded re-selection");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // P2-07: while only the silent instance exists, every status still reports it as
+    // running, but repeated polling must not enumerate the desktop on every call.
+    #[test]
+    fn p2_07_silent_only_status_stays_running_and_bounds_resolution() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        for _ in 0..24 {
+            let status = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x1111))
+                },
+                |cached| {
+                    let mut snapshot = target(cached.hwnd);
+                    snapshot.version = None;
+                    snapshot.db_loaded = false;
+                    snapshot.probe_total = 0;
+                    Err(silent_status_error(status_snapshot(&snapshot)))
+                },
+            );
+            assert_eq!(status["running"], true, "a silent instance is still reported");
+            assert_eq!(status["dbLoaded"], false);
+        }
+        assert!(resolve_calls >= 2, "the first failures must still attempt re-selection");
+        assert!(
+            resolve_calls <= usize::try_from(SILENT_RESELECTION_SKIP_MAX).unwrap()
+                && resolve_calls < 24,
+            "24 silent polls must not sweep the desktop every call: {resolve_calls}"
+        );
+    }
+
+    // P2-07: `wait-ready` is the user-visible symptom. With a silent cached target and a
+    // responsive second instance, readiness must flip on the first re-selection instead
+    // of polling until the 30 s timeout.
+    #[test]
+    fn p2_07_wait_ready_recovers_when_a_new_instance_answers() {
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            let status = status_from_cache(
+                &mut cache,
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x2222))
+                },
+                |cached| {
+                    if cached.hwnd == 0x1111 {
+                        Err(silent_status_error(json!({
+                            "running": true,
+                            "ipcAvailable": false,
+                            "dbLoaded": false,
+                            "version": null,
+                            "instance": null,
+                            "probeTotal": 0
+                        })))
+                    } else {
+                        Ok(json!({
+                            "running": true,
+                            "ipcAvailable": true,
+                            "dbLoaded": true,
+                            "version": "1.4.1.1032",
+                            "instance": "1.4",
+                            "probeTotal": 10
+                        }))
+                    }
+                },
+            );
+            let ready = status["running"] == true && status["dbLoaded"] == true;
+            (ready, status)
+        });
+        assert_eq!(result["ready"], true, "wait-ready switches to the answering instance");
+        assert_eq!(result["status"]["version"], "1.4.1.1032");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
     }
 
     // ===================== F04: process image path =====================

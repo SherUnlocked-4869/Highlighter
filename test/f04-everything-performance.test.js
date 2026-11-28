@@ -188,6 +188,16 @@ test('F04/DEV-07 Rust shares one live Everything target across status, wait-read
   assert.match(refresh, /send_ipc_command\(target\.hwnd, IPC_IS_DB_LOADED\)/, 'dbLoaded is re-read on every status call')
   assert.match(refresh, /probe_window\(reply, target\.hwnd\)/, 'the query probe is re-read on every status call')
   assert.match(source, /fn poll_until_ready\(/, 'wait-ready polling is separable from the Win32 plumbing')
+
+  // P2-07: a silent instance is a communication failure with a display snapshot, and
+  // re-selection is bounded so a 300 ms wait-ready poll cannot sweep the desktop every
+  // call. The status surface keeps the stale snapshot through `status_from_cache`.
+  assert.match(source, /fn apply_probe_result\(/, 'the probe decision is the unit-testable seam')
+  assert.match(refresh, /apply_probe_result\(target, db_loaded, probe_window\(reply, target\.hwnd\)\)/)
+  assert.match(source, /"status": status_snapshot\(target\)/, 'the silent snapshot rides the failure')
+  assert.match(source, /fn status_from_cache\(/, 'status reports the stale running snapshot while re-selecting')
+  assert.match(source, /SILENT_RESELECTION_SKIP_MAX/, 're-selection is bounded')
+  assert.match(cacheImpl, /last_communication_error/, 'the throttle returns the last status error')
 })
 
 test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and safe degradation', () => {
@@ -203,7 +213,12 @@ test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and sa
     'f04_process_path_rejects_unresolvable_pids',
     'dev07_wait_ready_polling_resolves_the_target_once',
     'dev07_cached_identity_is_invalidated_when_the_window_is_gone_or_reused',
-    'dev07_status_snapshot_reports_volatile_fields_from_the_refreshed_target'
+    'dev07_status_snapshot_reports_volatile_fields_from_the_refreshed_target',
+    // P2-07: silent-instance status/re-selection regressions.
+    'p2_07_a_silent_probe_is_a_communication_failure_with_its_status_snapshot',
+    'p2_07_a_silent_cached_target_switches_to_a_responsive_instance',
+    'p2_07_silent_only_status_stays_running_and_bounds_resolution',
+    'p2_07_wait_ready_recovers_when_a_new_instance_answers'
   ]) {
     assert.match(source, new RegExp(`fn ${name}\\(\\)`), `${name} must exist (cargo test runs it)`)
   }
