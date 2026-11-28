@@ -183,6 +183,36 @@ test('every main window route renders content', async ({ highlighter }) => {
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
 
+// N06 follow-up (real-device verification, 2026-11-28): the sidebar search box
+// rendered but did nothing. `config.js` booted the wiring behind bare globals
+// (`typeof initSettingsSearch === 'function'`) while `routes/settings-search.js`
+// is UMD and only publishes `window.settingsSearch`, so both guards were false,
+// no listener was ever attached, and Ctrl+K plus typing were silent no-ops. The
+// Node tests stayed green because they drive the module directly; this is the
+// renderer-level contract: from an unrelated route, Ctrl+K focuses the box,
+// typing opens the real index, and a click lands on the settings page.
+test('Ctrl+K settings search focuses the box, filters the index and jumps to the target', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
+  // Start somewhere that is not the destination, so the jump is observable.
+  await navigate(page, 'about', '关于')
+
+  await page.keyboard.press('Control+k')
+  const searchInput = page.locator('#settingsSearchInput')
+  await expect(searchInput).toBeFocused()
+
+  await searchInput.fill('备份')
+  const results = page.locator('#settingsSearchResults .search-result')
+  await expect(results.first()).toBeVisible()
+  await expect(results.first()).toContainText('备份')
+
+  await results.first().click()
+  // Every indexed backup entry belongs to the system/data route.
+  await expect(page.locator('#pageTitle')).toHaveText('系统与数据')
+  await expect(page.locator('#settingsSearchResults')).toBeHidden()
+  await expect(searchInput).toHaveValue('')
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})
+
 // B1/B4 integration: the usage page is opt-in, and once enabled it must scan the
 // committed fixture home end to end (worker -> SQLite -> IPC -> page) and render
 // the TokenTracker-parity numbers without touching the real user home.

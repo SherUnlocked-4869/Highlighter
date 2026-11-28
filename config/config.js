@@ -223,8 +223,11 @@ window.electronAPI.onInterfaceLanguage((language) => {
   applyTranslations()
   if (configInitialized) navigate(currentRoute)
   // N06: the sidebar search results are built with t(), so a language switch has
-  // to re-resolve the index; the input/query itself stays untouched.
-  if (typeof refreshSettingsSearchLanguage === 'function') refreshSettingsSearchLanguage()
+  // to re-resolve the index; the input/query itself stays untouched. The search
+  // module is UMD (node:test require()s it) and only publishes its API on
+  // `window.settingsSearch`, so the shell has to reach it through that namespace:
+  // a bare `refreshSettingsSearchLanguage` global does not exist.
+  window.settingsSearch?.refreshSettingsSearchLanguage?.()
 })
 
 async function init() {
@@ -237,8 +240,12 @@ async function init() {
   applyAppearance()
   configInitialized = true
   navigate(pendingRoute)
-  // N06: Ctrl+K global search. The wiring lives in routes/settings-search.js;
-  // init is idempotent and degrades to null when the markup is missing.
-  if (typeof initSettingsSearch === 'function') initSettingsSearch()
+  // N06: Ctrl+K global search. The wiring lives in routes/settings-search.js and
+  // is published as the `settingsSearch` namespace (the file is UMD so node:test
+  // can require it); init is idempotent and degrades to null when the markup is
+  // missing. Calling a bare `initSettingsSearch` never worked: the module never
+  // defined that global, so the `typeof` guard silently skipped the wiring and
+  // neither Ctrl+K nor typing produced any result.
+  window.settingsSearch?.initSettingsSearch?.()
 }
 init()

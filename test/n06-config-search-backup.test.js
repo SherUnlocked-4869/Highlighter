@@ -17,6 +17,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const vm = require('node:vm')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
@@ -304,9 +305,39 @@ test('N06: the sidebar exposes the search box and Ctrl+K is wired to the pure ma
   assert.match(searchSource, /prefers-reduced-motion: reduce/)
   assert.match(css, /\.search-hit\{animation:search-hit-pulse/)
   assert.match(css, /\.search-results\{position:absolute/)
-  // The shell boots the wiring and refreshes the resolved labels on a language switch.
-  assert.match(shell, /typeof initSettingsSearch === 'function'\) initSettingsSearch\(\)/)
-  assert.match(shell, /refreshSettingsSearchLanguage\(\)/)
+  // The shell boots the wiring and refreshes the resolved labels on a language
+  // switch through the module's published namespace.
+  assert.match(shell, /window\.settingsSearch\?\.initSettingsSearch\?\.\(\)/)
+  assert.match(shell, /window\.settingsSearch\?\.refreshSettingsSearchLanguage\?\.\(\)/)
+})
+
+// Regression (real-device verification, 2026-11-28): the module is UMD, so its
+// functions only exist on `window.settingsSearch`. The shell used to call bare
+// `initSettingsSearch()` / `refreshSettingsSearchLanguage()` guarded by
+// `typeof ... === 'function'`; both names were undefined, the guards silently
+// skipped the wiring and Ctrl+K did nothing on a real install. Load the file the
+// way the window does (classic script, no `module`) and resolve the exact calls
+// the shell makes, so producer and consumer cannot drift apart again.
+test('N06: the published search namespace resolves every call the shell makes', () => {
+  const browserGlobal = { console, setTimeout, clearTimeout }
+  browserGlobal.globalThis = browserGlobal
+  browserGlobal.window = browserGlobal
+  vm.createContext(browserGlobal)
+  vm.runInContext(searchSource, browserGlobal, { filename: 'settings-search.js' })
+
+  assert.equal(typeof browserGlobal.settingsSearch, 'object', 'the browser branch publishes window.settingsSearch')
+  assert.equal(typeof browserGlobal.settingsSearch.initSettingsSearch, 'function')
+  assert.equal(typeof browserGlobal.settingsSearch.refreshSettingsSearchLanguage, 'function')
+
+  // Every `window.settingsSearch?.<name>(...)` access in the shell must resolve
+  // on the API the window actually publishes.
+  const shellCalls = [...shell.matchAll(/window\.settingsSearch\?\.([A-Za-z_$][\w$]*)\?\.\(/g)].map((match) => match[1])
+  assert.ok(shellCalls.length >= 2, 'the shell still boots the search wiring')
+  for (const name of shellCalls) {
+    assert.equal(typeof browserGlobal.settingsSearch[name], 'function', `window.settingsSearch.${name} must exist`)
+  }
+  // The old bare-global form must not come back: it is what shipped broken.
+  assert.doesNotMatch(shell, /typeof initSettingsSearch === 'function'/)
 })
 
 test('N06: the Ctrl+K wiring renders results, navigates and highlights the target (DOM stub)', async () => {
