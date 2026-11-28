@@ -740,6 +740,137 @@ test('DEV-06 a crashed sidecar rejects pending work and recovers through a fresh
   assert.equal(starts.length, 2, 'recovery spawns one fresh sidecar handshake')
 })
 
+test('DEV-06 a late frame write failure after recognition timeouts recycles the generation', async (t) => {
+  // Reviewer P1-04 timing: the sidecar stops reading, two frame requests time
+  // out, and only then does the first frame's write report a failure. The
+  // already-timed-out first write must still discard the pipe, the second frame
+  // queued behind it must never be written, and the next recognition must start
+  // over with a fresh handshake.
+  const { service, root } = await createFakeSidecarHarness(t, { mode: 'frames' })
+  await service.ensureStarted()
+  const oldChild = service.process
+  assert.ok(oldChild, 'the fake sidecar finished its handshake')
+
+  const oldPipeFrames = []
+  let releaseStalledWrite = null
+  const originalWrite = oldChild.stdin.write.bind(oldChild.stdin)
+  // A sidecar that stopped reading never calls back the pending write: keep the
+  // first frame's callback parked exactly like a pipe that is not draining.
+  oldChild.stdin.write = (chunk, callback) => {
+    if (!Buffer.isBuffer(chunk)) return originalWrite(chunk, callback)
+    oldPipeFrames.push(Buffer.from(chunk))
+    if (oldPipeFrames.length === 1) {
+      releaseStalledWrite = callback
+      return false
+    }
+    callback(new Error('EPIPE'))
+    return false
+  }
+  let killCount = 0
+  const originalKill = oldChild.kill.bind(oldChild)
+  oldChild.kill = (...args) => {
+    killCount += 1
+    return originalKill(...args)
+  }
+  t.after(() => {
+    try {
+      if (oldChild.exitCode === null && !oldChild.killed) originalKill()
+    } catch {}
+  })
+
+  const firstImage = Buffer.from('first-frame-image')
+  const secondImage = Buffer.from('second-frame-image')
+  const first = service.requestFrame({ action: 'recognize' }, firstImage, 25)
+  const second = service.requestFrame({ action: 'recognize' }, secondImage, 25)
+  await assert.rejects(first, /OCR recognition timed out/)
+  await assert.rejects(second, /OCR recognition timed out/)
+  assert.equal(service.pending.size, 0, 'both recognition results timed out before the write error')
+  assert.equal(oldPipeFrames.length, 1, 'the stalled pipe only saw the first frame so far')
+  assert.equal(typeof releaseStalledWrite, 'function')
+
+  releaseStalledWrite(new Error('EPIPE'))
+  assert.ok(await waitFor(() => service.process === null), 'the late write error discards the stale generation')
+  assert.equal(killCount, 1, 'the stale sidecar is killed exactly once')
+  assert.equal(service.ready, false)
+  assert.equal(service.imageTransfer, null)
+  assert.equal(service.pending.size, 0)
+  assert.equal(oldPipeFrames.length, 1, 'the second frame was never written into the desynchronised pipe')
+  const stalledFrame = oldPipeFrames[0]
+  const headerLength = stalledFrame.readUInt32LE(8)
+  const bodyLength = stalledFrame.readUInt32LE(12)
+  const stalledHeader = JSON.parse(stalledFrame.subarray(IMAGE_FRAME.fixedBytes, IMAGE_FRAME.fixedBytes + headerLength).toString('utf8'))
+  assert.equal(stalledHeader.action, 'recognize')
+  assert.equal(bodyLength, firstImage.length)
+  assert.deepEqual(stalledFrame.subarray(IMAGE_FRAME.fixedBytes + headerLength), firstImage)
+
+  // A late exit from the discarded child must not clear anything, and the next
+  // recognition has to negotiate a brand new process before writing again.
+  assert.ok(await waitFor(() => oldChild.exitCode !== null || oldChild.signalCode !== null))
+  service.handleExit(oldChild, new Error('late exit event'))
+  assert.equal(service.process, null)
+  assert.equal(service.ready, false)
+
+  const recoveredImage = Buffer.from('recovered-image')
+  const recovered = await service.recognize(recoveredImage)
+  assert.equal(recovered.text, `fake-frame:${recoveredImage.length}`)
+  const newChild = service.process
+  assert.notEqual(newChild, oldChild)
+  assert.equal(service.ready, true)
+  assert.equal(service.imageTransfer, IMAGE_FRAME.imageTransfer)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 2, 'the next recognition established exactly one fresh handshake')
+
+  // Stragglers from the old generation stay inert once the replacement is up.
+  service.handleExit(oldChild, new Error('late exit event'))
+  assert.equal(service.discardProcess(oldChild, new Error('late write error')), false)
+  assert.equal(service.process, newChild)
+  assert.equal(service.ready, true)
+})
+
+test('DEV-06 a frame write failure cancels the frames queued behind it with a stable error', async (t) => {
+  const { service } = await createFakeSidecarHarness(t, { mode: 'frames' })
+  await service.ensureStarted()
+  const child = service.process
+  const pipeFrames = []
+  let releaseFirstWrite = null
+  const originalWrite = child.stdin.write.bind(child.stdin)
+  child.stdin.write = (chunk, callback) => {
+    if (!Buffer.isBuffer(chunk)) return originalWrite(chunk, callback)
+    pipeFrames.push(Buffer.from(chunk))
+    if (pipeFrames.length === 1) {
+      releaseFirstWrite = callback
+      return false
+    }
+    callback(new Error('EPIPE'))
+    return false
+  }
+  let killCount = 0
+  const originalKill = child.kill.bind(child)
+  child.kill = (...args) => {
+    killCount += 1
+    return originalKill(...args)
+  }
+  t.after(() => {
+    try {
+      if (child.exitCode === null && !child.killed) originalKill()
+    } catch {}
+  })
+
+  const first = service.requestFrame({ action: 'recognize' }, Buffer.from('blocking-frame'), 120000)
+  const queued = service.requestFrame({ action: 'recognize' }, Buffer.from('queued-frame'), 120000)
+  const queuedRejection = assert.rejects(queued, (error) => error.code === 'OCR_SIDECAR_RECYCLED' && /recycled/.test(error.message))
+  assert.equal(service.pending.size, 2)
+  assert.ok(await waitFor(() => pipeFrames.length === 1), 'the first frame is parked on the stalled write')
+
+  releaseFirstWrite(new Error('EPIPE'))
+  await assert.rejects(first, /EPIPE/)
+  await queuedRejection
+  assert.equal(killCount, 1)
+  assert.equal(service.process, null)
+  assert.equal(service.pending.size, 0)
+  assert.equal(pipeFrames.length, 1, 'the queued frame was cancelled before touching the broken pipe')
+})
+
 test('DEV-06 a new main falls back to the legacy imagePath protocol against an old sidecar', async (t) => {
   const image = Buffer.from('legacy-pipe-image')
   const { service, root } = await createFakeSidecarHarness(t, {

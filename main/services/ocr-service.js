@@ -82,6 +82,10 @@ class OcrService {
     this.imageTransfer = null
     this.frameBodyLimit = FRAME_BODY_LIMIT
     this.frameWriteChain = Promise.resolve()
+    // Incremented whenever a sidecar is spawned or discarded. Queued frame
+    // writes capture it so a write that belongs to a recycled process can never
+    // reach the new one's pipe.
+    this.generation = 0
   }
 
   getStatus() {
@@ -215,6 +219,7 @@ class OcrService {
     // A fresh stream needs a fresh decoder: bytes still buffered from the
     // previous sidecar must never leak into the new one's first line.
     this.stdoutDecoder = new StringDecoder('utf8')
+    this.generation += 1
     return new Promise((resolve, reject) => {
       const child = this.spawnSidecar()
       this.process = child
@@ -234,6 +239,10 @@ class OcrService {
       }
 
       child.stdout.on('data', (chunk) => {
+        // A discarded process can still flush a line or a half-written chunk
+        // after its replacement started; that output must not be parsed with the
+        // new process's decoder or settle one of its requests.
+        if (this.process !== child) return
         this.handleStdout(chunk, (message) => {
           if (message.type !== 'ready' || settled) return
           settled = true
@@ -298,6 +307,9 @@ class OcrService {
 
   handleExit(child, error) {
     if (this.process !== child) return
+    // Any frame still queued for this process is cancelled by its generation
+    // check instead of being written into the closed pipe.
+    this.generation += 1
     this.process = null
     this.ready = false
     this.imageTransfer = null
@@ -388,8 +400,19 @@ class OcrService {
   // Frames are written strictly one after another so a concurrent recognition
   // can never splice its header into another request's body. A failed write does
   // not poison the chain for the next process: start() replaces it on spawn.
+  // The generation is captured now and checked again when this frame's turn to
+  // write arrives, so frames queued behind a broken frame are cancelled instead
+  // of being handed to a pipe whose boundary is no longer known.
   queueFrame(child, frame) {
-    const write = this.frameWriteChain.then(() => this.writeFrame(child, frame))
+    const generation = this.generation
+    const write = this.frameWriteChain.then(() => {
+      if (this.process !== child || this.generation !== generation) {
+        const error = new Error('OCR sidecar was recycled before the queued frame was written')
+        error.code = 'OCR_SIDECAR_RECYCLED'
+        throw error
+      }
+      return this.writeFrame(child, frame)
+    })
     this.frameWriteChain = write.catch(() => {})
     return write
   }
@@ -398,17 +421,24 @@ class OcrService {
   // cannot serve another request. Drop it together with every pending request;
   // ensureStarted() performs a fresh handshake on the next recognition.
   discardProcess(child, error) {
-    if (this.process !== child) return
+    if (this.process !== child) return false
+    // Invalidate queued frame writes before they run; they were addressed to
+    // this child's stdin and must never reach the replacement process.
+    this.generation += 1
     try { child.kill() } catch {}
     this.process = null
     this.ready = false
     this.imageTransfer = null
     this.frameBodyLimit = FRAME_BODY_LIMIT
+    const recycled = new Error('OCR sidecar was recycled after a frame write failure')
+    recycled.code = 'OCR_SIDECAR_RECYCLED'
+    if (error) recycled.cause = error
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
-      pending.reject(error)
+      pending.reject(recycled)
     }
     this.pending.clear()
+    return true
   }
 
   requestFrame(payload, imageBuffer, timeoutMs = 120000) {
@@ -431,15 +461,23 @@ class OcrService {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        // Only the recognition result timed out. The frame write is a separate
+        // piece of state: it may still be in flight, and a late write failure
+        // below must recycle the pipe even though this id left pending.
         this.pending.delete(id)
         reject(new Error('OCR recognition timed out'))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       this.queueFrame(child, frame).catch((error) => {
-        if (!this.pending.has(id)) return
-        this.pending.delete(id)
-        clearTimeout(timer)
-        reject(error)
+        // A failed frame write leaves the stdin position unknown, so the whole
+        // generation is unusable no matter whether this request is still
+        // pending. Never gate the discard on pending.has(id): by the time the
+        // write error arrives the caller may already have timed out.
+        if (this.pending.has(id)) {
+          this.pending.delete(id)
+          clearTimeout(timer)
+          reject(error)
+        }
         this.discardProcess(child, error)
       })
     })
@@ -522,6 +560,9 @@ class OcrService {
     }
     this.process = null
     this.ready = false
+    // Frames still queued for the stopped sidecar are cancelled by the
+    // generation check instead of being written after shutdown.
+    this.generation += 1
   }
 }
 
