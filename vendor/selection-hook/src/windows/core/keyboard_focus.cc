@@ -13,6 +13,10 @@
  * even the bounded calls together take too long. Any failure, timeout or ambiguity yields
  * KeyboardFocusClass::Unknown, i.e. the combo is dropped (fail closed).
  *
+ * After the UIA probe, ClassifyForeground re-checks the cheap foreground/focus identity: the
+ * probe can run up to the wall-clock budget after the key event, so a focus change during it
+ * must never be classified as the surface the shortcut was pressed on (TOCTOU guard).
+ *
  * The policy itself lives in keyboard_focus.h and is pure; this file only gathers evidence.
  */
 #define WIN32_LEAN_AND_MEAN 1
@@ -66,6 +70,32 @@ bool ProbeImeComposition(HWND focusWindow)
     return compositionBytes > 0 || readBytes > 0;
 }
 
+/**
+ * @brief Cheap TOCTOU re-check after the bounded UIA probe.
+ * @param[in] snapshot Event-time foreground/focus handles captured in the hook.
+ * @return true when the foreground window (and, if one was recorded, the native focus HWND of
+ * its thread) is still the one from the key event.
+ * @note The UIA probe can take up to the wall-clock budget, so accepting a surface that became
+ * focused during the probe would attribute the shortcut to the wrong context. A web-content
+ * focus change inside the same window does not move hwndFocus and stays a documented residual.
+ */
+bool FocusSnapshotStillCurrent(const KeyboardFocusSnapshot &snapshot)
+{
+    if (GetForegroundWindow() != snapshot.foregroundWindow)
+        return false;
+    if (!snapshot.focusWindow)
+        return true;
+    const DWORD foregroundThread = GetWindowThreadProcessId(snapshot.foregroundWindow, nullptr);
+    if (!foregroundThread)
+        return false;
+    GUITHREADINFO threadInfo;
+    ZeroMemory(&threadInfo, sizeof(threadInfo));
+    threadInfo.cbSize = sizeof(GUITHREADINFO);
+    if (!GetGUIThreadInfo(foregroundThread, &threadInfo))
+        return false;
+    return threadInfo.hwndFocus == snapshot.focusWindow;
+}
+
 /** Value-only evidence read from one UIA element; never stores COM pointers. */
 struct ElementEvidence
 {
@@ -73,6 +103,8 @@ struct ElementEvidence
     bool isPassword = false;
     bool isTextEditControl = false;
     bool hasWritableValue = false;
+    bool textPatternReadOnly = false;
+    bool textPatternWritable = false;
     bool timedOut = false;
 };
 
@@ -129,6 +161,69 @@ ElementEvidence ReadElementEvidence(IUIAutomationElement *element, ULONGLONG sta
         if (SUCCEEDED(valuePattern->get_CurrentIsReadOnly(&readOnly)))
             result.hasWritableValue = readOnly == FALSE;
         valuePattern->Release();
+    }
+    if (ProbeBudgetExceeded(startedAt))
+    {
+        result.timedOut = true;
+        return result;
+    }
+
+    // A writable UIA TextPattern identifies a text-editing surface whose control type is not
+    // Edit: Word documents, RichEdit/Scintilla-style editors and custom text controls. The
+    // browser-page demo scenario also exposes a TextPattern, but its document range reports
+    // UIA_IsReadOnlyAttributeId = TRUE, so it stays Safe.
+    //
+    // NOTE: this is deliberately NOT the broad DocumentRange fallback removed for issue #25;
+    // that path passed an element *property* id (30034) as a text attribute. Here the real text
+    // attribute UIA_IsReadOnlyAttributeId is queried once per shortcut press, with the
+    // IUIAutomation2 connection/transaction timeouts and the wall-clock budget bounding the
+    // client. A provider that does not answer the attribute keeps the weaker
+    // control-type/ValuePattern rule (documented residual in keyboard_focus.h).
+    //
+    // Already-sensitive evidence skips this more expensive probe: the decision is a rejection
+    // either way.
+    if (!result.isPassword && !result.isTextEditControl && !result.hasWritableValue)
+    {
+        IUIAutomationTextPattern *textPattern = nullptr;
+        if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TextPatternId, __uuidof(IUIAutomationTextPattern),
+                                                  reinterpret_cast<void **>(&textPattern))) &&
+            textPattern)
+        {
+            if (ProbeBudgetExceeded(startedAt))
+            {
+                result.timedOut = true;
+                textPattern->Release();
+                return result;
+            }
+            IUIAutomationTextRange *documentRange = nullptr;
+            const HRESULT rangeResult = textPattern->get_DocumentRange(&documentRange);
+            textPattern->Release();
+            if (ProbeBudgetExceeded(startedAt))
+            {
+                result.timedOut = true;
+                if (documentRange)
+                    documentRange->Release();
+                return result;
+            }
+            if (SUCCEEDED(rangeResult) && documentRange)
+            {
+                VARIANT isReadOnly;
+                VariantInit(&isReadOnly);
+                const HRESULT attributeResult =
+                    documentRange->GetAttributeValue(UIA_IsReadOnlyAttributeId, &isReadOnly);
+                documentRange->Release();
+                if (ProbeBudgetExceeded(startedAt))
+                    result.timedOut = true;
+                // Attribute unavailable (provider does not expose it) is not text; only a
+                // present TRUE/FALSE value drives the read-only/writable evidence.
+                if (SUCCEEDED(attributeResult) && isReadOnly.vt == VT_BOOL)
+                {
+                    result.textPatternReadOnly = isReadOnly.boolVal != VARIANT_FALSE;
+                    result.textPatternWritable = isReadOnly.boolVal == VARIANT_FALSE;
+                }
+                VariantClear(&isReadOnly);
+            }
+        }
     }
     if (ProbeBudgetExceeded(startedAt))
         result.timedOut = true;
@@ -369,11 +464,24 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyForeground(const Keyboard
         return ClassifyKeyboardFocus(evidence);
 
     const ElementEvidence element = ProbeFocusedElement(automation, snapshot, startedAt);
+
+    // TOCTOU guard: the probe can run up to the wall-clock budget after the key event, so the
+    // element it inspected may belong to a surface the user focused after the press. Re-read the
+    // cheap focus identity and fail closed on any change; the probe evidence is discarded because
+    // it may describe a different surface.
+    if (!FocusSnapshotStillCurrent(snapshot))
+    {
+        evidence.foregroundIsCurrent = false;
+        return ClassifyKeyboardFocus(evidence);
+    }
+
     evidence.probeTimedOut = element.timedOut;
     evidence.elementAvailable = element.available;
     evidence.isPassword = element.isPassword;
     evidence.isTextEditControl = element.isTextEditControl;
     evidence.hasWritableValue = element.hasWritableValue;
+    evidence.textPatternReadOnly = element.textPatternReadOnly;
+    evidence.textPatternWritable = element.textPatternWritable;
     return ClassifyKeyboardFocus(evidence);
 }
 
@@ -409,6 +517,8 @@ KeyboardFocusDecision KeyboardFocusClassifier::ClassifyWindowHandle(HWND window)
     evidence.isPassword = element.isPassword;
     evidence.isTextEditControl = element.isTextEditControl;
     evidence.hasWritableValue = element.hasWritableValue;
+    evidence.textPatternReadOnly = element.textPatternReadOnly;
+    evidence.textPatternWritable = element.textPatternWritable;
     return ClassifyKeyboardFocus(evidence);
 }
 

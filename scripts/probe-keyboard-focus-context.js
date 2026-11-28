@@ -8,11 +8,17 @@
 //   * an ordinary text input      -> must classify as "text"     (sensitive, zero events)
 //   * a password text input       -> must classify as "password" (sensitive, zero events)
 //   * a form without text inputs  -> must classify as "safe"     (allowed demo surface)
+//   * a read-only rich text doc   -> must stay "safe"            (Document + read-only TextPattern)
+//   * a writable rich text doc    -> "text" when the provider exposes UIA_IsReadOnlyAttributeId,
+//                                    otherwise "safe" and reported as the documented residual
 // and classifies those window/control handles through the rebuilt addon's
-// `__testClassifyFocusedContext({ hwnd })` bridge. No key is pressed and no input is synthesized:
-// the real hardware keyboard matrix (demo page / text input / password input / IME composition /
-// unknown focus) remains a real-device step, because injected synthetic input is LLKHF_INJECTED
-// and is correctly rejected by the native combo channel.
+// `__testClassifyFocusedContext({ hwnd })` bridge. A final current-foreground call exercises the
+// production path (including the post-probe foreground/focus TOCTOU re-check).
+//
+// No key is pressed and no input is synthesized: the real hardware keyboard matrix (demo page /
+// text input / password input / IME composition / unknown focus) remains a real-device step,
+// because injected synthetic input is LLKHF_INJECTED and is correctly rejected by the native
+// combo channel.
 //
 // Returns exit code 0 when every class matches, 1 otherwise. Run with:
 //   node scripts/probe-keyboard-focus-context.js
@@ -50,7 +56,7 @@ function New-ProbeForm([string]$kind) {
   $form.Text = "highlighter-focus-probe-$kind"
   $form.StartPosition = 'Manual'
   $form.Location = $position
-  $form.Size = New-Object System.Drawing.Size(420, 260)
+  $form.Size = New-Object System.Drawing.Size(420, 300)
   $form.ShowInTaskbar = $false
   $input = $null
   if ($kind -eq 'text' -or $kind -eq 'password') {
@@ -58,6 +64,15 @@ function New-ProbeForm([string]$kind) {
     $input.Location = New-Object System.Drawing.Point(20, 30)
     $input.Size = New-Object System.Drawing.Size(320, 28)
     if ($kind -eq 'password') { $input.UseSystemPasswordChar = $true }
+    $form.Controls.Add($input)
+  } elseif ($kind -eq 'richtext' -or $kind -eq 'richtext-readonly') {
+    # UIA reports RichTextBox as a Document control with a TextPattern; this exercises the
+    # hardening's writable/read-only document-range check (provider attribute permitting).
+    $input = New-Object System.Windows.Forms.RichTextBox
+    $input.Location = New-Object System.Drawing.Point(20, 30)
+    $input.Size = New-Object System.Drawing.Size(340, 160)
+    $input.Text = 'rich text content'
+    if ($kind -eq 'richtext-readonly') { $input.ReadOnly = $true }
     $form.Controls.Add($input)
   } else {
     $label = New-Object System.Windows.Forms.Label
@@ -74,7 +89,7 @@ function New-ProbeForm([string]$kind) {
   return $form
 }
 
-foreach ($kind in @('text', 'password', 'safe')) { $forms += New-ProbeForm $kind }
+foreach ($kind in @('text', 'password', 'safe', 'richtext', 'richtext-readonly')) { $forms += New-ProbeForm $kind }
 Set-Content -Path $OutFile -Value ($script:lines -join [Environment]::NewLine) -Encoding ASCII
 while (-not (Test-Path $StopFile)) {
   [System.Windows.Forms.Application]::DoEvents()
@@ -133,30 +148,47 @@ async function main() {
       const [kind, controlHandle, formHandle] = line.split('\t')
       windows.set(kind, { controlHandle: Number(controlHandle), formHandle: Number(formHandle) })
     }
-    for (const kind of ['text', 'password', 'safe']) {
+    for (const kind of ['text', 'password', 'safe', 'richtext', 'richtext-readonly']) {
       if (!windows.has(kind)) throw new Error(`probe helper did not report the ${kind} window`)
     }
 
+    // `expected` lists the allowed classes. The WinForms provider does not answer
+    // UIA_IsReadOnlyAttributeId for its RichTextBox document range, so a writable rich text
+    // control stays on the weaker control-type/ValuePattern rule; that residual is reported
+    // explicitly instead of being hidden.
     const expectations = [
-      ['text input', windows.get('text').controlHandle, 'text'],
-      ['password input', windows.get('password').controlHandle, 'password'],
-      ['non-text form', windows.get('safe').formHandle, 'safe'],
-      ['invalid handle', 0x12345678, 'unknown']
+      { label: 'text input', hwnd: windows.get('text').controlHandle, expected: ['text'] },
+      { label: 'password input', hwnd: windows.get('password').controlHandle, expected: ['password'] },
+      { label: 'non-text form', hwnd: windows.get('safe').formHandle, expected: ['safe'] },
+      { label: 'read-only rich text document', hwnd: windows.get('richtext-readonly').controlHandle, expected: ['safe'] },
+      {
+        label: 'writable rich text document',
+        hwnd: windows.get('richtext').controlHandle,
+        expected: ['text', 'safe'],
+        residual: 'provider does not expose UIA_IsReadOnlyAttributeId; weaker rule (documented residual)'
+      },
+      { label: 'invalid handle', hwnd: 0x12345678, expected: ['unknown'] }
     ]
-    for (const [label, hwnd, expected] of expectations) {
+    for (const { label, hwnd, expected, residual } of expectations) {
+      const startedAt = process.hrtime.bigint()
       const verdict = addon.__testClassifyFocusedContext({ hwnd })
-      results.push({ label, hwnd, expected, ...verdict })
-      const ok = verdict.classification === expected
-      console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected} actual=${verdict.classification} reason=${verdict.reason}`)
-      if (!ok) fail(`${label} classified as ${verdict.classification}`)
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6
+      results.push({ label, hwnd, expected, residual: residual || '', elapsedMs: Math.round(elapsedMs), ...verdict })
+      const ok = expected.includes(verdict.classification)
+      if (ok && residual && verdict.classification === 'safe') console.log(`RESIDUAL ${label}: ${residual}`)
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${label}: expected=${expected.join('|')} actual=${verdict.classification} ` +
+        `reason=${verdict.reason} elapsed=${Math.round(elapsedMs)}ms`)
+      if (!ok) fail(`${label} classified as ${verdict.classification} (expected ${expected.join('|')})`)
     }
 
     // The production path: classify whatever currently has focus. This is diagnostic only (the
     // host's foreground window depends on the desktop session), so it must return a known class
     // from the bounded classifier, not throw or block.
+    const currentStartedAt = process.hrtime.bigint()
     const current = addon.__testClassifyFocusedContext()
+    const currentElapsedMs = Number(process.hrtime.bigint() - currentStartedAt) / 1e6
     console.log(`INFO current foreground: classification=${current.classification} reason=${current.reason} ` +
-      `pid=${current.pid} classifierAvailable=${current.classifierAvailable}`)
+      `pid=${current.pid} classifierAvailable=${current.classifierAvailable} elapsed=${Math.round(currentElapsedMs)}ms`)
     if (current.classifierAvailable !== true) fail('bounded IUIAutomation2 classifier is unavailable')
     if (!['safe', 'password', 'text', 'ime', 'unknown'].includes(current.classification)) {
       fail(`unexpected current foreground classification: ${current.classification}`)
@@ -183,3 +215,4 @@ main().catch((error) => {
   fail(error?.message || String(error))
   process.exitCode = 1
 })
+

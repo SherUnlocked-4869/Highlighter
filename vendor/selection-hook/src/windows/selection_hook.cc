@@ -2208,7 +2208,10 @@ long ReadSelfTestLong(const Napi::Object &object, const char *name, long fallbac
  * @param[out] evidence Receives the pure focus evidence.
  * @return true when the input carried a focus description; false for the key-policy-only probe.
  * @note A shorthand string is a convenience for tests: "safe"/"password"/"text"/"ime" describe
- * an otherwise healthy surface with only the named property set; "unknown" hides the element.
+ * an otherwise healthy surface with only the named property set; "documentReadOnly" is a
+ * TextPattern surface whose IsReadOnly attribute is TRUE (the browser demo page must stay safe);
+ * "documentWritable" is a writable TextPattern surface (Word/custom editor, must be rejected);
+ * "unknown" hides the element.
  */
 bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardFocusEvidence &evidence)
 {
@@ -2237,6 +2240,16 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
             evidence.imeComposing = true;
             return true;
         }
+        if (focus == "documentReadOnly")
+        {
+            evidence.textPatternReadOnly = true;
+            return true;
+        }
+        if (focus == "documentWritable")
+        {
+            evidence.textPatternWritable = true;
+            return true;
+        }
         // Anything else, including "unknown", fails closed without an element.
         evidence.elementAvailable = false;
         return true;
@@ -2253,6 +2266,8 @@ bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardF
     evidence.isPassword = ReadSelfTestBoolean(focus, "isPassword", false);
     evidence.isTextEditControl = ReadSelfTestBoolean(focus, "isTextEditControl", false);
     evidence.hasWritableValue = ReadSelfTestBoolean(focus, "hasWritableValue", false);
+    evidence.textPatternReadOnly = ReadSelfTestBoolean(focus, "textPatternReadOnly", false);
+    evidence.textPatternWritable = ReadSelfTestBoolean(focus, "textPatternWritable", false);
     evidence.imeComposing = ReadSelfTestBoolean(focus, "imeComposing", false);
     return true;
 }
@@ -2347,8 +2362,10 @@ Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
 
 /**
  * @brief Self-test: run the production DEV-04 focus policy on synthetic evidence.
- * @return { classification, safe, reason }.
+ * @return { classification, safe, reason, textPatternReadOnly, textPatternWritable }.
  * @note Defaults fail closed: an evidence object without `foregroundAlive` is classified Unknown.
+ * The echoed TextPattern flags let a test prove that a read-only document surface (browser demo
+ * page) was driven through the writable-TextPattern rule and still accepted.
  */
 Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
 {
@@ -2370,6 +2387,8 @@ Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
     evidence.isPassword = ReadSelfTestBoolean(input, "isPassword", false);
     evidence.isTextEditControl = ReadSelfTestBoolean(input, "isTextEditControl", false);
     evidence.hasWritableValue = ReadSelfTestBoolean(input, "hasWritableValue", false);
+    evidence.textPatternReadOnly = ReadSelfTestBoolean(input, "textPatternReadOnly", false);
+    evidence.textPatternWritable = ReadSelfTestBoolean(input, "textPatternWritable", false);
     evidence.imeComposing = ReadSelfTestBoolean(input, "imeComposing", false);
 
     const highlighter::KeyboardFocusDecision decision = highlighter::ClassifyKeyboardFocus(evidence);
@@ -2378,6 +2397,8 @@ Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
                Napi::String::New(env, highlighter::KeyboardFocusClassName(decision.classification)));
     result.Set("safe", Napi::Boolean::New(env, highlighter::IsKeyboardFocusSafe(decision.classification)));
     result.Set("reason", Napi::String::New(env, decision.reason));
+    result.Set("textPatternReadOnly", Napi::Boolean::New(env, evidence.textPatternReadOnly));
+    result.Set("textPatternWritable", Napi::Boolean::New(env, evidence.textPatternWritable));
     return result;
 }
 

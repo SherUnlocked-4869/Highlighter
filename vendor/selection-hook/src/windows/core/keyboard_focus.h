@@ -15,8 +15,18 @@
  *    bounded UIA probe timed out                      -> Unknown (drop the event)
  *  - UIA IsPassword                                     -> Password (drop)
  *  - an active IME composition                          -> ImeComposition (drop)
- *  - UIA Edit control type or writable ValuePattern     -> TextInput (drop)
+ *  - UIA Edit control type, a writable ValuePattern or a writable TextPattern
+ *    (Word/RichEdit/custom editors)                      -> TextInput (drop)
  *  - anything else that produced a UIA element          -> Safe (accept)
+ *
+ * Residual uncertainty (deliberate, documented instead of silently accepted):
+ *  - The TextPattern rule needs the provider to answer UIA_IsReadOnlyAttributeId on its document
+ *    range. A provider that cannot answer it keeps the weaker (control type + ValuePattern)
+ *    rule; password/Edit/ValuePattern detection is unaffected.
+ *  - Classification runs on the drained TSFN event, up to the wall-clock budget after the key
+ *    press. A post-probe re-check proves foreground and native focus did not change during the
+ *    probe; a same-window web-content focus change that does not move the native focus HWND
+ *    remains a residual risk.
  *
  * The policy below is pure over a value-only evidence struct (same approach as
  * ClassifyKeyboardCombo in keyboard_combo.h): no OS calls, no UIA, no allocation, so the Node
@@ -60,6 +70,8 @@ struct KeyboardFocusEvidence
     bool isPassword = false;           ///< UIA_IsPasswordPropertyId of the focus owner.
     bool isTextEditControl = false;    ///< UIA_EditControlTypeId for the focus owner.
     bool hasWritableValue = false;     ///< ValuePattern is available and not read-only.
+    bool textPatternReadOnly = false;  ///< TextPattern document range reports IsReadOnly=TRUE.
+    bool textPatternWritable = false;  ///< TextPattern document range reports IsReadOnly=FALSE.
     bool imeComposing = false;         ///< An IME composition string is active.
 };
 
@@ -119,8 +131,12 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
     }
     if (evidence.ownProcess)
     {
-        // Our own window is covered by the control-bar DOM path; the native channel must not
-        // double-report it and must never classify an unknown own-process surface as safe.
+        // Defence-in-depth only. The selection hook is loaded by the recording utility process,
+        // so the product's control-bar window belongs to the MAIN process and has a different
+        // PID: this branch does not cover or suppress it. A physical press that both the control
+        // bar (DOM keydown) and the global hook report is collapsed to one event by the P2-06
+        // source-aware pairing in main/domains/record/index.js, not by this rule. Keep the branch
+        // so a surface of the utility process itself can never be classified Safe.
         rejected.reason = "own_process";
         return rejected;
     }
@@ -153,10 +169,15 @@ inline KeyboardFocusDecision ClassifyKeyboardFocus(const KeyboardFocusEvidence &
         rejected.reason = "ime_composition";
         return rejected;
     }
-    if (evidence.isTextEditControl || evidence.hasWritableValue)
+    if (evidence.isTextEditControl || evidence.hasWritableValue || evidence.textPatternWritable)
     {
         rejected.classification = KeyboardFocusClass::TextInput;
-        rejected.reason = evidence.isTextEditControl ? "text_edit_focus" : "writable_value_focus";
+        if (evidence.isTextEditControl)
+            rejected.reason = "text_edit_focus";
+        else if (evidence.hasWritableValue)
+            rejected.reason = "writable_value_focus";
+        else
+            rejected.reason = "writable_text_pattern_focus";
         return rejected;
     }
 
@@ -215,6 +236,10 @@ class KeyboardFocusClassifier
      * @brief Production classification of an event-time snapshot.
      * @param[in] snapshot Cheap hook-time snapshot of the foreground/focus windows.
      * @return Safe only for a positively classified non-text surface; Unknown on any failure.
+     * @note The bounded UIA probe can take up to the wall-clock budget after the key event.
+     * Before an accept decision the classifier therefore re-reads the foreground window and the
+     * native focus HWND (when the event-time snapshot had one); any change during the probe
+     * yields Unknown/foreground_changed. The snapshot is otherwise read-only.
      */
     KeyboardFocusDecision ClassifyForeground(const KeyboardFocusSnapshot &snapshot);
 

@@ -173,12 +173,29 @@ const evidence = (overrides) => ({
 test('P1-02 native focus policy classifies every sensitive class and fails closed', { skip: !nativeAddon }, () => {
   assert.equal(typeof nativeAddon.__testClassifyKeyboardFocus, 'function')
   const focus = (overrides) => nativeAddon.__testClassifyKeyboardFocus(evidence(overrides))
-  assert.deepEqual(plain(focus({})), { classification: 'safe', safe: true, reason: 'safe_focus' })
-  assert.deepEqual(plain(focus({ isPassword: true })), { classification: 'password', safe: false, reason: 'password_focus' })
-  assert.deepEqual(plain(focus({ imeComposing: true })), { classification: 'ime', safe: false, reason: 'ime_composition' })
-  assert.deepEqual(plain(focus({ isTextEditControl: true })), { classification: 'text', safe: false, reason: 'text_edit_focus' })
-  assert.deepEqual(plain(focus({ hasWritableValue: true })), { classification: 'text', safe: false, reason: 'writable_value_focus' })
+  const flags = { textPatternReadOnly: false, textPatternWritable: false }
+  assert.deepEqual(plain(focus({})), { classification: 'safe', safe: true, reason: 'safe_focus', ...flags })
+  assert.deepEqual(plain(focus({ isPassword: true })), { classification: 'password', safe: false, reason: 'password_focus', ...flags })
+  assert.deepEqual(plain(focus({ imeComposing: true })), { classification: 'ime', safe: false, reason: 'ime_composition', ...flags })
+  assert.deepEqual(plain(focus({ isTextEditControl: true })), { classification: 'text', safe: false, reason: 'text_edit_focus', ...flags })
+  assert.deepEqual(plain(focus({ hasWritableValue: true })), { classification: 'text', safe: false, reason: 'writable_value_focus', ...flags })
   assert.equal(focus({ isPassword: true, isTextEditControl: true }).classification, 'password', 'password wins over text')
+  // P1-02 hardening: a UIA Document/TextPattern surface must be judged by UIA_IsReadOnlyAttributeId.
+  // The browser demo page is a read-only Document (TextPattern present, IsReadOnly=TRUE) -> Safe.
+  assert.deepEqual(plain(focus({ textPatternReadOnly: true })), {
+    classification: 'safe', safe: true, reason: 'safe_focus',
+    textPatternReadOnly: true, textPatternWritable: false
+  })
+  // A writable TextPattern is Word/RichEdit/an editable custom editor -> text input, rejected.
+  assert.deepEqual(plain(focus({ textPatternWritable: true })), {
+    classification: 'text', safe: false, reason: 'writable_text_pattern_focus',
+    textPatternReadOnly: false, textPatternWritable: true
+  })
+  // A strong signal keeps precedence over a writable document range.
+  assert.equal(focus({ textPatternWritable: true, isPassword: true }).classification, 'password')
+  assert.equal(focus({ textPatternWritable: true, isTextEditControl: true }).reason, 'text_edit_focus')
+  // Attribute unavailable (both flags false) is the documented residual: not text by itself.
+  assert.equal(focus({ textPatternReadOnly: false, textPatternWritable: false }).classification, 'safe')
   // Fail-closed classes: every one yields Unknown (never Safe).
   const closed = [
     { foregroundAlive: false },
@@ -223,6 +240,14 @@ test('P1-02 native combo policy only accepts a grammar-valid combo on a safe sur
   assert.equal(classify(evidence({ isPassword: true })).accepted, false)
   assert.equal(classify(evidence({})).accepted, true)
   assert.equal(classify(evidence({ probeTimedOut: true })).accepted, false)
+  // P1-02 hardening: the browser-page demo scenario is a read-only Document with a TextPattern.
+  // It must stay accepted, while a writable TextPattern surface is rejected as text input.
+  assert.deepEqual(classify('documentReadOnly'), { accepted: true, combo: 'Ctrl+V', reason: 'accepted', context: 'safe' })
+  const writableDocument = classify('documentWritable')
+  assert.equal(writableDocument.accepted, false)
+  assert.equal(writableDocument.combo, 'Ctrl+V', 'the key policy itself still recognizes the combination')
+  assert.equal(writableDocument.context, 'text')
+  assert.equal(writableDocument.reason, 'writable_text_pattern_focus')
   // Deliberately omitting the focus input keeps the historical key-policy-only probe (used by
   // test/selection-keyboard-combos.test.js); the production path always has focus evidence.
   const keyOnly = plain(nativeAddon.__testClassifyKeyboardCombo({ vkCode: 0x56, modifiers: 2 }))
@@ -283,6 +308,16 @@ test('P1-02 the classifier is bounded IUIAutomation2 and every failure fails clo
   assert.match(header, /CaptureKeyboardFocusSnapshot\(\)/)
   // Pure policy: the header must not create OS/UIA state.
   assert.doesNotMatch(header, /CoCreateInstance|GetFocusedElement|ElementFromHandle/)
+  // P1-02 hardening: the writable-TextPattern rule and its documented residuals are in the
+  // production header/policy, not only in comments.
+  assert.match(header, /textPatternWritable/)
+  assert.match(header, /UIA_IsReadOnlyAttributeId/)
+  assert.match(header, /same-window web-content focus change/)
+  // The stale own-process claim is fixed: the control bar lives in the MAIN process (different
+  // PID from the hook's utility process), so this branch is defence-in-depth and the duplicate
+  // is handled by the P2-06 source pairing.
+  assert.match(header, /control-bar window belongs to the MAIN/)
+  assert.match(header, /P2-06/)
 
   const source = fs.readFileSync(FOCUS_SOURCE_PATH, 'utf8')
   assert.match(source, /CoCreateInstance\(__uuidof\(CUIAutomation8\)/)
@@ -293,6 +328,23 @@ test('P1-02 the classifier is bounded IUIAutomation2 and every failure fails clo
   assert.match(source, /evidence\.ownProcess = snapshot\.processId != 0 && snapshot\.processId == GetCurrentProcessId\(\)/)
   assert.match(source, /GetGUIThreadInfo\(foregroundThread, &threadInfo\)/)
   assert.match(source, /ImmGetCompositionStringW/)
+  // P1-02 hardening: bounded writable-TextPattern evidence with every COM interface released.
+  assert.match(source, /GetCurrentPatternAs\(UIA_TextPatternId/)
+  assert.match(source, /get_DocumentRange\(&documentRange\)/)
+  assert.match(source, /GetAttributeValue\(UIA_IsReadOnlyAttributeId, &isReadOnly\)/)
+  assert.match(source, /documentRange->Release\(\)/)
+  assert.match(source, /textPattern->Release\(\)/)
+  assert.match(source, /textPatternWritable = isReadOnly\.boolVal == VARIANT_FALSE/)
+  // TOCTOU: the production path re-checks the foreground/focus identity after the UIA probe and
+  // fails closed before spreading the evidence into the decision.
+  assert.match(source, /bool FocusSnapshotStillCurrent\(const KeyboardFocusSnapshot &snapshot\)/)
+  assert.match(source, /if \(!FocusSnapshotStillCurrent\(snapshot\)\)/)
+  assert.match(source, /evidence\.foregroundIsCurrent = false;/)
+  const probeCallAt = source.indexOf('const ElementEvidence element = ProbeFocusedElement')
+  const recheckAt = source.indexOf('if (!FocusSnapshotStillCurrent(snapshot))')
+  const rejectAt = source.indexOf('return ClassifyKeyboardFocus(evidence);', recheckAt)
+  assert.ok(probeCallAt >= 0 && recheckAt > probeCallAt && rejectAt > recheckAt,
+    'the TOCTOU re-check runs after the UIA probe and before the accept decision')
   // Never in the hook: the runtime probe is a separate translation unit.
   assert.doesNotMatch(source, /KeyboardHookCallback/)
 
