@@ -474,12 +474,13 @@ fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
     best.map(|(_, info)| info).or(silent_fallback)
 }
 
-// ==================== Query target cache ====================
+// ==================== Live target cache ====================
 
-/// F04: the cached Everything IPC window is reused for every following query.
-/// Before this, each `"query"` ran `resolve_target`: an `EnumWindows` sweep of
-/// every top-level window plus five `WM_USER` probes and one `*.exe` COPYDATA
-/// probe per candidate — two of those per keystroke in match-path mode.
+/// DEV-07: the Everything IPC target is resolved once and reused by `status`,
+/// `wait-ready` and `query`. Resolving re-enumerates every top-level window and
+/// probes each Everything candidate, which `wait-ready` used to repeat on every
+/// 300 ms poll while the index loaded. Only the target identity is cached; every
+/// consumer re-reads the volatile readiness fields it needs.
 fn is_window_live(hwnd: isize) -> bool {
     // SAFETY: IsWindow only inspects a handle value; a stale handle is reported
     // as BOOL(FALSE), never dereferenced.
@@ -493,53 +494,84 @@ fn is_communication_failure(error: &Value) -> bool {
     matches!(error.get("code").and_then(Value::as_str), Some("send-failed" | "timeout"))
 }
 
-/// Runs one query against the cached window when it is still a live window; only
-/// a dead handle or a communication failure triggers exactly one `resolve_target`
-/// re-probe. `is_live` / `resolve` / `attempt` are injected so the cache policy
-/// is unit-testable without a message pump.
-fn run_query_cached<T, F, R>(
-    cache: &mut Option<TargetInfo>,
-    is_live: impl Fn(isize) -> bool,
-    mut resolve: R,
-    mut attempt: F,
-) -> Result<T, Value>
-where
-    F: FnMut(isize) -> Result<T, Value>,
-    R: FnMut() -> Option<TargetInfo>,
-{
-    if let Some(hwnd) = cache.as_ref().map(|target| target.hwnd) {
-        if is_live(hwnd) {
-            match attempt(hwnd) {
-                Ok(result) => return Ok(result),
-                Err(error) if is_communication_failure(&error) => {
-                    *cache = None;
-                }
-                Err(error) => return Err(error),
-            }
-        } else {
-            // Everything restarted or closed: the handle no longer identifies a
-            // live window, so reusing it would report a misleading failure.
-            *cache = None;
-        }
+/// Reads a live window's class name; `None` means the handle no longer names a
+/// window, which invalidates a cached identity.
+fn read_window_class_name(hwnd: isize) -> Option<String> {
+    let mut buffer = [0u16; 256];
+    // SAFETY: GetClassNameW writes at most buffer.len() UTF-16 units and returns
+    // the number it wrote; a stale HWND simply returns 0.
+    let len = unsafe { GetClassNameW(HWND(hwnd as *mut _), &mut buffer) };
+    if len > 0 {
+        Some(String::from_utf16_lossy(&buffer[..len as usize]))
+    } else {
+        None
     }
-    let target = match resolve() {
-        Some(target) => target,
-        None => {
-            return Err(json!({ "code": "not-running", "message": "IPC window not found" }));
-        }
-    };
-    let hwnd = target.hwnd;
-    *cache = Some(target);
-    let result = attempt(hwnd);
-    if matches!(&result, Err(error) if is_communication_failure(error)) {
-        *cache = None;
-    }
-    result
 }
 
-fn query_with_cache(reply: &ReplyWindow, cache: &mut Option<TargetInfo>, params: &Value) -> Result<Value, Value> {
-    run_query_cached(cache, is_window_live, || resolve_target(reply), |hwnd| {
-        run_query(reply, hwnd, params)
+/// DEV-07: a cached target stays valid only while its HWND is alive and still
+/// carries the exact Everything IPC class it was resolved with. A destroyed
+/// window fails `IsWindow`; a reused numeric handle fails the class comparison,
+/// so both cause one bounded re-resolution.
+fn is_cached_target_live(target: &TargetInfo) -> bool {
+    if !is_window_live(target.hwnd) {
+        return false;
+    }
+    matches!(read_window_class_name(target.hwnd), Some(class_name) if class_name == target.class_name)
+}
+
+/// DEV-07: one shared live-target lookup. `run` reuses the cached identity while
+/// `is_live` accepts it, otherwise resolves at most once. `attempt` may refresh
+/// the volatile fields of the target (`dbLoaded`, probe total, version); a
+/// communication failure clears the cache so the next call re-resolves.
+struct TargetCache {
+    target: Option<TargetInfo>,
+}
+
+impl TargetCache {
+    fn new() -> Self {
+        Self { target: None }
+    }
+
+    fn run<T>(
+        &mut self,
+        is_live: impl Fn(&TargetInfo) -> bool,
+        mut resolve: impl FnMut() -> Option<TargetInfo>,
+        mut attempt: impl FnMut(&mut TargetInfo) -> Result<T, Value>,
+    ) -> Result<T, Value> {
+        if let Some(target) = self.target.as_mut() {
+            if is_live(target) {
+                match attempt(target) {
+                    Ok(result) => return Ok(result),
+                    Err(error) if is_communication_failure(&error) => {
+                        // Stop reusing this handle, then fall through to exactly
+                        // one re-resolution instead of retrying in a loop.
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        self.target = None;
+        let mut target = match resolve() {
+            Some(target) => target,
+            None => {
+                return Err(json!({ "code": "not-running", "message": "IPC window not found" }));
+            }
+        };
+        let result = attempt(&mut target);
+        match &result {
+            Ok(_) => self.target = Some(target),
+            Err(error) if is_communication_failure(error) => self.target = None,
+            // A malformed reply is not a communication failure: keep the
+            // identity so a bad payload does not pay for another desktop sweep.
+            Err(_) => self.target = Some(target),
+        }
+        result
+    }
+}
+
+fn query_with_cache(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> Result<Value, Value> {
+    cache.run(is_cached_target_live, || resolve_target(reply), |target| {
+        run_query(reply, target.hwnd, params)
     })
 }
 
@@ -747,50 +779,104 @@ fn run_query(reply: &ReplyWindow, target_hwnd: isize, params: &Value) -> Result<
     Ok(json!({ "total": total, "items": items }))
 }
 
-fn status_value(reply: &ReplyWindow) -> Value {
-    match resolve_target(reply) {
-        None => json!({ "running": false, "dbLoaded": false, "version": null, "instance": null }),
-        Some(info) => {
-            let version = info.version
-                .map(|(major, minor, revision, build)| format!("{major}.{minor}.{revision}.{build}"));
-            let instance = info
-                .class_name
-                .strip_prefix(&format!("{IPC_CLASS_PREFIX}("))
-                .and_then(|rest| rest.strip_suffix(')'))
-                .map(str::to_string);
-            json!({
-                "running": true,
-                "ipcAvailable": info.version.is_some(),
-                "dbLoaded": info.db_loaded || info.probe_total > 0,
-                "version": version,
-                "instance": instance,
-                "probeTotal": info.probe_total,
-            })
+fn not_running_status() -> Value {
+    json!({ "running": false, "dbLoaded": false, "version": null, "instance": null })
+}
+
+/// Builds the status reply from a target snapshot. Same fields and value shapes
+/// the JS service consumed before DEV-07.
+fn status_snapshot(info: &TargetInfo) -> Value {
+    let version = info
+        .version
+        .map(|(major, minor, revision, build)| format!("{major}.{minor}.{revision}.{build}"));
+    let instance = info
+        .class_name
+        .strip_prefix(&format!("{IPC_CLASS_PREFIX}("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .map(str::to_string);
+    json!({
+        "running": true,
+        "ipcAvailable": info.version.is_some(),
+        "dbLoaded": info.db_loaded || info.probe_total > 0,
+        "version": version,
+        "instance": instance,
+        "probeTotal": info.probe_total,
+    })
+}
+
+/// DEV-07: re-reads the volatile readiness fields of the cached target on every
+/// call. `dbLoaded` and `probeTotal` are sampled from Everything each time, so a
+/// loading index becomes ready without re-enumerating the desktop.
+fn refresh_status(reply: &ReplyWindow, target: &mut TargetInfo) -> Result<Value, Value> {
+    // Version is stable for one instance, but it is sampled again because an
+    // in-place upgrade replaces the window while `wait-ready` may still be
+    // polling; the returned `version`/`ipcAvailable` fields stay truthful.
+    let minor = send_ipc_command(target.hwnd, IPC_GET_MINOR_VERSION);
+    target.version = minor.map(|minor_version| {
+        let major = send_ipc_command(target.hwnd, IPC_GET_MAJOR_VERSION).unwrap_or(0) as u32;
+        let revision = send_ipc_command(target.hwnd, 2).unwrap_or(0) as u32;
+        let build = send_ipc_command(target.hwnd, IPC_GET_BUILD_NUMBER).unwrap_or(0) as u32;
+        (major, minor_version as u32, revision, build)
+    });
+    let db_loaded = send_ipc_command(target.hwnd, IPC_IS_DB_LOADED).unwrap_or(0) != 0;
+    let probe_total = match probe_window(reply, target.hwnd) {
+        Ok(total) => total,
+        Err(message) if message == "send-failed" => {
+            // The HWND still exists but is not taking the probe (for example an
+            // instance blocked by UIPI). `resolve_target` reports that silent
+            // instance as running through its fallback; keep the same shape
+            // instead of turning a transient hang into "not running".
+            target.probe_total = 0;
+            target.db_loaded = db_loaded;
+            return Ok(status_snapshot(target));
         }
+        Err(_) => 0,
+    };
+    target.db_loaded = db_loaded || probe_total > 0;
+    target.probe_total = probe_total;
+    Ok(status_snapshot(target))
+}
+
+fn status_value(reply: &ReplyWindow, cache: &mut TargetCache) -> Value {
+    cache
+        .run(
+            is_cached_target_live,
+            || resolve_target(reply),
+            |target| refresh_status(reply, target),
+        )
+        .unwrap_or_else(|_| not_running_status())
+}
+
+/// DEV-07: the readiness polling loop is kept separate from the Win32 plumbing
+/// so the resolve-count budget of hot polling is unit-testable.
+fn poll_until_ready(timeout_ms: u64, poll_interval: Duration, mut sample: impl FnMut() -> (bool, Value)) -> Value {
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(timeout_ms);
+    loop {
+        let (ready, status) = sample();
+        if ready || Instant::now() >= deadline {
+            return json!({
+                "ready": ready,
+                "elapsedMs": start.elapsed().as_millis() as u64,
+                "status": status,
+            });
+        }
+        std::thread::sleep(poll_interval);
     }
 }
 
-fn wait_ready(reply: &ReplyWindow, params: &Value) -> Value {
+fn wait_ready(reply: &ReplyWindow, cache: &mut TargetCache, params: &Value) -> Value {
     let timeout_ms = params
         .get("timeoutMs")
         .and_then(Value::as_u64)
         .map(|value| value.min(WAIT_READY_MAX_MS))
         .unwrap_or(WAIT_READY_DEFAULT_MS);
-    let start = Instant::now();
-    let deadline = start + Duration::from_millis(timeout_ms);
-    loop {
-        let current = status_value(reply);
-        let ready = current["running"].as_bool().unwrap_or(false)
-            && current["dbLoaded"].as_bool().unwrap_or(false);
-        if ready || Instant::now() >= deadline {
-            return json!({
-                "ready": ready,
-                "elapsedMs": start.elapsed().as_millis() as u64,
-                "status": current,
-            });
-        }
-        std::thread::sleep(WAIT_READY_POLL_INTERVAL);
-    }
+    poll_until_ready(timeout_ms, WAIT_READY_POLL_INTERVAL, || {
+        let status = status_value(reply, cache);
+        let ready = status["running"].as_bool().unwrap_or(false)
+            && status["dbLoaded"].as_bool().unwrap_or(false);
+        (ready, status)
+    })
 }
 
 fn write_response(id: &Value, ok: bool, error: Option<Value>, result: Option<Value>) {
@@ -820,8 +906,10 @@ fn main() {
         let _ = handle.flush();
     }
     let stdin = std::io::stdin();
-    // F04: resolved once and reused while the HWND stays a live window.
-    let mut cached_target: Option<TargetInfo> = None;
+    // DEV-07: one shared target identity for status, wait-ready and query. It
+    // stays cached while the HWND is a live Everything window, so index-loading
+    // polls re-read readiness instead of re-enumerating the desktop.
+    let mut target_cache = TargetCache::new();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
@@ -846,7 +934,7 @@ fn main() {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let action = request.get("action").and_then(Value::as_str).unwrap_or("");
         match action {
-            "status" => write_response(&id, true, None, Some(status_value(&reply))),
+            "status" => write_response(&id, true, None, Some(status_value(&reply, &mut target_cache))),
             "probe-all" => {
                 let candidates = enumerate_ipc_windows();
                 let details: Vec<Value> = candidates.iter().map(|(hwnd, class_name)| {
@@ -865,9 +953,9 @@ fn main() {
                 }).collect();
                 write_response(&id, true, None, Some(json!({ "candidates": details })));
             }
-            "wait-ready" => write_response(&id, true, None, Some(wait_ready(&reply, &request))),
+            "wait-ready" => write_response(&id, true, None, Some(wait_ready(&reply, &mut target_cache, &request))),
             "query" => {
-                let outcome = query_with_cache(&reply, &mut cached_target, &request);
+                let outcome = query_with_cache(&reply, &mut target_cache, &request);
                 match outcome {
                     Ok(result) => write_response(&id, true, None, Some(result)),
                     Err(error) => write_response(&id, false, Some(error), None),
@@ -955,7 +1043,7 @@ mod tests {
         assert!(state.take_reply(1).is_none());
     }
 
-    // ===================== F04: cached query target =====================
+    // ===================== F04 / DEV-07: live target cache =====================
 
     fn target(hwnd: isize) -> TargetInfo {
         TargetInfo {
@@ -967,18 +1055,30 @@ mod tests {
         }
     }
 
+    /// Drives the shared cache with an injected liveness check, resolver and
+    /// attempt, so the reuse/invalidation policy runs without a message pump.
+    fn run_cached_for_test<T>(
+        cache: &mut TargetCache,
+        is_live: impl Fn(&TargetInfo) -> bool,
+        mut resolve: impl FnMut() -> Option<TargetInfo>,
+        mut attempt: impl FnMut(isize) -> Result<T, Value>,
+    ) -> Result<T, Value> {
+        cache.run(is_live, &mut resolve, |target| attempt(target.hwnd))
+    }
+
     // F04: the review report's first finding is that every query re-ran
     // resolve_target (EnumWindows + 5 WM_USER probes + one `*.exe` COPYDATA
     // probe). With a live cached HWND the second query must attempt the cached
     // window directly and never call the resolver.
     #[test]
     fn f04_query_reuses_live_cached_target_without_resolving() {
-        let mut cache = Some(target(0x1111));
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         let mut attempted = Vec::new();
-        let result: Result<(), Value> = run_query_cached(
+        let result: Result<(), Value> = run_cached_for_test(
             &mut cache,
-            |hwnd| hwnd == 0x1111,
+            |_| true,
             || {
                 resolve_calls += 1;
                 Some(target(0x2222))
@@ -991,17 +1091,18 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(resolve_calls, 0, "a live cached HWND must skip resolve_target");
         assert_eq!(attempted, vec![0x1111], "the query goes straight to the cached window");
-        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x1111));
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x1111));
     }
 
     // F04: Everything restarted, so the old HWND is no longer a window. The
     // query must resolve a fresh target instead of failing on the dead handle.
     #[test]
     fn f04_query_reresolves_when_cached_window_is_gone() {
-        let mut cache = Some(target(0x1111));
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         let mut attempted = Vec::new();
-        let result: Result<(), Value> = run_query_cached(
+        let result: Result<(), Value> = run_cached_for_test(
             &mut cache,
             |_| false,
             || {
@@ -1016,7 +1117,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(resolve_calls, 1);
         assert_eq!(attempted, vec![0x2222]);
-        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x2222));
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
     }
 
     // F04: a SendMessageTimeoutW failure / missing CopyData receipt means the
@@ -1024,10 +1125,11 @@ mod tests {
     // query still succeeds after an Everything restart.
     #[test]
     fn f04_query_reresolves_once_after_communication_failure() {
-        let mut cache = Some(target(0x1111));
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
         let mut attempted = Vec::new();
-        let result: Result<(), Value> = run_query_cached(
+        let result: Result<(), Value> = run_cached_for_test(
             &mut cache,
             |_| true,
             || {
@@ -1046,16 +1148,17 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(attempted, vec![0x1111, 0x2222], "one retry after re-resolving");
         assert_eq!(resolve_calls, 1);
-        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x2222));
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
     }
 
     // F04: a malformed payload is not a communication failure, so it must keep
     // the cache instead of paying for another full desktop enumeration.
     #[test]
     fn f04_query_keeps_cache_after_non_communication_error() {
-        let mut cache = Some(target(0x1111));
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
         let mut resolve_calls = 0;
-        let result: Result<(), Value> = run_query_cached(
+        let result: Result<(), Value> = run_cached_for_test(
             &mut cache,
             |_| true,
             || {
@@ -1066,16 +1169,16 @@ mod tests {
         );
         assert_eq!(result.unwrap_err().get("code").and_then(Value::as_str), Some("bad-reply"));
         assert_eq!(resolve_calls, 0);
-        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x1111));
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x1111));
     }
 
     // F04: no cache and no Everything instance keeps the original not-running
     // protocol error the JS service relies on to re-check readiness.
     #[test]
     fn f04_query_reports_not_running_when_resolve_finds_nothing() {
-        let mut cache = None;
+        let mut cache = TargetCache::new();
         let mut attempted = 0;
-        let result: Result<(), Value> = run_query_cached(
+        let result: Result<(), Value> = run_cached_for_test(
             &mut cache,
             |_| true,
             || None,
@@ -1087,7 +1190,7 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.get("code").and_then(Value::as_str), Some("not-running"));
         assert_eq!(attempted, 0);
-        assert!(cache.is_none());
+        assert!(cache.target.is_none());
     }
 
     #[test]
@@ -1097,6 +1200,111 @@ mod tests {
         // real window in every interactive session.
         let desktop = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
         assert!(is_window_live(desktop.0 as isize));
+    }
+
+    // ===================== DEV-07: shared target polling =====================
+
+    // DEV-07: `wait_ready` polls every 300 ms while the index loads. Before the
+    // shared cache each poll ran status_value -> resolve_target, so a large
+    // desktop was enumerated again and again. The cache must resolve once and
+    // re-read the volatile readiness fields on every poll instead.
+    #[test]
+    fn dev07_wait_ready_polling_resolves_the_target_once() {
+        let mut cache = TargetCache::new();
+        let mut resolve_calls = 0;
+        let mut probe_calls = 0;
+        let result = poll_until_ready(5000, Duration::from_millis(1), || {
+            match cache.run(
+                |_| true,
+                || {
+                    resolve_calls += 1;
+                    Some(target(0x1111))
+                },
+                |target| {
+                    probe_calls += 1;
+                    target.db_loaded = probe_calls >= 20;
+                    target.probe_total = 1;
+                    Ok((target.db_loaded, json!({ "running": true, "dbLoaded": target.db_loaded })))
+                },
+            ) {
+                Ok(sample) => sample,
+                Err(_) => (false, not_running_status()),
+            }
+        });
+        assert_eq!(result["ready"], true);
+        assert_eq!(resolve_calls, 1, "20 hot polls must resolve the target once, not once per poll");
+        assert_eq!(probe_calls, 20, "volatile readiness is re-read on every poll");
+        assert!(result["elapsedMs"].as_u64().is_some());
+    }
+
+    // DEV-07: a destroyed window or a numeric HWND reused by another class must
+    // clear the identity and trigger exactly one bounded re-resolution.
+    #[test]
+    fn dev07_cached_identity_is_invalidated_when_the_window_is_gone_or_reused() {
+        assert!(!is_cached_target_live(&target(0)), "a null HWND is never a live cached target");
+        let desktop = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
+        let mut reused = target(desktop.0 as isize);
+        assert!(
+            !is_cached_target_live(&reused),
+            "a reused handle carrying another window class is rejected"
+        );
+        reused.class_name = read_window_class_name(desktop.0 as isize).expect("desktop window class");
+        assert!(is_cached_target_live(&reused), "a live window with the cached class stays valid");
+
+        let mut cache = TargetCache::new();
+        cache.target = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result: Result<(), Value> = run_cached_for_test(
+            &mut cache,
+            |_| false,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                assert_eq!(hwnd, 0x2222);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 1, "a destroyed/reused window triggers exactly one re-resolution");
+        assert_eq!(cache.target.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // DEV-07: only the identity is reused; the returned readiness fields come
+    // from the refreshed target so a loading index flips to ready in place.
+    #[test]
+    fn dev07_status_snapshot_reports_volatile_fields_from_the_refreshed_target() {
+        let mut info = target(0x1111);
+        info.db_loaded = false;
+        info.probe_total = 0;
+        info.version = None;
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["running"], true);
+        assert_eq!(snapshot["dbLoaded"], false);
+        assert_eq!(snapshot["ipcAvailable"], false);
+        assert_eq!(snapshot["probeTotal"], 0);
+
+        info.db_loaded = true;
+        info.probe_total = 10;
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["dbLoaded"], true);
+        assert_eq!(snapshot["probeTotal"], 10);
+
+        // A content-answering probe marks readiness even when dbLoaded is unset.
+        info.db_loaded = false;
+        info.probe_total = 3;
+        assert_eq!(status_snapshot(&info)["dbLoaded"], true);
+
+        info.version = Some((1, 5, 0, 1414));
+        let snapshot = status_snapshot(&info);
+        assert_eq!(snapshot["version"], "1.5.0.1414");
+        assert_eq!(snapshot["ipcAvailable"], true);
+        assert_eq!(snapshot["instance"], "1.4");
+        assert_eq!(
+            not_running_status(),
+            json!({ "running": false, "dbLoaded": false, "version": null, "instance": null })
+        );
     }
 
     // ===================== F04: process image path =====================

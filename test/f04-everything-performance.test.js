@@ -158,34 +158,39 @@ async function waitFor(check, message, attempts = 400) {
 
 // --- 1. Rust: cached target replaces the per-query desktop probe -------------
 
-test('F04 Rust caches the resolved Everything IPC target and reuses it while IsWindow is valid', () => {
+test('F04/DEV-07 Rust shares one live Everything target across status, wait-ready and query', () => {
   const source = rustSource()
-  const mainLoop = source.slice(source.indexOf('let mut cached_target: Option<TargetInfo> = None;'))
-  assert.ok(mainLoop.length > 0, 'main loop must own the target cache')
+  const mainLoop = source.slice(source.indexOf('let mut target_cache = TargetCache::new();'))
+  assert.ok(mainLoop.length > 0, 'main loop must own the shared target cache')
+
+  assert.match(mainLoop, /status_value\(&reply, &mut target_cache\)/, 'status goes through the shared cache')
+  assert.match(mainLoop, /wait_ready\(&reply, &mut target_cache, &request\)/, 'wait-ready goes through the shared cache')
+  assert.match(mainLoop, /query_with_cache\(&reply, &mut target_cache, &request\)/, 'query goes through the shared cache')
 
   const queryArmStart = source.indexOf('"query" => {')
   const processPathArm = source.indexOf('"process-path" => {')
   assert.ok(queryArmStart > 0 && processPathArm > queryArmStart, 'query/process-path dispatch arms exist')
   const queryArm = source.slice(queryArmStart, processPathArm)
-  assert.match(
-    queryArm,
-    /query_with_cache\(&reply, &mut cached_target, &request\)/,
-    'the query arm must go through the cache, not resolve_target'
-  )
   assert.doesNotMatch(queryArm, /resolve_target\(/, 'the query request itself must not enumerate the desktop anymore')
 
-  const isLive = source.slice(source.indexOf('fn is_window_live('), source.indexOf('fn is_communication_failure('))
-  assert.match(isLive, /IsWindow\(Some\(HWND\(hwnd as \*mut _\)\)\)/, 'cache validity is checked with IsWindow')
+  const cacheImpl = source.slice(source.indexOf('struct TargetCache {'), source.indexOf('fn query_with_cache('))
+  assert.match(cacheImpl, /fn run<T>/, 'one cache runner serves every consumer')
+  assert.match(cacheImpl, /if is_live\(target\)/, 'the cached identity is only reused while live')
+  assert.match(cacheImpl, /is_communication_failure\(&error\)/, 'only a communication failure invalidates the identity')
+  assert.match(cacheImpl, /self\.target = None;/, 'a dead handle / failed attempt clears the cache')
+  assert.match(cacheImpl, /let mut target = match resolve\(\)/, 'a missing cache falls back to the original resolve_target flow')
 
-  const cached = source.slice(source.indexOf('fn run_query_cached<T'), source.indexOf('fn query_with_cache('))
-  assert.match(cached, /if let Some\(hwnd\) = cache\.as_ref\(\)/, 'a cached HWND is used first')
-  assert.match(cached, /if is_live\(hwnd\)/, 'the cached HWND is only reused while live')
-  assert.match(cached, /is_communication_failure\(&error\)/, 'only a communication failure invalidates the cache')
-  assert.match(cached, /\*cache = None;/, 'a dead handle / failed attempt clears the cache')
-  assert.match(cached, /let target = match resolve\(\)/, 'a missing cache falls back to the original resolve_target flow')
+  const identity = source.slice(source.indexOf('fn is_cached_target_live('), source.indexOf('struct TargetCache {'))
+  assert.match(identity, /is_window_live\(target\.hwnd\)/, 'cache validity is checked with IsWindow')
+  assert.match(identity, /read_window_class_name/, 'a reused numeric HWND is rejected by the class check')
+
+  const refresh = source.slice(source.indexOf('fn refresh_status('), source.indexOf('fn status_value('))
+  assert.match(refresh, /send_ipc_command\(target\.hwnd, IPC_IS_DB_LOADED\)/, 'dbLoaded is re-read on every status call')
+  assert.match(refresh, /probe_window\(reply, target\.hwnd\)/, 'the query probe is re-read on every status call')
+  assert.match(source, /fn poll_until_ready\(/, 'wait-ready polling is separable from the Win32 plumbing')
 })
 
-test('F04 Rust unit tests cover cache reuse, invalidation and safe degradation', () => {
+test('F04/DEV-07 Rust unit tests cover cache reuse, invalidation, polling and safe degradation', () => {
   const source = rustSource()
   for (const name of [
     'f04_query_reuses_live_cached_target_without_resolving',
@@ -195,7 +200,10 @@ test('F04 Rust unit tests cover cache reuse, invalidation and safe degradation',
     'f04_query_reports_not_running_when_resolve_finds_nothing',
     'f04_window_liveness_accepts_real_windows_and_rejects_stale_handles',
     'f04_process_path_resolves_the_current_process',
-    'f04_process_path_rejects_unresolvable_pids'
+    'f04_process_path_rejects_unresolvable_pids',
+    'dev07_wait_ready_polling_resolves_the_target_once',
+    'dev07_cached_identity_is_invalidated_when_the_window_is_gone_or_reused',
+    'dev07_status_snapshot_reports_volatile_fields_from_the_refreshed_target'
   ]) {
     assert.match(source, new RegExp(`fn ${name}\\(\\)`), `${name} must exist (cargo test runs it)`)
   }
