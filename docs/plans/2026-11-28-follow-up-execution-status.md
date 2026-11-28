@@ -197,3 +197,17 @@ node scripts/probe-pin-screen-diff.js   # ✔ DEV-08 采用门禁 {adopt:true, r
 `npm run check` 通过、`test:coverage` 三项通过、Everything `cargo test` 20/20、选择钩子重建后 build-id 匹配。
 本轮**没有**执行任何 V/R 真机项、签名/安装或真实硬件矩阵；§6 与验收台账的剩余门槛保持不变，
 下一候选必须包含上述修复提交并在候选上重做复核 §“下一候选的验收顺序”列出的复核点。
+
+### 7.1 独立复核与收紧（2026-11-28，跟进）
+
+首轮修复提交后由独立复核代理（新上下文）按复核清单逐条对抗验证：11/11 无 FAIL（7 PASS / 4 PASS-WITH-NOTE），
+并在 `b84eeba` 工作树上独立复现了 P2-01 27/28、P1-03 入口 2/2、无 context Ctrl+V 被接受、同源 90 ms 被并成 1、
+n05 5 失败、u02 view export 7 失败、ocr-service 2 失败、shared export options 2 失败，以及 P1-01/P2-05 的真实探针数字。
+其指出的问题随后收紧为三个提交：`20e686b`（P1-02 可写 TextPattern 判据 + 分类后焦点复查 + own-process 注释更正，
+新 build-id `hl_7a937464…`）、`32dfba0`（P2-03 显示器计划失败可重试并补“消失→恢复同会话续采”用例）、
+`a23acc7`（P2-05 截断提示仅在开关开启时显示、dropped 区间 null 哨兵）。其余为非本次回归的边界与真机项，
+已登记在[修复记录](2026-11-28-review-follow-up-fix-record.md) §7/§8（含 P2-05 64 标签×500 窗口的命令行长边界、
+P1-02 provider 无 TextPattern 属性时的弱规则等）。最终树门禁：全量 3391/3391、E2E 21/21、长图 64/64、
+check 通过、串行 loaded 覆盖率 93.5%、cargo 20/20、选择钩子与 Everything 原生件已重建、三个探针复跑通过。
+仍**未执行**任何 V/R 真机项、签名/安装与真实硬件矩阵；下一候选必须同时包含 `26cbfc8..289b195` 与
+`a23acc7`/`32dfba0`/`20e686b`，并在候选上重做复核点与 §6 的真机门槛。
