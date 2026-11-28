@@ -201,13 +201,57 @@
     return false
   }
 
+  // P2-04 (re-review follow-up): Unicode VERTICAL PRESENTATION FORMS.
+  //
+  // UAX #50 splits the "upright" characters into Upright (U) and Transformed Upright (Tu). The
+  // browser keeps a Tu character upright but substitutes the font's vertical presentation form
+  // (OpenType `vert`): a CJK full stop moves to the upper right of the em box, a bracket turns
+  // into its vertical counterpart. Canvas 2D has no vertical layout, so a horizontal `fillText`
+  // of the base character lands exactly where the review measured it 13+ CSS px off. For the
+  // "centred" Tu punctuation the browser keeps the form's ink centred in the em cell, so the
+  // painter can draw the static Unicode vertical form code point (same outline the `vert`
+  // substitution selects) and centre that form's ink in the measured cell. This table is the 1:1
+  // Unicode vertical-form compatibility mapping (base code point, presentation form), limited to
+  // the transformed-upright punctuation set whose ink really is centred, verified against the
+  // real Electron renderer. Corner/angle brackets are NOT in this table: their forms are anchored
+  // to the start/end of the em cell, not centred, so they keep the pre-existing rotated draw.
+  // Characters without a vertical form (CJK ideographs, kana, Hangul, emoji) are untouched too.
+  const VERTICAL_FORM_PAIRS = Object.freeze([
+    0x3001, 0xfe11, // IDEOGRAPHIC COMMA
+    0x3002, 0xfe12, // IDEOGRAPHIC FULL STOP
+    0xff0c, 0xfe10, // FULLWIDTH COMMA
+    0xff01, 0xfe15, // FULLWIDTH EXCLAMATION MARK
+    0xff08, 0xfe35, // FULLWIDTH LEFT PARENTHESIS
+    0xff09, 0xfe36, // FULLWIDTH RIGHT PARENTHESIS
+    0xff1a, 0xfe13, // FULLWIDTH COLON
+    0xff1b, 0xfe14, // FULLWIDTH SEMICOLON
+    0xff1f, 0xfe16 // FULLWIDTH QUESTION MARK
+  ])
+  const VERTICAL_FORM_BY_CODE_POINT = new Map()
+  for (let index = 0; index < VERTICAL_FORM_PAIRS.length; index += 2) {
+    VERTICAL_FORM_BY_CODE_POINT.set(VERTICAL_FORM_PAIRS[index], VERTICAL_FORM_PAIRS[index + 1])
+  }
+
+  // @return the Unicode vertical presentation form the browser's `vert` substitution renders for
+  // an upright grapheme in a vertical-rl line, or '' when the grapheme has no transformed form.
+  // Only a single-code-point cluster qualifies: a base + combining mark / ZWJ sequence keeps the
+  // base's plain upright rendering (a ZWJ emoji has no vertical form).
+  function verticalFormFor(text) {
+    const value = String(text || '')
+    if (!value || value.length !== 1) return ''
+    const form = VERTICAL_FORM_BY_CODE_POINT.get(value.codePointAt(0))
+    return form === undefined ? '' : String.fromCodePoint(form)
+  }
+
   // @return true when the browser sets this grapheme sideways in a vertical-rl `mixed` block, i.e.
   // the measured painter must rotate the upright glyph 90° clockwise around its measured centre.
   // The cluster's first code point decides (a grapheme cluster is base + combining marks / ZWJ
-  // sequences; the base carries the orientation of the whole cluster).
+  // sequences; the base carries the orientation of the whole cluster). A transformed-upright
+  // (UAX #50 Tu) character is NOT sideways: the browser draws it upright with its vertical form.
   function verticalTextIsSideways(text) {
     const value = String(text || '')
     if (!value) return false
+    if (verticalFormFor(value)) return false
     const first = value.codePointAt(0)
     return !verticalUpright(first)
   }
@@ -422,7 +466,11 @@
           endIndex: cluster.end,
           // P2-02: the measured painter must know whether the browser laid this grapheme out
           // sideways (horizontal scripts in vertical-rl mixed) or upright (CJK/kana/Hangul/emoji).
-          sideways: vertical ? verticalTextIsSideways(cluster.text) : false
+          sideways: vertical ? verticalTextIsSideways(cluster.text) : false,
+          // P2-04: a transformed-upright (Tu) grapheme is painted with its Unicode vertical
+          // presentation form (the same outline the browser's `vert` substitution uses); the
+          // painter centres that form's ink in the measured em cell. '' for every other grapheme.
+          verticalForm: vertical ? verticalFormFor(cluster.text) : ''
         })
       }
     }
@@ -490,7 +538,10 @@
           y: glyph.y,
           width: glyph.width,
           height: glyph.height,
-          sideways: glyph.sideways === true
+          sideways: glyph.sideways === true,
+          // P2-04: the vertical presentation form the export painter draws instead of the base
+          // glyph (empty unless the browser's `vert` substitution applies to this grapheme).
+          verticalForm: glyph.verticalForm || ''
         }))
       })
     }
@@ -564,6 +615,7 @@
     renderBlocks,
     measureLayout,
     verticalTextIsSideways,
+    verticalFormFor,
     MAX_LAYOUT_GLYPHS,
     MAX_LAYOUT_BLOCKS,
     MAX_LAYOUT_TEXT

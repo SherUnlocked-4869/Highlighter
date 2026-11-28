@@ -125,14 +125,22 @@ class EverythingService {
   // otherwise show a stale `running:false` until a search window opens. Probe
   // on demand here — lightweight status only, never spawning the bundled
   // Everything (that stays a search-window behavior).
+  //
+  // P2-5: only the 5 s throttle may reuse the last published snapshot. A live
+  // bridge sidecar is NOT a fresh sample: the Everything instance behind it can
+  // go query-silent (or recover) without the sidecar process exiting, so a
+  // refresh past the interval must ask the sidecar again. Treating
+  // `sidecarActive` as sufficient used to pin `ready/queryAnswered:true` (or a
+  // stale `waiting`) until some unrelated entry point happened to re-probe.
   async refreshStatus() {
     if (this.e2eQuery) return this.getFakeStatus()
     if (this.refreshPromise) return this.refreshPromise
-    const sidecarActive = !!(this.process && !this.process.killed && this.ready)
     const probedRecently = Date.now() - (this.lastStatusProbeAt || 0) < STATUS_REFRESH_MIN_INTERVAL_MS
-    if (sidecarActive || probedRecently) return this.getStatus()
+    if (probedRecently) return this.getStatus()
     this.refreshPromise = (async () => {
       try {
+        // Reuse the live sidecar when there is one; a cold caller still starts
+        // the JSON-lines bridge (never the bundled Everything.exe).
         await this.ensureStarted()
         const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS)
         this.lastStatusProbeAt = Date.now()

@@ -293,6 +293,37 @@ test('pin renderer runtime: visible-rect export, real-diff parity and measured O
     `exported I keeps the sideways orientation: ${latinExport.width}x${latinExport.height} (the defect was 2.4x21.6)`)
   assert.ok(Math.abs(latinExport.width - 21.6) <= 2 && Math.abs(latinExport.height - 3.2) <= 2,
     `exported I ink is ${latinExport.width}x${latinExport.height} CSS px (expected ~21.6x2.4-3.2 at 125%)`)
+  // ---- P2-04: transformed-upright punctuation and the sideways shared baseline --------------
+  // The real renderer sets CJK full stops/commas with the font's vertical presentation form and
+  // centres that form's ink in the em cell; a horizontal canvas `fillText` of the base character
+  // exported the ink 13.36/4.99 (`。`) and 13.49 (`、`) CSS px away — IoU 0. The measured parity
+  // is IoU 1.0 with a 0 px centre delta on this host; the thresholds keep a margin for the
+  // rasteriser differences an unaccelerated CI runner can show.
+  assertGlyphParity('full-stop', [{
+    text: '\u3002',
+    sideways: false,
+    iou: 0.6,
+    centreTolerance: 2,
+    dimensionTolerance: 2
+  }])
+  assertGlyphParity('comma', [{
+    text: '\u3001',
+    sideways: false,
+    iou: 0.6,
+    centreTolerance: 2,
+    dimensionTolerance: 2
+  }])
+  // A sideways `g` must keep the WHOLE run's shared alphabetic baseline. The old per-glyph ink
+  // centring moved the descender 6.4 CSS px to the right (IoU 0.257); the measured parity is
+  // IoU 0.897 with a 0.34 CSS px centre delta, so the thresholds leave room for CI AA differences
+  // while still failing the old 6.4 px shift (centre delta > 2) and its flat 0.26 overlap.
+  assertGlyphParity('latin-g', [{
+    text: 'g',
+    sideways: true,
+    iou: 0.6,
+    centreTolerance: 2,
+    dimensionTolerance: 2
+  }])
   // Mixed Chinese/English: only the Latin `A` is sideways; CJK stays upright with its glyph.
   assertGlyphParity('mixed-zh-en', [
     { text: '中', sideways: false },

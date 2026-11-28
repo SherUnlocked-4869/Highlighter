@@ -382,7 +382,14 @@ test('refreshStatus marks waiting when Everything runs without a loaded index', 
   assert.equal(status.message, t('main.everything.index-pending'))
 })
 
-test('refreshStatus reuses the recent probe while the sidecar stays active', async () => {
+// P2-5: the 5 s throttle still merges repeated refreshes onto the published
+// snapshot. Only the interval may reuse it — the old test asserted the same
+// snapshot reuse "while the sidecar stays active", which the review found is not
+// a freshness guarantee (the Everything instance behind a live bridge can go
+// silent or recover). This test now pins only the time-based merge.
+test('refreshStatus coalesces refreshes inside the five-second throttle window', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  t.mock.timers.setTime(1_000_000)
   let statusCount = 0
   const { service } = createService({}, {
     status: (request, child) => {
@@ -393,7 +400,100 @@ test('refreshStatus reuses the recent probe while the sidecar stays active', asy
   await service.refreshStatus()
   const second = await service.refreshStatus()
   assert.equal(second.running, true)
-  assert.equal(statusCount, 1, 'no duplicate status request while active')
+  assert.equal(statusCount, 1, 'no duplicate status request inside the throttle window')
+})
+
+// P2-5: a live bridge sidecar is not a fresh sample. Past the 5 s interval the
+// explicit refresh has to ask the sidecar again, or a query-silent Everything
+// instance keeps being published as ready forever (review finding 5).
+test('P2-5 refreshStatus re-probes the live sidecar past the throttle window (ready -> silent)', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  t.mock.timers.setTime(1_000_000)
+  let silent = false
+  let statusCount = 0
+  const readySnapshot = { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414' }
+  const silentSnapshot = { running: true, dbLoaded: true, queryAnswered: false, version: '1.5.0.1414' }
+  const { service, child } = createService({}, {
+    status: (request, sidecar) => {
+      statusCount += 1
+      sidecar.respond(request, silent ? silentSnapshot : readySnapshot)
+    }
+  })
+
+  const first = await service.refreshStatus()
+  assert.equal(first.phase, 'ready')
+  assert.equal(first.queryAnswered, true)
+  assert.equal(statusCount, 1)
+
+  // The Everything instance behind the still-alive bridge goes query-silent.
+  silent = true
+  t.mock.timers.setTime(1_006_100)
+  const second = await service.refreshStatus()
+  assert.equal(statusCount, 2, 'past the interval the live sidecar is probed exactly once')
+  assert.equal(second.phase, 'waiting', 'a query-silent instance past the throttle must not stay ready')
+  assert.equal(second.queryAnswered, false)
+  assert.equal(second.running, true, 'the instance is still reported as running')
+  assert.equal(second.dbLoaded, true, 'the display keeps the loaded index')
+
+  t.mock.timers.setTime(1_012_200)
+  const third = await service.refreshStatus()
+  assert.equal(statusCount, 3, 'each refresh past the interval issues one lightweight status request')
+  assert.equal(child.requests.filter((request) => request.action === 'status').length, 3)
+  assert.equal(third.phase, 'waiting')
+  assert.equal(third.queryAnswered, false)
+  assert.ok(service.spawnCalls.every((call) => call.args.length === 0), 'bundled Everything not spawned')
+})
+
+// P2-5 reverse case from the review: an initially silent instance that starts
+// answering must be published as ready by the next explicit refresh instead of
+// staying at the stale `waiting`.
+test('P2-5 refreshStatus re-probes the live sidecar past the throttle window (silent -> ready)', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  t.mock.timers.setTime(1_000_000)
+  let answering = false
+  let statusCount = 0
+  const silentSnapshot = { running: true, dbLoaded: true, queryAnswered: false }
+  const answeringSnapshot = { running: true, dbLoaded: true, queryAnswered: true, version: '1.5.0.1414' }
+  const { service } = createService({}, {
+    status: (request, sidecar) => {
+      statusCount += 1
+      sidecar.respond(request, answering ? answeringSnapshot : silentSnapshot)
+    }
+  })
+
+  const first = await service.refreshStatus()
+  assert.equal(first.phase, 'waiting')
+  assert.equal(first.queryAnswered, false)
+
+  answering = true
+  t.mock.timers.setTime(1_006_100)
+  const second = await service.refreshStatus()
+  assert.equal(statusCount, 2, 'recovery is observed by one more status request')
+  assert.equal(second.phase, 'ready')
+  assert.equal(second.queryAnswered, true)
+  assert.equal(second.version, '1.5.0.1414')
+})
+
+// P2-5: the de-duplicating refreshPromise must still collapse concurrent
+// refreshes after the interval, so a status page refresh burst cannot fan out
+// into multiple sidecar probes.
+test('P2-5 concurrent refreshes past the throttle window share one sidecar probe', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  t.mock.timers.setTime(1_000_000)
+  let statusCount = 0
+  const { service } = createService({}, {
+    status: (request, child) => {
+      statusCount += 1
+      child.respond(request, { running: true, dbLoaded: true, queryAnswered: false })
+    }
+  })
+  await service.refreshStatus()
+  assert.equal(statusCount, 1)
+  t.mock.timers.setTime(1_006_100)
+  const [first, second] = await Promise.all([service.refreshStatus(), service.refreshStatus()])
+  assert.equal(statusCount, 2, 'the concurrent refreshes merged onto one probe')
+  assert.equal(first.phase, 'waiting')
+  assert.equal(second.phase, 'waiting')
 })
 
 test('refreshStatus honors the throttle after the sidecar idles away', async () => {

@@ -668,6 +668,110 @@ function createRecordDomain(deps) {
   let pendingRegionCapture = null
   const regionCaptureRequests = new Map() // requestId -> { settle }
 
+  // d4993a2 delivery re-review (P1-01/P1-02): creating a recording window is a TRANSACTION, not a
+  // series of side effects. The frame/control windows are created hidden and registered below as
+  // `stagedCreations`; they become THE active take (recordWindow/recordFrameWindow) only after BOTH
+  // pages finished loading while their request was still live. Until then they are invisible to
+  // every ownership check (isTaskActive/requireRecordSender/focusActive), so a cancelled request
+  // or a failed page load can never leave a bar that still starts a project with the old
+  // authorization.
+  const stagedCreations = new Map() // controlWindow -> creation record
+  // requestId -> shared in-flight creation promise. The overlay's record button is not
+  // single-flight (the renderer can invoke it again before the first IPC returns), so a second
+  // confirm of the SAME overlay request must JOIN the first creation instead of building a second
+  // frame/control pair and revoking its own request.
+  const regionCreations = new Map()
+  // getDisplayMedia is a handler on the SHARED default session, so only the PUBLISHED take installs
+  // it and only its close path unregisters it: a losing/aborted creation must never overwrite, or
+  // later null, the winner's handler.
+  let displayMediaHandlerOwner = null
+  // The ready IPC that normally asks for `record:init` is only authorized once the take is
+  // published, so the publish path pushes init itself. This guard keeps exactly one init push.
+  function sendRecordInitOnce(win) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return false
+    if (!win._recordInit || win._recordInitSent === true) return false
+    win._recordInitSent = true
+    win.webContents.send('record:init', win._recordInit)
+    return true
+  }
+
+  // Releases the hidden windows of ONE unpublished creation attempt. It deliberately leaves the
+  // published take alone: a loser only removes its own windows and, only while it STILL owns the
+  // shared-session display-media handler, unregisters that handler.
+  function disposeStagedCreation(creation) {
+    if (!creation || creation.disposed === true) return false
+    creation.disposed = true
+    const control = creation.controlWindow
+    const frame = creation.frameWindow
+    // Close the annotation frame first: the control's close path must not be reached while the
+    // frame still believes it has an owner.
+    if (frame && typeof frame.isDestroyed === 'function' && !frame.isDestroyed()) frame.close()
+    if (control && typeof control.isDestroyed === 'function' && !control.isDestroyed()) control.close()
+    if (control && stagedCreations.get(control) === creation) stagedCreations.delete(control)
+    if (displayMediaHandlerOwner && displayMediaHandlerOwner === control) {
+      displayMediaHandlerOwner = null
+      try {
+        if (creation.session && typeof creation.session.setDisplayMediaRequestHandler === 'function') {
+          creation.session.setDisplayMediaRequestHandler(null)
+        }
+      } catch (error) {
+        log('Display media handler cleanup failed:', error?.message || error)
+      }
+    }
+    return true
+  }
+
+  function cancelStagedCreationsForRequest(requestId) {
+    const id = text(requestId)
+    if (!id) return 0
+    let cancelled = 0
+    for (const creation of [...stagedCreations.values()]) {
+      if (creation.requestId !== id) continue
+      creation.cancelled = true
+      if (disposeStagedCreation(creation)) cancelled += 1
+    }
+    return cancelled
+  }
+
+  function disposeAllStagedCreations() {
+    for (const creation of [...stagedCreations.values()]) disposeStagedCreation(creation)
+  }
+
+  // Emergency teardown for a creation that already published but could not finish its post-publish
+  // setup (show/init push). It clears the active ownership first, then reuses the staged teardown.
+  function teardownPublishedCreation(creation) {
+    const control = creation?.controlWindow
+    if (recordWindow === control) recordWindow = null
+    if (recordFrameWindow && recordFrameWindow === creation?.frameWindow) recordFrameWindow = null
+    return disposeStagedCreation(creation)
+  }
+
+  // Publishes a fully loaded creation as THE active take. Every check runs synchronously, so no
+  // other entry can interleave between the ownership proof and the publish.
+  //
+  // The only ownership rule is "a LIVE take wins": a take that was published and already closed
+  // while this creation was loading no longer owns the write route, so this creation may publish
+  // (the independent verifier's S6 scenario: dropping it silently would lose a confirmed region
+  // request in a narrow race). Racing entries are still serialised by the same check - only the
+  // first publisher is active when the loser reaches this point, and the loser takes the
+  // focus/abort branch instead.
+  function publishStagedCreation(creation) {
+    if (!creation || creation.disposed === true || creation.closedEarly === true || creation.cancelled === true) return false
+    const control = creation.controlWindow
+    const frame = creation.frameWindow
+    if (!control || (typeof control.isDestroyed === 'function' && control.isDestroyed())) return false
+    if (frame && typeof frame.isDestroyed === 'function' && frame.isDestroyed()) return false
+    if (recordWindow && !recordWindow.isDestroyed()) return false
+    // A published frame whose control bar is gone would be orphaned by this publish: refuse instead
+    // of overwriting the module-level frame reference (the closed-control handler normally clears
+    // both, this is the defensive belt for a destroyed-without-close window).
+    if (recordFrameWindow && !recordFrameWindow.isDestroyed() && recordFrameWindow !== frame) return false
+    stagedCreations.delete(control)
+    recordFrameWindow = frame
+    recordWindow = control
+    return true
+  }
+
   // Resolves the waiting workbenchStart() for one region request. created=true is sent by
   // createRecordWindow() after the control window exists; anything else (closed, replaced,
   // superseded) is a cancellation and drops the pending slot it owns.
@@ -676,6 +780,10 @@ function createRecordDomain(deps) {
     // A duplicate/late settle must never leave a slot bound to an already-settled request: an id
     // is unique for the app lifetime, so a matching slot without a registered request is stale.
     if (pendingRegionCapture && pendingRegionCapture.requestId === requestId) pendingRegionCapture = null
+    // A cancelled/superseded request must also tear down whatever its in-flight creation already
+    // staged (a hidden control/frame pair and its shared-session media handler). Teardown happens
+    // before the workbench receipt settles so the receipt never observably precedes the cleanup.
+    if (created !== true) cancelStagedCreationsForRequest(requestId)
     if (!request) return false
     regionCaptureRequests.delete(requestId)
     request.settle(created === true)
@@ -2185,15 +2293,33 @@ function createRecordDomain(deps) {
   // P1-01/P1-02 re-review: the single entry point. A workbench region request that fails or aborts
   // must never leave its waiting workbenchStart() unresolved, so the wrapper revokes the request on
   // any thrown error (a cancelled request is idempotent) and rethrows for the caller's error path.
+  //
+  // d4993a2 delivery re-review (P1-02 reentry): the same request can confirm twice before the first
+  // IPC returns. The in-flight map is filled synchronously, before the creation's first await, so
+  // the second confirm joins the SAME creation (same windows, same result) instead of focusing the
+  // half-created bar and revoking its own request.
   async function createRecordWindow(options = {}) {
     assertGameModeDisabled()
     const requestedRegionId = typeof options.regionRequestId === 'string' ? options.regionRequestId : ''
-    try {
-      return await createRecordWindowInternal(options, requestedRegionId)
-    } catch (error) {
-      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
-      throw error
+    if (requestedRegionId) {
+      const inFlight = regionCreations.get(requestedRegionId)
+      if (inFlight) return inFlight
     }
+    let tracked
+    const run = (async () => {
+      try {
+        return await createRecordWindowInternal(options, requestedRegionId)
+      } catch (error) {
+        if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+        throw error
+      }
+    })()
+    if (!requestedRegionId) return run
+    tracked = run.finally(() => {
+      if (regionCreations.get(requestedRegionId) === tracked) regionCreations.delete(requestedRegionId)
+    })
+    regionCreations.set(requestedRegionId, tracked)
+    return tracked
   }
 
   // `requestedRegionId` is the workbench region-request identity; it is EMPTY for quick entries and
@@ -2259,6 +2385,19 @@ function createRecordDomain(deps) {
       revokeRegionCapture(requestedRegionId)
       return null
     }
+    // d4993a2 delivery re-review (P1-02 concurrency): another entry may have published a take while
+    // this creation awaited the desktop source. An existing take wins: this creation must not build
+    // a second window pair and later steal ownership. A region request reports a cancellation so
+    // the workbench keeps the user's one-shot selection unconsumed; a quick entry behaves like the
+    // synchronous repeat-entry branch and focuses the running bar.
+    if (recordWindow && !recordWindow.isDestroyed()) {
+      if (requestedRegionId) {
+        revokeRegionCapture(requestedRegionId)
+        return null
+      }
+      focusActive()
+      return recordWindow
+    }
     const target = windowMode
       ? describeWindowCaptureTarget(windowBinding)
       : describeCaptureTarget(display, config.mode, selectionBounds)
@@ -2303,8 +2442,9 @@ function createRecordDomain(deps) {
         backgroundThrottling: false
       }
     })
-    recordFrameWindow = frameWindow
-    recordWindow = controlWindow
+    // d4993a2 delivery re-review (P1-01): the windows stay STAGED here — hidden, unpublished and
+    // invisible to every ownership check — until both pages finished loading while the request is
+    // still live. Only publishStagedCreation() below promotes them to recordWindow/recordFrameWindow.
     if (frameWindow) frameWindow._recordOwner = controlWindow
     controlWindow._recordControlBounds = controlBounds
     controlWindow._recordFrameState = 'idle'
@@ -2315,6 +2455,7 @@ function createRecordDomain(deps) {
     controlWindow._recordSessionId = ''
     controlWindow._recordState = { ...DEFAULT_STATE }
     controlWindow._recordCommands = new Map()
+    controlWindow._recordInitSent = false
     controlWindow._recordCaptureConfig = {
       target,
       frameRate,
@@ -2377,28 +2518,35 @@ function createRecordDomain(deps) {
     // region mode keep pinning the display with pickDesktopSource. The system-audio track is offered
     // only when the renderer actually asked for audio, which is what keeps the "system sound off"
     // contract (settings-defaults.js:71) honest. System audio is the system MIX, also for windows.
+    //
+    // d4993a2 delivery re-review (P1-02 concurrency): this handler lives on the SHARED default
+    // session, so it is installed only when this creation actually becomes the active take. A
+    // staged loser must never overwrite - and its teardown must never null - the winner's handler.
     const recordSession = controlWindow.webContents.session
-    recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
-      try {
-        // 只服务录制窗自己的主帧：该 handler 注册在**共享默认 session** 上，若不校验来源，
-        // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
-        if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
-        if (!request.videoRequested) return callback({})
-        let video = null
-        if (windowMode) {
-          video = windowBinding.source
-        } else {
-          const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
-          video = pickDesktopSource(sources, display.id)
+    const installDisplayMediaHandler = () => {
+      recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        try {
+          // 只服务录制窗自己的主帧：该 handler 注册在**共享默认 session** 上，若不校验来源，
+          // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
+          if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
+          if (!request.videoRequested) return callback({})
+          let video = null
+          if (windowMode) {
+            video = windowBinding.source
+          } else {
+            const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+            video = pickDesktopSource(sources, display.id)
+          }
+          if (!video) return callback({})
+          const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
+          callback(audio ? { video, audio } : { video })
+        } catch (error) {
+          log('Display media request failed:', error.message)
+          callback({})
         }
-        if (!video) return callback({})
-        const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
-        callback(audio ? { video, audio } : { video })
-      } catch (error) {
-        log('Display media request failed:', error.message)
-        callback({})
-      }
-    })
+      })
+      displayMediaHandlerOwner = controlWindow
+    }
 
     for (const win of [frameWindow, controlWindow]) {
       if (!win) continue
@@ -2406,9 +2554,30 @@ function createRecordDomain(deps) {
       win.setContentProtection(true)
     }
     if (frameWindow) restoreRecordFramePassthrough(frameWindow)
+    const creation = {
+      controlWindow,
+      frameWindow,
+      requestId: requestedRegionId,
+      session: recordSession,
+      disposed: false,
+      closedEarly: false,
+      cancelled: false
+    }
+    stagedCreations.set(controlWindow, creation)
     controlWindow.on('closed', () => {
+      // A staged window that closes early (load failure, user close, OS teardown, cancellation)
+      // aborts its own creation; nothing of it may be published or shown afterwards.
+      if (stagedCreations.get(controlWindow) === creation) {
+        creation.closedEarly = true
+        disposeStagedCreation(creation)
+        return
+      }
       // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
-      try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
+      // Only while this window still OWNS the handler: a newer take may have installed its own.
+      if (displayMediaHandlerOwner === controlWindow) {
+        displayMediaHandlerOwner = null
+        try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
+      }
       stopWindowSourceWatch(controlWindow)
       // R5 §2.2: a closed control bar can never finish, so its event track host must not outlive it.
       stopEventTrack().catch((error) => log('Pointer track stop failed:', error?.message || error))
@@ -2423,29 +2592,73 @@ function createRecordDomain(deps) {
     })
     if (frameWindow) {
       frameWindow.on('closed', () => {
+        if (stagedCreations.get(controlWindow) === creation) {
+          creation.closedEarly = true
+          disposeStagedCreation(creation)
+          return
+        }
         if (recordFrameWindow === frameWindow) recordFrameWindow = null
       })
     }
-    await Promise.all([
+    // allSettled (not Promise.all): when one page fails, the other load must still settle before we
+    // tear the windows down, otherwise closing them on the error path leaves an unhandled rejection.
+    const loads = await Promise.allSettled([
       frameWindow ? frameWindow.loadFile(framePagePath) : Promise.resolve(),
       controlWindow.loadFile(controlPagePath)
     ])
-    // The overlay stays interactive until this function returns (startRegionRecording closes it
-    // only afterwards), so an Esc during the window load is a cancellation too. Tear down exactly
-    // the windows this call created — never the module-level recordWindow, which may already belong
-    // to a newer take — and report no take instead of showing an orphaned control bar.
+    const failedLoad = loads.find((result) => result.status === 'rejected')
+    const cancelledDuringLoad = creation.cancelled === true || creation.disposed === true ||
+      creation.closedEarly === true ||
+      (requestedRegionId !== '' && !liveRegionCapture(requestedRegionId))
+    if (failedLoad || cancelledDuringLoad) {
+      // Every failure/cancellation tears down exactly this creation's windows and handler. The
+      // published take (if any) is never touched: these windows were never published.
+      disposeStagedCreation(creation)
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+      if (cancelledDuringLoad) return null
+      throw failedLoad.reason instanceof Error ? failedLoad.reason : new Error(String(failedLoad.reason))
+    }
     if (requestedRegionId && !liveRegionCapture(requestedRegionId)) {
+      // The overlay was cancelled while the pages loaded: a cancelled receipt, no take, no leftover
+      // windows. (Its own branch: the request registry is the receipt contract, not an error.)
       revokeRegionCapture(requestedRegionId)
-      if (frameWindow && !frameWindow.isDestroyed()) frameWindow.close()
-      if (controlWindow && !controlWindow.isDestroyed()) controlWindow.close()
+      disposeStagedCreation(creation)
       return null
     }
-    if (frameWindow) frameWindow.showInactive()
-    controlWindow.show()
-    if (windowMode) {
-      // The window source token is single-use from here on: the recording window exists (§2.1).
-      markWindowTokenUsed(windowBinding.token)
-      startWindowSourceWatch(controlWindow, windowBinding)
+    if (!publishStagedCreation(creation)) {
+      // Another entry published a take while this creation loaded. The existing take wins: clean up
+      // exactly this attempt's hidden windows and report no take for a region request so the
+      // workbench keeps its one-shot selection unconsumed.
+      disposeStagedCreation(creation)
+      if (requestedRegionId) {
+        revokeRegionCapture(requestedRegionId)
+        return null
+      }
+      if (recordWindow && !recordWindow.isDestroyed()) {
+        focusActive()
+        return recordWindow
+      }
+      return null
+    }
+    // Published: from here on the windows ARE the take. Install the shared-session handler, push the
+    // init payload (the renderer's ready IPC is only authorized now) and only then show the bars.
+    try {
+      installDisplayMediaHandler()
+      if (frameWindow) frameWindow.showInactive()
+      sendRecordInitOnce(controlWindow)
+      if (frameWindow) sendRecordAnnotationCommand(controlWindow)
+      controlWindow.show()
+      if (windowMode) {
+        // The window source token is single-use from here on: the recording window exists (§2.1).
+        markWindowTokenUsed(windowBinding.token)
+        startWindowSourceWatch(controlWindow, windowBinding)
+      }
+    } catch (error) {
+      // A published take that cannot finish its setup must never stay half-active: clear ownership,
+      // release the windows/handler and surface the failure to the caller like a start error.
+      teardownPublishedCreation(creation)
+      if (requestedRegionId) revokeRegionCapture(requestedRegionId)
+      throw error
     }
     log('Recording window created:', {
       mode: config.mode,
@@ -2850,7 +3063,9 @@ function createRecordDomain(deps) {
     const control = {
       ready: (event) => {
         const win = BrowserWindow.fromWebContents(event.sender)
-        if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
+        // The publish path already pushed init; this repairs the race where the renderer's ready
+        // IPC is only authorized (and therefore processed) after the take became active.
+        if (win === recordWindow && win?._recordInit) sendRecordInitOnce(win)
       },
       frameReady: (event) => {
         const frame = requireRecordFrameSender(event)
@@ -3975,6 +4190,9 @@ function createRecordDomain(deps) {
     }
     pointerTrackService = null
     abandonRegionCaptureRequests()
+    // Non-region creations (quick fullscreen entries) stage windows without a region request; the
+    // quit path must reap those too. Region ones were already cancelled above.
+    disposeAllStagedCreations()
     const activeService = typeof peekRecordingService === 'function'
       ? peekRecordingService()
       : null

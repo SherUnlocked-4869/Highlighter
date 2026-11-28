@@ -337,14 +337,46 @@
   // Returns { ok:true } when the delivered frame would still describe the planned region; a
   // retryable { ok:false, code:'TOPOLOGY_CHANGED' } otherwise (the next tick re-plans from the
   // current topology and succeeds).
-  function revalidateScreenCapturePlan(plan, displaysAfter) {
+  //
+  // P2-3 (review finding 3): the plan also contains the WINDOW rectangle read before the await,
+  // so a display-only recheck is not enough when the pin itself moved or was resized while the
+  // capturer enumerated. `currentInputs` optionally carries the post-await facts:
+  //   pinBounds   - the window rectangle read AFTER the await (move/resize);
+  //   imageBounds - the content-relative image rectangle read AFTER the await (content resize);
+  //   rotation    - the pin rotation read AFTER the await.
+  // Any difference from the planned inputs means the plan no longer describes the current
+  // window: it is refused with the same retryable TOPOLOGY_CHANGED transition used for a
+  // changed display mapping (the next tick re-plans from the current geometry and succeeds),
+  // even when the post-await display list alone would still map the OLD rectangle onto the
+  // target display. Omitting `currentInputs` keeps the exact P2-01 display-only behaviour.
+  function revalidateScreenCapturePlan(plan, displaysAfter, currentInputs = null) {
     if (!plan || plan.ok !== true || !normalizeRect(plan.pinBounds) || !normalizeRect(plan.imageBounds)) {
       return { ok: false, code: 'INVALID_PLAN' }
     }
+    const inputs = currentInputs && typeof currentInputs === 'object' ? currentInputs : null
+    const pinBounds = inputs ? normalizeRect(inputs.pinBounds) : plan.pinBounds
+    // A window that cannot describe its rectangle any more is a transient state, not a
+    // malformed plan: the next tick reads the geometry again and re-plans.
+    if (!pinBounds) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    let imageBounds = plan.imageBounds
+    if (inputs && inputs.imageBounds != null) {
+      imageBounds = normalizeRect(inputs.imageBounds)
+      if (!imageBounds) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+    }
+    if (inputs) {
+      // The planned region is the pre-await window rectangle plus the caller's relative image
+      // offset. Recomputing the crop alone is not a complete check: display-edge clamping can
+      // hide a move, and a content resize leaves the window origin unchanged. Compare the
+      // geometry itself before trusting the recomputed mapping.
+      for (const key of ['x', 'y', 'width', 'height']) {
+        if (pinBounds[key] !== plan.pinBounds[key]) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+        if (imageBounds[key] !== plan.imageBounds[key]) return { ok: false, code: 'TOPOLOGY_CHANGED' }
+      }
+    }
     const replanned = planScreenCapture({
-      pinBounds: plan.pinBounds,
-      imageBounds: plan.imageBounds,
-      rotation: plan.rotation,
+      pinBounds,
+      imageBounds,
+      rotation: inputs && inputs.rotation != null ? inputs.rotation : plan.rotation,
       displays: displaysAfter,
       maxPixels: plan.maxPixels
     })

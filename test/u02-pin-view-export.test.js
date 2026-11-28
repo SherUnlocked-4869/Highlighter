@@ -248,10 +248,12 @@ test('plan: bounded canvas and empty-image refusals are explicit, never silent',
   )
 })
 
-function createRecordingContext() {
+function createRecordingContext(metrics = {}) {
   const ops = []
   // `font` / `fillStyle` are read back at fillText time so a test can assert the painter
-  // used the measured DOM font size instead of the old shrink-to-fit heuristic.
+  // used the measured DOM font size instead of the old shrink-to-fit heuristic. `textBaseline`
+  // is recorded on every fillText op so the vertical-glyph tests can assert which baseline the
+  // painter anchored (middle for an upright em cell, alphabetic for the shared sideways line).
   const state = { font: '', fillStyle: '' }
   const context = {
     ops,
@@ -267,8 +269,12 @@ function createRecordingContext() {
     beginPath: () => ops.push({ op: 'beginPath' }),
     rect: (x, y, w, h) => ops.push({ op: 'rect', x, y, w, h }),
     clip: () => ops.push({ op: 'clip' }),
-    fillText: (text, x, y) => ops.push({ op: 'fillText', text, x, y, font: state.font }),
-    measureText: (text) => ({ width: String(text).length * 6 })
+    fillText: (text, x, y) => ops.push({ op: 'fillText', text, x, y, font: state.font, baseline: context.textBaseline }),
+    measureText: (text) => {
+      const known = metrics[text]
+      if (known) return { ...known }
+      return { width: String(text).length * 6 }
+    }
   }
   Object.defineProperty(context, 'font', { get: () => state.font, set: (value) => { state.font = value } })
   Object.defineProperty(context, 'fillStyle', { get: () => state.fillStyle, set: (value) => { state.fillStyle = value } })
@@ -628,6 +634,7 @@ test('draw: vertical sideways glyphs are rotated, upright glyphs are not (P2-02)
       assert.equal(ops[fillIndex - 1].op, 'rotate')
       assert.equal(ops[fillIndex - 1].angle, Math.PI / 2, `${glyph.text}: sideways means 90° clockwise`)
       assert.equal(op.x, 0, `${glyph.text}: painted at the rotated centre`)
+      assert.equal(op.baseline, 'alphabetic', `${glyph.text}: painted on the shared alphabetic baseline`)
       assert.equal(ops[fillIndex + 1].op, 'restore')
     } else {
       assert.equal(op.x, glyph.x, `${glyph.text}: upright glyph keeps its measured centre`)
@@ -636,6 +643,131 @@ test('draw: vertical sideways glyphs are rotated, upright glyphs are not (P2-02)
       assert.ok(!(previous && previous.op === 'rotate' && Math.abs(previous.angle - Math.PI / 2) < 1e-9),
         `${glyph.text}: no sideways rotation`)
     }
+  }
+})
+
+// P2-04 (re-review): a transformed-upright (UAX #50 Tu) CJK punctuation grapheme is laid out by
+// the browser with the font's vertical presentation form (`vert`), which moves the ink inside the
+// em cell. Canvas has no vertical layout, so the measured payload carries the Unicode vertical
+// form and the painter draws THAT code point, centring the form's measured ink in the measured em
+// cell. A plain horizontal fillText of the base character put `。` 13.36/4.99 CSS px off screen.
+test('draw: transformed-upright punctuation is painted with its Unicode vertical form (P2-04)', () => {
+  const block = {
+    text: '。、',
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 200 }, { x: 20, y: 200 }]
+  }
+  const layout = measuredEntry(0, {
+    width: 40,
+    height: 180,
+    centerX: 40,
+    centerY: 100,
+    vertical: true,
+    fontSize: 28.7148,
+    lines: [{
+      text: '。、',
+      x: 0,
+      y: 0,
+      width: 36,
+      height: 57.4,
+      glyphs: [
+        { text: '\u3002', x: 0, y: -14.3574, width: 36, height: 28.7148, sideways: false, verticalForm: '\uFE12' },
+        { text: '\u3001', x: 0, y: 14.3574, width: 36, height: 28.7148, sideways: false, verticalForm: '\uFE11' }
+      ]
+    }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, translated: true, blocks: [block], imageWidth: 400, imageHeight: 300, layout: [layout] }
+  })
+  assert.deepEqual(plan.ocrBlocks[0].lines[0].glyphs.map((glyph) => glyph.verticalForm), ['\uFE12', '\uFE11'],
+    'the measured vertical form reaches the export plan')
+  const context = createRecordingContext({
+    '\uFE12': { width: 28.7148, actualBoundingBoxAscent: 22.5, actualBoundingBoxDescent: -14.5 },
+    '\uFE11': { width: 28.7148, actualBoundingBoxAscent: 23.5, actualBoundingBoxDescent: -15.5 }
+  })
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['\uFE12', '\uFE11'],
+    'the Unicode vertical forms are painted instead of the horizontal base glyphs')
+  for (const entry of texts) {
+    assert.equal(entry.baseline, 'middle', 'the em cell is anchored by the middle baseline')
+    assert.equal(entry.x, 0, 'the form stays in the measured column')
+  }
+  // The form's ink is centred in the em cell: offset = (ink top - ink bottom) / 2.
+  assertClose(texts[0].y, -14.3574 + (22.5 - (-14.5)) / 2, 'full stop form ink centred in its cell')
+  assertClose(texts[1].y, 14.3574 + (23.5 - (-15.5)) / 2, 'comma form ink centred in its cell')
+
+  // A form glyph the font does not provide (zero advance) must never replace readable text.
+  const fallbackContext = createRecordingContext({
+    '\uFE12': { width: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 },
+    '\uFE11': { width: 0, actualBoundingBoxAscent: 0, actualBoundingBoxDescent: 0 }
+  })
+  assert.equal(viewExport.drawViewExport(fallbackContext, plan, { picture: { width: 400, height: 300 } }), true)
+  assert.deepEqual(fallbackContext.ops.filter((entry) => entry.op === 'fillText').map((entry) => entry.text),
+    ['\u3002', '\u3001'], 'an unavailable form falls back to the base glyph for that grapheme')
+})
+
+// P2-04 (re-review): every sideways grapheme of a vertical-rl run/column shares ONE alphabetic
+// baseline derived from the browser's own font box (the measured box spans
+// fontBoundingBoxAscent+Descent). The old painter centred each glyph's INK instead, which shifted
+// a descender like `g` 6.4 CSS px off that line while leaving `I`/`A` almost in place.
+test('draw: sideways glyphs share one alphabetic baseline instead of per-glyph ink centring (P2-04)', () => {
+  const block = {
+    text: 'Ag',
+    text_score: 0.95,
+    box_points: [{ x: 20, y: 20 }, { x: 60, y: 20 }, { x: 60, y: 200 }, { x: 20, y: 200 }]
+  }
+  const layout = measuredEntry(0, {
+    width: 40,
+    height: 180,
+    centerX: 40,
+    centerY: 100,
+    vertical: true,
+    fontSize: 28.7148,
+    lines: [{
+      text: 'Ag',
+      x: 0,
+      y: 0,
+      width: 36,
+      height: 46,
+      glyphs: [
+        { text: 'A', x: 0, y: -11.5, width: 36, height: 23, sideways: true },
+        { text: 'g', x: 0, y: 11.5, width: 36, height: 23, sideways: true }
+      ]
+    }]
+  })
+  const plan = viewExport.planViewExport({
+    viewport: { width: 400, height: 300, devicePixelRatio: 1 },
+    surface: { width: 400, height: 300 },
+    rotation: 0,
+    ocr: { visible: true, translated: false, blocks: [block], imageWidth: 400, imageHeight: 300, layout: [layout] }
+  })
+  // Both glyphs report the SAME font box, as the browser does for one font/one column.
+  const fontBox = { fontBoundingBoxAscent: 30, fontBoundingBoxDescent: 10 }
+  const ascending = { ...fontBox, width: 24.5, actualBoundingBoxAscent: 20, actualBoundingBoxDescent: 0 }
+  const descending = { ...fontBox, width: 18.4, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 18 }
+  const context = createRecordingContext({ A: ascending, g: descending })
+  assert.equal(viewExport.drawViewExport(context, plan, { picture: { width: 400, height: 300 } }), true)
+  const texts = context.ops.filter((entry) => entry.op === 'fillText')
+  assert.deepEqual(texts.map((entry) => entry.text), ['A', 'g'])
+  const sharedBaseline = (30 - 10) / 2
+  for (const entry of texts) {
+    assert.equal(entry.baseline, 'alphabetic', `${entry.text}: anchored by the alphabetic baseline`)
+    assert.equal(entry.x, 0, `${entry.text}: the shared baseline is the only frame offset`)
+    assertClose(entry.y, sharedBaseline, `${entry.text}: same shared baseline as the rest of the run`)
+  }
+  // Ink centring would place the two glyphs at different frame offsets — the exact defect.
+  assert.notEqual((ascending.actualBoundingBoxAscent - ascending.actualBoundingBoxDescent) / 2,
+    (descending.actualBoundingBoxAscent - descending.actualBoundingBoxDescent) / 2)
+
+  // Without font-box metrics (a legacy/partial measurement) the frame centre falls back to 0.
+  const legacyContext = createRecordingContext()
+  assert.equal(viewExport.drawViewExport(legacyContext, plan, { picture: { width: 400, height: 300 } }), true)
+  for (const entry of legacyContext.ops.filter((op) => op.op === 'fillText')) {
+    assert.equal(entry.y, 0, `${entry.text}: deterministic fallback without font metrics`)
   }
 })
 

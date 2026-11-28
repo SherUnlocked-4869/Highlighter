@@ -1165,14 +1165,34 @@ function createPinDomain(deps) {
 
   // One frame, no retention: the BGRA bitmap is returned to the caller and dropped from
   // this module immediately (the sampler keeps only numeric stats).
+  // P2-3 (review finding 3): the CONTENT rectangle is read per sample, never snapshotted
+  // once at session start. The capture region must follow the pin window the user actually
+  // has now: a resized pin must capture its new size, not the box it had when the comparison
+  // was enabled.
+  function readPinContentBounds(win) {
+    try {
+      const bounds = typeof win.getContentBounds === 'function' ? win.getContentBounds() : win.getBounds()
+      return bounds && typeof bounds === 'object' ? bounds : null
+    } catch (error) {
+      return null
+    }
+  }
+
   async function captureScreenUnderPin(win, imageBounds = {}) {
     if (!win || win.isDestroyed() || !win._pinData) return { ok: false, code: 'NO_WINDOW' }
     if (typeof win.isVisible === 'function' && !win.isVisible()) return { ok: false, code: 'HIDDEN' }
+    // Read the window rectangle exactly once for the plan; an unexpected throw here keeps the
+    // previous failure classification (the sampler reports it as CAPTURE_THREW).
+    const windowBounds = win.getBounds()
     const displays = typeof screen.getAllDisplays === 'function'
       ? screen.getAllDisplays()
-      : [screen.getDisplayMatching(win.getBounds())]
+      : [screen.getDisplayMatching(windowBounds)]
+    // The image rectangle normally IS the content box for these frameless content-sized pins.
+    // Remember the pre-await content rectangle so the post-await revalidation can tell a
+    // content resize (which must be refused) from an explicit sub-rectangle request.
+    const contentBoundsBefore = readPinContentBounds(win)
     const plan = pinScreenDiff.planScreenCapture({
-      pinBounds: win.getBounds(),
+      pinBounds: windowBounds,
       imageBounds,
       rotation: win._pinData.rotation,
       displays
@@ -1217,13 +1237,42 @@ function createPinDomain(deps) {
     if (!topology || topology.ok !== true) {
       return { ok: false, code: topology?.code || 'TOPOLOGY_CHANGED', retryable: true }
     }
+    // P2-3 (review finding 3): the plan above used the window rectangle read BEFORE
+    // getSources() awaited. A pin the user dragged to another display - or resized - while the
+    // capturer enumerated would still deliver the pre-await region on this tick: the OLD
+    // screen's pixels after a cross-screen move, or the old size after the window shrank.
+    // Re-read the window/content rectangles after the await and pass them to the revalidation;
+    // any change is a retryable transition frame with no pixels, and the next tick re-plans
+    // from the current geometry. The display mapping itself is still recomputed and compared
+    // exactly as P2-01 requires.
+    let windowBoundsAfter = null
+    let contentBoundsAfter = null
+    try {
+      windowBoundsAfter = typeof win.getBounds === 'function' ? win.getBounds() : null
+      contentBoundsAfter = typeof win.getContentBounds === 'function' ? win.getContentBounds() : windowBoundsAfter
+    } catch (error) {
+      return { ok: false, code: 'TOPOLOGY_CHANGED', retryable: true, message: error.message }
+    }
+    if (!windowBoundsAfter) return { ok: false, code: 'TOPOLOGY_CHANGED', retryable: true }
+    const currentInputs = { pinBounds: windowBoundsAfter }
+    const contentSized = contentBoundsBefore && contentBoundsAfter &&
+      Math.round(Number(imageBounds?.width)) === Math.round(Number(contentBoundsBefore.width)) &&
+      Math.round(Number(imageBounds?.height)) === Math.round(Number(contentBoundsBefore.height))
+    if (contentSized) {
+      currentInputs.imageBounds = {
+        x: plan.imageBounds.x,
+        y: plan.imageBounds.y,
+        width: contentBoundsAfter.width,
+        height: contentBoundsAfter.height
+      }
+    }
     // P2-01 re-review: the count/target-id check alone cannot see a same-id layout change. Two
     // displays keeping their ids can swap system coordinates (or the target can change its scale
     // or rotation) during the await; the plan's physicalRect then describes the old topology and
     // cropping it out of the new source delivers the other screen's pixels. Recompute the mapping
     // from the post-await display list: a changed target/mapping is a retryable transition frame
     // with no pixels, and the next tick re-plans from the current topology.
-    const consistency = pinScreenDiff.revalidateScreenCapturePlan(plan, displaysAfter)
+    const consistency = pinScreenDiff.revalidateScreenCapturePlan(plan, displaysAfter, currentInputs)
     if (!consistency || consistency.ok !== true) {
       const code = consistency?.code || 'TOPOLOGY_CHANGED'
       return { ok: false, code, retryable: code !== 'INVALID_PLAN' }
@@ -1301,17 +1350,17 @@ function createPinDomain(deps) {
     // The comparison region is the PIN WINDOW's content box: "the pixels under the pin"
     // means everything the window covers, which also makes a long capture (scrolling
     // inside the window) and a moved window work without re-reading renderer geometry.
-    // `getContentBounds` is the precise call for these frameless content-sized windows;
-    // `getBounds` is the fallback for a test fake that only implements the latter.
-    const windowBounds = typeof win.getContentBounds === 'function' ? win.getContentBounds() : win.getBounds()
-    const relativeBounds = {
-      x: 0,
-      y: 0,
-      width: Math.max(1, Math.round(Number(windowBounds?.width) || Number(imageBounds?.width) || 1)),
-      height: Math.max(1, Math.round(Number(windowBounds?.height) || Number(imageBounds?.height) || 1))
-    }
+    // P2-3 (review finding 3): only the caller's RELATIVE OFFSET is kept here. The size is
+    // NOT snapshotted from the session start: every sample reads the current content
+    // rectangle, so a pin resized after the mode was enabled captures its new size instead
+    // of the old 400x200 box (which includes screen area outside the window). A caller that
+    // explicitly passed a non-zero offset keeps that relative semantics.
+    const requestedImageBounds = imageBounds && typeof imageBounds === 'object' ? imageBounds : {}
     const session = {
-      imageBounds: relativeBounds,
+      imageOffset: {
+        x: Number.isFinite(Number(requestedImageBounds.x)) ? Number(requestedImageBounds.x) : 0,
+        y: Number.isFinite(Number(requestedImageBounds.y)) ? Number(requestedImageBounds.y) : 0
+      },
       priorProtection: win._pinContentProtection === true,
       frames: 0,
       failures: 0,
@@ -1345,7 +1394,19 @@ function createPinDomain(deps) {
       intervalMs: realDiffIntervalMs,
       maxPixels: realDiffMaxPixels,
       captureFrame: async () => {
-        const frame = await captureScreenUnderPin(win, session.imageBounds)
+        // P2-3 (review finding 3): read the content rectangle on EVERY sample. The old code
+        // snapshotted it when the session started, so a resized pin kept capturing (and
+        // delivering) the old size for the rest of the session. A window that cannot report
+        // its content box right now is a retryable transition, not a capture defect.
+        const contentBounds = readPinContentBounds(win)
+        if (!contentBounds) return { ok: false, code: 'NO_WINDOW', retryable: true }
+        const imageBounds = {
+          x: session.imageOffset.x,
+          y: session.imageOffset.y,
+          width: Math.max(1, Math.round(Number(contentBounds.width) || 1)),
+          height: Math.max(1, Math.round(Number(contentBounds.height) || 1))
+        }
+        const frame = await captureScreenUnderPin(win, imageBounds)
         if (!frame.ok) return frame
         // The BGRA bitmap is converted once, delivered to the renderer, and then dropped:
         // the sampler keeps no reference to any frame, only numeric stats.
@@ -1388,7 +1449,7 @@ function createPinDomain(deps) {
       if (typeof session.timer?.unref === 'function') session.timer.unref()
     }
     sendToRenderer(win, 'pin:onion-mode', { mode: 'real-diff' })
-    log('Pin real-pixel compare started:', relativeBounds)
+    log('Pin real-pixel compare started:', session.imageOffset)
     return {
       ok: true,
       mode: 'real-diff',

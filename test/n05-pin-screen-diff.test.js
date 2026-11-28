@@ -949,6 +949,120 @@ test('product: a target-display scale change during getSources is retryable, the
   win._closed()
 })
 
+// P2-3 (review finding 3): the capture plan is computed from the window rectangle read at
+// the start of the tick, and THEN getSources() awaits. A pin dragged to another display
+// during that await used to deliver the OLD screen's pixels for one frame (the first frame
+// carried marker 11 from the pre-move display). The transition frame must be retryable and
+// deliver nothing; the next tick must plan from the current position and deliver that screen.
+test('product: a pin moved to another display during getSources never delivers the old screen (P2-3)', async () => {
+  const LEFT = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 }
+  const RIGHT = { id: 2, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 }
+  let bounds = { x: 100, y: 50, width: 400, height: 200 }
+  let enumeration = 0
+  const desktopCapturer = {
+    getSources: async () => {
+      enumeration += 1
+      if (enumeration === 1) {
+        // The user drags the pin to the second screen while the capturer enumerates.
+        bounds = { x: 2020, y: 50, width: 400, height: 200 }
+      }
+      return [screenSource('1', { marker: 11 }), screenSource('2', { marker: 22 })]
+    }
+  }
+  const harness = createScreenDiffHarness({ displays: [LEFT, RIGHT], desktopCapturer })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  win.getBounds = () => ({ ...bounds })
+  win.getContentBounds = () => ({ ...bounds })
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  assert.equal(started.ok, true)
+  const transition = await started.sampleNow()
+  assert.equal(transition.ok, false, 'the stale pre-move rectangle must not produce a frame')
+  assert.equal(transition.retryable, true, 'the stale rectangle is a retryable transition, not a capture failure')
+  assert.equal(transition.code, 'TOPOLOGY_CHANGED')
+  assert.equal(transition.pixels, undefined)
+  assert.deepEqual(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame'), [],
+    'no screen-diff frame may be sent for the pre-move rectangle')
+  // The next tick re-plans from the current position: display 2's pixels (marker 22).
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline && !harness.sends.some(({ channel }) => channel === 'pin:screen-diff-frame')) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const delivered = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')
+  assert.ok(delivered.length >= 1, 'the next tick must deliver the frame now under the pin')
+  assert.equal(delivered[0].payload.width, 400)
+  assert.equal(delivered[0].payload.height, 200)
+  assert.deepEqual(delivered[0].payload.dipRect, { x: 2020, y: 50, width: 400, height: 200 })
+  assert.deepEqual([...delivered[0].payload.pixels.slice(0, 3)], [22, 22, 22],
+    'only the screen now under the pin may be delivered')
+  started.stop('test-done')
+  win._closed()
+})
+
+// P2-3: the session used to snapshot win.getContentBounds() once at start and reuse that
+// size every tick: shrinking the pin from 400x200 to 100x80 kept delivering 400x200 pixels
+// that include screen area outside the window. Every sample must read the current content
+// rectangle instead.
+test('product: resizing the pin window mid-session captures the current content size (P2-3)', async () => {
+  let bounds = { x: 100, y: 50, width: 400, height: 200 }
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  win.getBounds = () => ({ ...bounds })
+  win.getContentBounds = () => ({ ...bounds })
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 0, y: 0, width: 400, height: 200 })
+  assert.equal(started.ok, true)
+  const before = await started.sampleNow()
+  assert.equal(before.ok, true)
+  assert.equal(before.width, 400)
+  assert.equal(before.height, 200)
+  // Shrink the content window; two later samples must both capture only the new 100x80 box.
+  bounds = { x: 100, y: 50, width: 100, height: 80 }
+  const framesBefore = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline &&
+    harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length < framesBefore + 2) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const after = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').slice(framesBefore)
+  assert.ok(after.length >= 2, `two post-resize samples must be delivered (got ${after.length})`)
+  for (const frame of after) {
+    assert.equal(frame.payload.width, 100, 'the shrunken window must not keep delivering its old width')
+    assert.equal(frame.payload.height, 80, 'the shrunken window must not keep delivering its old height')
+    assert.equal(frame.payload.pixels.length, 100 * 80 * 4)
+    assert.deepEqual(frame.payload.dipRect, { x: 100, y: 50, width: 100, height: 80 })
+  }
+  started.stop('test-done')
+  win._closed()
+})
+
+// P2-3: the size always follows the CURRENT content rectangle, but a caller that explicitly
+// passed a non-zero image offset keeps that relative semantics (the old code reset it to 0,0).
+test('product: an explicit image offset stays relative to the window while the size is current (P2-3)', async () => {
+  let bounds = { x: 100, y: 50, width: 400, height: 200 }
+  const harness = createScreenDiffHarness()
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  win.getBounds = () => ({ ...bounds })
+  win.getContentBounds = () => ({ ...bounds })
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', { x: 12, y: 6, width: 400, height: 200 })
+  assert.equal(started.ok, true)
+  const first = await started.sampleNow()
+  assert.equal(first.ok, true, `first capture failed: ${first.code}`)
+  let delivered = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')
+  assert.deepEqual(delivered[0].payload.dipRect, { x: 112, y: 56, width: 400, height: 200 },
+    'the explicit offset is kept relative to the window origin')
+  bounds = { x: 100, y: 50, width: 100, height: 80 }
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline &&
+    harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length < 2) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  delivered = harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame')
+  assert.ok(delivered.length >= 2)
+  assert.deepEqual(delivered[1].payload.dipRect, { x: 112, y: 56, width: 100, height: 80 },
+    'the offset survives a content resize while the size follows the current content box')
+  started.stop('test-done')
+  win._closed()
+})
+
 test('product: refuses without content protection, and the menu offers the opt-in with its side effect', async () => {
   const bare = createScreenDiffHarness({ noProtection: true })
   const bareWin = bare.domain.createPinWindow(ORIGINAL, {})
@@ -1143,6 +1257,57 @@ test('revalidateScreenCapturePlan refuses a same-id layout, scale or rotation ch
   // A pin that is entirely outside every display after the change is a retryable planning refusal.
   const movedAway = [{ ...DISPLAY_PRIMARY, bounds: { x: 5000, y: 0, width: 1920, height: 1080 } }]
   assert.equal(diff.revalidateScreenCapturePlan(plan, movedAway).ok, false)
+})
+
+// P2-3 (review finding 3): the window itself is part of the plan. A pin that moved or was
+// resized while getSources() awaited must not be revalidated against the OLD window
+// rectangle alone; the post-await window/content facts are compared too, and a difference is
+// a retryable TOPOLOGY_CHANGED transition (the next tick re-plans from the current geometry).
+test('revalidateScreenCapturePlan refuses a window that moved or resized while enumerating (P2-3)', () => {
+  const displays = [DISPLAY_PRIMARY, DISPLAY_SCALED]
+  const pinBounds = { x: 2000, y: 100, width: 400, height: 300 }
+  const imageBounds = { x: 10, y: 20, width: 380, height: 260 }
+  const plan = diff.planScreenCapture({ pinBounds, imageBounds, rotation: 0, displays })
+  assert.equal(plan.ok, true)
+  // Without post-await inputs the existing P2-01 behaviour is unchanged.
+  assert.equal(diff.revalidateScreenCapturePlan(plan, displays).ok, true)
+  assert.equal(diff.revalidateScreenCapturePlan(plan, displays, null).ok, true)
+  // The same window rectangle the plan used is accepted, with the same mapping.
+  const unchanged = diff.revalidateScreenCapturePlan(plan, displays, { pinBounds: { ...pinBounds } })
+  assert.equal(unchanged.ok, true)
+  assert.deepEqual(unchanged.plan.physicalRect, plan.physicalRect)
+  // A pin moved during the await: the planned rectangle is not the window that exists now.
+  assert.deepEqual(
+    diff.revalidateScreenCapturePlan(plan, displays, { pinBounds: { ...pinBounds, x: 2100 } }),
+    { ok: false, code: 'TOPOLOGY_CHANGED' }
+  )
+  // A pin resized during the await: the old width/height describes pixels outside the window.
+  assert.deepEqual(
+    diff.revalidateScreenCapturePlan(plan, displays, { pinBounds: { ...pinBounds, width: 100, height: 80 } }),
+    { ok: false, code: 'TOPOLOGY_CHANGED' }
+  )
+  // A content box that changed while the window rectangle stayed put is the same stale plan.
+  assert.deepEqual(
+    diff.revalidateScreenCapturePlan(plan, displays, {
+      pinBounds: { ...pinBounds },
+      imageBounds: { ...imageBounds, width: 100, height: 80 }
+    }),
+    { ok: false, code: 'TOPOLOGY_CHANGED' }
+  )
+  // A window rectangle that cannot be described post-await is a retryable transition.
+  assert.deepEqual(
+    diff.revalidateScreenCapturePlan(plan, displays, { pinBounds: { x: 0, y: 0, width: 0, height: 0 } }),
+    { ok: false, code: 'TOPOLOGY_CHANGED' }
+  )
+  // Display-side changes keep the P2-01 TOPOLOGY_CHANGED classification (no loosening).
+  const swapped = [
+    { ...DISPLAY_PRIMARY, bounds: { x: 1920, y: 0, width: 1920, height: 1080 }, workArea: { x: 1920, y: 0, width: 1920, height: 1040 } },
+    { ...DISPLAY_SCALED, bounds: { x: 0, y: 0, width: 2560, height: 1440 }, workArea: { x: 0, y: 0, width: 2560, height: 1400 } }
+  ]
+  assert.deepEqual(
+    diff.revalidateScreenCapturePlan(plan, swapped, { pinBounds: { ...pinBounds } }),
+    { ok: false, code: 'TOPOLOGY_CHANGED' }
+  )
 })
 
 test('wiring: the opt-in diff mode is reachable, bounded, and flash stays the default', () => {

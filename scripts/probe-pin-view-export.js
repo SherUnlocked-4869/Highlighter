@@ -270,6 +270,14 @@ const VERTICAL_GLYPH_CASES = [
   // `threshold` is the max RGB sum still counted as ink: dark text only for the text cases, a
   // looser bound for the coloured emoji so its non-white pixels are part of the comparison.
   { id: 'latin-i', text: 'I', threshold: 420 },
+  // P2-04: transformed-upright punctuation (UAX #50 Tu) the browser substitutes with the font's
+  // vertical presentation form. A horizontal canvas draw of the base character lands 13+ CSS px
+  // off on screen (the review's `。`/`、` samples, ink IoU 0).
+  { id: 'full-stop', text: '\u3002', threshold: 420 },
+  { id: 'comma', text: '\u3001', threshold: 420 },
+  // P2-04: a horizontal-script letter in a vertical-rl column is set SIDEWAYS on the browser's
+  // shared alphabetic baseline; per-glyph ink centring moved the `g` descender 6.4 CSS px off it.
+  { id: 'latin-g', text: 'g', threshold: 420 },
   { id: 'mixed-zh-en', text: '中A文', threshold: 420 },
   { id: 'cjk', text: '中文竖排', threshold: 420 },
   { id: 'emoji', text: '👩‍💻', threshold: 700 }

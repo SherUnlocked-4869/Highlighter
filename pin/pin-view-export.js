@@ -263,7 +263,11 @@
           // P2-02 re-review: the browser sets characters of horizontal-only scripts sideways in
           // vertical-rl; the measured painter must preserve that per-grapheme orientation.
           // Missing (older/legacy measurement) stays upright, the pre-fix behaviour.
-          sideways: glyph?.sideways === true
+          sideways: glyph?.sideways === true,
+          // P2-04: transformed-upright (UAX #50 Tu) punctuation carries the Unicode vertical
+          // presentation form the browser's `vert` substitution renders. Missing/legacy
+          // measurements paint the base glyph (the pre-fix behaviour, the box geometry stands).
+          verticalForm: boundedText(glyph?.verticalForm, MAX_OCR_GLYPH_TEXT)
         })
         glyphCount += 1
       }
@@ -517,24 +521,48 @@
           if (!Array.isArray(line.glyphs)) continue
           for (const glyph of line.glyphs) {
             if (glyph.sideways === true) {
+              // P2-04: a horizontal-script grapheme in a vertical-rl column keeps the browser's
+              // SHARED alphabetic baseline. The measured glyph box is the browser's font box
+              // (the Range rect spans exactly fontBoundingBoxAscent+Descent across the column), so
+              // placing the alphabetic baseline at (ascent-descent)/2 from the box centre in the
+              // rotated frame reproduces the browser's baseline for EVERY glyph of the run. The old
+              // per-glyph ink centring moved a descender like `g` 6.4 CSS px off that shared line
+              // (the review's sideways sample).
               context.save()
               context.translate(glyph.x, glyph.y)
               context.rotate(Math.PI / 2)
-              // The measured box centre is the centre of the browser's ROTATED line box; the
-              // canvas `middle` baseline anchors the em square, not the ink. Nudge along the
-              // glyph frame's vertical axis by the measured ink offset so the rotated ink lands
-              // on the box centre like the live overlay (a 3+ CSS px shift otherwise, the review's
-              // 125% sample was visibly off-centre in the column). The nudge only affects the
-              // rotated screen-x axis; the along-column position is unchanged.
-              let inkOffset = 0
+              context.textBaseline = 'alphabetic'
+              let baselineOffset = 0
               if (typeof context.measureText === 'function') {
                 const metrics = context.measureText(glyph.text)
+                const ascent = Number(metrics?.fontBoundingBoxAscent)
+                const descent = Number(metrics?.fontBoundingBoxDescent)
+                if (Number.isFinite(ascent) && Number.isFinite(descent)) baselineOffset = (ascent - descent) / 2
+              }
+              context.fillText(glyph.text, 0, baselineOffset)
+              context.restore()
+            } else if (glyph.verticalForm) {
+              // P2-04: transformed-upright punctuation. The browser keeps a Tu character upright
+              // but substitutes the font's vertical presentation form (`vert`), which moves the
+              // ink inside the em cell (the CJK full stop/comma move to the right, brackets turn).
+              // Canvas has no vertical layout, so draw the Unicode vertical form code point and
+              // centre that form's ink in the measured em cell: the middle baseline sits at the
+              // cell centre and the measured ink offset (descent-ascent)/2 is cancelled. The live
+              // overlay keeps the same ink centred in its em box. Legacy measurements without the
+              // form keep the base glyph (pre-fix behaviour).
+              let form = glyph.verticalForm
+              let formOffset = 0
+              if (typeof context.measureText === 'function') {
+                const metrics = context.measureText(form)
+                const width = Number(metrics?.width)
                 const ascent = Number(metrics?.actualBoundingBoxAscent)
                 const descent = Number(metrics?.actualBoundingBoxDescent)
-                if (Number.isFinite(ascent) && Number.isFinite(descent)) inkOffset = (descent - ascent) / 2
+                // An unavailable form glyph (zero advance) must not replace the readable base
+                // character: keep the deterministic pre-fix draw in that case.
+                if (!(width > 0)) form = glyph.text
+                else if (Number.isFinite(ascent) && Number.isFinite(descent)) formOffset = (ascent - descent) / 2
               }
-              context.fillText(glyph.text, 0, -inkOffset)
-              context.restore()
+              context.fillText(form, glyph.x, glyph.y + formOffset)
             } else {
               const parts = verticalUprightParts(glyph, block.fontSize)
               if (parts) {
