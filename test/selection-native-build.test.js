@@ -35,6 +35,31 @@ test('selection-hook resolves to the reviewed source dependency and matching nat
   assert.equal(hook.setKeyboardEventsEnabled('yes'), false, 'invalid opt-in input fails closed')
   assert.equal(hook.isKeyboardEventsEnabled(), false)
 
+  // P1-02: the trusted focus classification bridges. The combo bridge now combines the key
+  // policy with the focus policy, and the pure focus probe plus the bounded runtime foreground
+  // probe must be present in the rebuilt addon.
+  const addon = require(path.join(root, 'vendor', 'selection-hook', 'build', 'Release', 'selection-hook.node'))
+  assert.equal(typeof addon.__testClassifyKeyboardCombo, 'function')
+  assert.equal(typeof addon.__testClassifyKeyboardFocus, 'function')
+  assert.equal(typeof addon.__testClassifyFocusedContext, 'function')
+  const safeCombo = addon.__testClassifyKeyboardCombo({ vkCode: 0x53, modifiers: 2, focus: 'safe' })
+  assert.equal(safeCombo.accepted, true)
+  assert.equal(safeCombo.combo, 'Ctrl+S')
+  assert.equal(safeCombo.context, 'safe')
+  const passwordCombo = addon.__testClassifyKeyboardCombo({ vkCode: 0x53, modifiers: 2, focus: 'password' })
+  assert.equal(passwordCombo.accepted, false, 'a password focus never emits a combo')
+  assert.equal(passwordCombo.context, 'password')
+  assert.equal(addon.__testClassifyKeyboardFocus({
+    foregroundAlive: true,
+    foregroundIsCurrent: true,
+    elementAvailable: true,
+    isPassword: true
+  }).classification, 'password')
+  assert.equal(addon.__testClassifyKeyboardFocus({}).classification, 'unknown', 'missing evidence fails closed')
+  const foreground = addon.__testClassifyFocusedContext()
+  assert.equal(foreground.classifierAvailable, true, 'the bounded IUIAutomation2 client must be available')
+  assert.equal(foreground.safe, foreground.classification === 'safe')
+
   // DEV-10: clipboard-copy guard counters are numeric reason counters only.
   assert.equal(typeof hook.getClipboardCopyGuardDiagnostics, 'function')
   const guardDiagnostics = hook.getClipboardCopyGuardDiagnostics()

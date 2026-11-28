@@ -128,13 +128,25 @@ export interface KeyboardEventData {  /**
 }
 
 /**
+ * Trusted focus classification carried by a shortcut-combo event (DEV-04).
+ *
+ * `"safe"` is the only class the native side emits: it positively identified a non-text
+ * application surface for the event. The other classes exist in the contract for
+ * defence-in-depth and are dropped before JavaScript in a correct build; the JavaScript
+ * privacy filter in main/domains/record/keystroke-capture.js requires `"safe"` explicitly
+ * for every event, so a missing context also fails closed.
+ */
+export type KeyboardComboFocusContext = "safe" | "password" | "text" | "ime" | "unknown";
+
+/**
  * Opt-in global shortcut-combo event data (Windows only, DEV-04).
  *
  * Emitted as `"key-combo"` only while {@link SelectionHook.setKeyboardEventsEnabled} is
  * true. The native hook filters the payload before it reaches JavaScript: plain typing,
- * Shift+single characters, IME/AltGr input, OS auto-repeat and injected input never
- * produce this event. Only the allowlisted combo label and key identity are reported;
- * typed characters and selected content are never included.
+ * Shift+single characters, IME/AltGr input, OS auto-repeat, injected input and combos
+ * pressed while a password/text-input/IME/unknown focus has the keyboard never produce this
+ * event. Only the allowlisted combo label, key identity and the trusted focus class are
+ * reported; typed characters and selected content are never included.
  */
 export interface KeyboardComboEventData {
   /**
@@ -157,6 +169,12 @@ export interface KeyboardComboEventData {
    * `"Ctrl+Shift+P"`, `"Ctrl+C"`, `"Alt+Tab"` or `"F5"`. Never contains typed text.
    */
   combo: string;
+  /**
+   * Trusted focus classification for this key event. Only a positively classified
+   * non-text application surface ("safe") is accepted downstream. Absent only when an older
+   * native build is loaded, which the JavaScript privacy filter then rejects.
+   */
+  context?: KeyboardComboFocusContext;
 }
 
 /**
@@ -395,9 +413,10 @@ declare class SelectionHook extends EventEmitter {
    * Enable or disable the bounded global keyboard shortcut-combo channel (Windows, DEV-04).
    *
    * While enabled, the native hook emits `"key-combo"` events carrying only an allowlisted
-   * combo label, the key identity, the event-time modifier mask and an epoch timestamp.
-   * Plain typing, Shift+single characters, IME/AltGr input, OS auto-repeat and injected
-   * input are filtered natively and never reach JavaScript. The channel is disabled by
+   * combo label, the key identity, the event-time modifier mask, an epoch timestamp and the
+   * trusted focus classification. Plain typing, Shift+single characters, IME/AltGr input, OS
+   * auto-repeat, injected input and any combo pressed in a password/text-input/IME/unknown
+   * focus are filtered natively and never reach JavaScript. The channel is disabled by
    * default, requires an explicit opt-in, and is cleared by stop()/cleanup(); it does not
    * change mouse-selection events or the legacy key-down/key-up events.
    *

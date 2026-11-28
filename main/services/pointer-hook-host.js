@@ -115,8 +115,11 @@ function setKeyboardEventsEnabled(enabled) {
   }
 }
 
-// Native `key-combo` payload: { tMs, vkCode, scanCode, modifiers, combo }. The filter re-validates
-// the label and returns only `{ at, combo }`; nothing else leaves this process.
+// Native `key-combo` payload: { tMs, vkCode, scanCode, modifiers, combo, context }. The native
+// hook only emits combos whose event-time focus it positively classified as a safe non-text
+// surface (`context: 'safe'`); password/text-input/IME/unknown focus is dropped before
+// JavaScript. The filter re-validates the label AND requires that positive context, then returns
+// only `{ at, combo }`; nothing else leaves this process.
 function forwardKeyCombo(payload) {
   if (disposed || !keyboardRequested) return
   const accepted = inspectGlobalKeystroke(payload)

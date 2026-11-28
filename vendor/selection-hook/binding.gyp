@@ -18,6 +18,7 @@
           "sources": [ 
             "src/windows/selection_hook.cc",
             "src/windows/core/engine.cc",
+            "src/windows/core/keyboard_focus.cc",
             "src/windows/core/worker.cc",
             "src/windows/lib/string_pool.cc",
             "src/windows/lib/utils.cc",
@@ -28,6 +29,8 @@
           ],
           "libraries": [ 
             "uiautomationcore.lib",
+            # Required for the DEV-04 IME composition focus probe
+            "imm32.lib",
             # Required for mouse hooks
             "user32.lib"
           ],

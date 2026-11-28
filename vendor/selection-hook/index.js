@@ -24,6 +24,13 @@ const isLinux = process.platform === "linux";
 const KEY_COMBO_PATTERN =
   /^(?:(?:Ctrl|Alt|Shift|Win)\+){1,4}(?:[A-Z0-9]|Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$|^F(?:[1-9]|1[0-2])$/;
 
+// DEV-04 trusted focus classification. The native side only emits a combo it classified as a
+// safe non-text application surface ("safe"); the other classes exist in the native contract so
+// a future/misbehaving build cannot smuggle a sensitive context through this wrapper. A payload
+// without `context` (stale addon binary) is forwarded unchanged and is rejected downstream by
+// main/domains/record/keystroke-capture.js, which requires a positive "safe" context.
+const FOCUS_CONTEXTS = Object.freeze(["safe", "password", "text", "ime", "unknown"]);
+
 let nativeModule = null;
 // Make debugFlag a private module variable to avoid global state issues
 let _debugFlag = false;
@@ -188,14 +195,22 @@ class SelectionHook extends EventEmitter {
             case "keyboard-combo":
               {
                 if (!this.#keyboardEventsEnabled) break;
-                const { tMs, vkCode, scanCode, modifiers, combo } = data;
+                const { tMs, vkCode, scanCode, modifiers, combo, context } = data;
                 const label = typeof combo === "string" ? combo : "";
                 if (!Number.isFinite(tMs) || tMs <= 0) break;
                 if (!Number.isInteger(vkCode) || vkCode < 0 || vkCode > 0xffff) break;
                 if (!Number.isInteger(scanCode) || scanCode < 0 || scanCode > 0xffff) break;
                 if (!Number.isInteger(modifiers) || modifiers < 0 || modifiers > 0xf) break;
                 if (!KEY_COMBO_PATTERN.test(label)) break;
-                this.emit("key-combo", { tMs, vkCode, scanCode, modifiers, combo: label });
+                // Validate the trusted focus class when the native payload carries one. A
+                // malformed class is dropped here; a missing one stays missing (fail closed in
+                // the JavaScript privacy filter, never implicitly safe).
+                const payload = { tMs, vkCode, scanCode, modifiers, combo: label };
+                if (context !== undefined) {
+                  if (typeof context !== "string" || !FOCUS_CONTEXTS.includes(context)) break;
+                  payload.context = context;
+                }
+                this.emit("key-combo", payload);
               }
               break;
             case "status":
@@ -335,7 +350,9 @@ class SelectionHook extends EventEmitter {
    *
    * While enabled, the native hook emits "key-combo" events carrying only an allowlisted
    * combo label (`Ctrl+Shift+P`, `F5`, ...), the virtual/scan key codes, the event-time
-   * modifier mask and a Date.now()-compatible epoch timestamp. Plain typing, Shift+single
+   * modifier mask, a Date.now()-compatible epoch timestamp, and the trusted focus
+   * classification (`context: "safe"`; combos pressed in password/text-input/IME/unknown
+   * focus are dropped natively before they reach JavaScript). Plain typing, Shift+single
    * characters, IME/AltGr input, OS auto-repeat and injected input are filtered natively.
    *
    * The channel is disabled by default and is cleared by stop()/cleanup(), so it must be

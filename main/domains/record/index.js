@@ -277,30 +277,63 @@ function buildKeystrokeTrack(entries, timing = {}) {
 
 // DEV-04: the control bar (keydown in this window) and the global native keyboard channel are
 // two sources for the same physical press while the bar has focus. Both stamp `Date.now()`-based
-// wall times within a few ms of each other, so the same combo repeated inside a short window is
-// one event. 120 ms is comfortably below a deliberate double-press and far above hook latency.
+// wall times within a few ms of each other. Only a control-bar report and a global report of the
+// SAME physical press may collapse into one event, so the merge keeps the source identity:
+//   * same-source consecutive presses are never deduped (two deliberate Ctrl+Z presses 90 ms
+//     apart must stay two events);
+//   * a cross-source pair needs the same combo and an absolute time distance within the window,
+//     and each entry can be paired at most once (one-to-one).
+// 120 ms is comfortably below a deliberate double-press and far above hook latency.
 const KEYSTROKE_SOURCE_DEDUPE_MS = 120
+const KEYSTROKE_SOURCE_CONTROL_BAR = 0
+const KEYSTROKE_SOURCE_GLOBAL = 1
 
 function mergeKeystrokeSources(primary, global, { dedupeMs = KEYSTROKE_SOURCE_DEDUPE_MS } = {}) {
   const window = Math.max(0, Math.round(Number(dedupeMs) || 0))
   const entries = []
-  for (const source of [primary, global]) {
+  const collect = (source, sourceId) => {
     for (const entry of Array.isArray(source) ? source : []) {
       if (!isValidKeystrokeCombo(entry?.combo)) continue
       const at = Number(entry?.at)
       if (!Number.isFinite(at) || at < 0) continue
-      entries.push({ at, combo: String(entry.combo).trim() })
+      entries.push({ at, combo: String(entry.combo).trim(), source: sourceId })
     }
   }
-  entries.sort((left, right) => left.at - right.at)
-  const lastAtByCombo = new Map()
+  collect(primary, KEYSTROKE_SOURCE_CONTROL_BAR)
+  collect(global, KEYSTROKE_SOURCE_GLOBAL)
+  // Time order decides which side of a pair is seen first; the source id is only the stable
+  // tie-breaker so the result never depends on the two input arrays' internal order.
+  entries.sort((left, right) => left.at - right.at || left.source - right.source)
+
+  const unmatched = [[], []]
   const merged = []
   for (const entry of entries) {
-    const previousAt = lastAtByCombo.get(entry.combo)
-    if (previousAt !== undefined && entry.at - previousAt <= window) continue
-    lastAtByCombo.set(entry.combo, entry.at)
-    merged.push(entry)
+    const candidates = unmatched[entry.source ^ 1]
+    // Pair with the nearest unmatched entry of the other source reporting the same combo inside
+    // the window. Nearest (rather than first-in-order) keeps an interleaved sequence aligned.
+    let pairingIndex = -1
+    let pairingDistance = Infinity
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index]
+      if (candidate.combo !== entry.combo) continue
+      const distance = Math.abs(candidate.at - entry.at)
+      if (distance > window || distance >= pairingDistance) continue
+      pairingIndex = index
+      pairingDistance = distance
+    }
+    if (pairingIndex >= 0) {
+      const paired = candidates.splice(pairingIndex, 1)[0]
+      // One event for one physical press: keep the earlier wall time (the global hook samples at
+      // key-down, before the renderer's keydown batch), never two events for the same press.
+      merged.push({ at: Math.min(paired.at, entry.at), combo: entry.combo })
+      continue
+    }
+    unmatched[entry.source].push(entry)
   }
+  for (const sourceEntries of unmatched) {
+    for (const entry of sourceEntries) merged.push({ at: entry.at, combo: entry.combo })
+  }
+  merged.sort((left, right) => left.at - right.at || (left.combo < right.combo ? -1 : left.combo > right.combo ? 1 : 0))
   // The per-source caps are already bounded; this keeps the merged list inside the same budget.
   return merged.slice(0, KEYSTROKE_LIMIT)
 }

@@ -58,6 +58,7 @@
 
 #include "core/engine.h"
 #include "core/keyboard_combo.h"
+#include "core/keyboard_focus.h"
 #include "core/types.h"
 #include "core/worker.h"
 #include "lib/keyboard.h"
@@ -183,12 +184,16 @@ struct KeyboardEventContext
     DWORD flags;     ///< Additional flags for the key event
 
     // DEV-04 opt-in shortcut channel. A combo context carries only key identity, the
-    // event-time modifier mask, a wall-clock timestamp, and an allowlisted label; it is
-    // never produced for injected input, auto-repeat, IME/AltGr text, or plain typing.
+    // event-time modifier mask, a wall-clock timestamp, an allowlisted label, and the trusted
+    // focus classification ("safe" is the only class that reaches JavaScript); it is never
+    // produced for injected input, auto-repeat, IME/AltGr text, or plain typing.
     bool combo = false;             ///< true for the bounded keyboard-combo channel.
     DWORD modifiers = 0;            ///< Event-time modifier bits (see keyboard_combo.h).
     unsigned long long timestampMs = 0;  ///< Unix epoch milliseconds, Date.now()-compatible.
     std::string comboLabel;         ///< Allowlisted combo label such as "Ctrl+Shift+P".
+    // Cheap hook-time focus snapshot. UIA classification runs later on the JS thread; the hook
+    // callback only records these handles (see keyboard_focus.h).
+    highlighter::KeyboardFocusSnapshot focusSnapshot;
 };
 
 class SelectionHook;
@@ -277,6 +282,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
     void EnqueueKeyboardCombo(const KBDLLHOOKSTRUCT *keyInfo, WPARAM wParam);
+    highlighter::KeyboardFocusDecision ClassifyComboFocus(const highlighter::KeyboardFocusSnapshot &snapshot);
 
     // DPI awareness helper method
     void EnableDpiAwareness();
@@ -335,6 +341,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Last main key that produced a WM_KEYDOWN, for OS auto-repeat suppression. Touched
     // only from the hook thread; Start() resets it before the hook thread exists.
     DWORD combo_key_down_vk = 0;
+    // DEV-04 trusted focus classification. Owns one bounded IUIAutomation2 client created,
+    // used and released on the JavaScript thread; never touched from the hook thread.
+    highlighter::KeyboardFocusClassifier keyboard_focus_classifier;
     // Event-time cursor snapshots used by the automatic clipboard heuristic.
     HCURSOR mouse_down_cursor = NULL;
     HCURSOR mouse_up_cursor = NULL;
@@ -478,6 +487,8 @@ SelectionHook::~SelectionHook()
         pUIAutomation->Release();
         pUIAutomation = nullptr;
     }
+    // The focus classifier's UIA client also belongs to this (JavaScript) thread.
+    keyboard_focus_classifier.Reset();
 
     // Clean up COM if we initialized it
     if (com_initialized_by_us)
@@ -734,6 +745,9 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     // The opt-in keyboard channel is part of the stopped session: a later start() must
     // require an explicit new opt-in instead of inheriting recording-time capture.
     keyboard_events_enabled.store(false, std::memory_order_release);
+    // Release the JS-thread focus classifier with the stopped session. Queued combo TSFN
+    // callbacks observe the clear above and return before classifying.
+    keyboard_focus_classifier.Reset();
     StopMouseKeyboardHookThread();
     StopSelectionWorker();
     RemoveEnvironmentCleanupHook();
@@ -1421,10 +1435,28 @@ void SelectionHook::EnqueueKeyboardCombo(const KBDLLHOOKSTRUCT *keyInfo, WPARAM 
     // JS drain time and can map it to the recording media clock without queue skew.
     pKeyboardEvent->timestampMs = CurrentEpochMilliseconds();
     pKeyboardEvent->comboLabel = decision.label;
+    // Event-time focus snapshot for the trusted classification. Only cheap Win32 calls run in
+    // the hook callback (no UIA/MSAA/message dispatch); the bounded UIA probe runs later on the
+    // JavaScript thread, see keyboard_focus.h.
+    pKeyboardEvent->focusSnapshot = highlighter::CaptureKeyboardFocusSnapshot();
     if (keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent) != napi_ok)
     {
         delete pKeyboardEvent;  // Queue full or closing, callback won't fire, prevent leak
     }
+}
+
+/**
+ * @brief DEV-04: classify the event-time focus snapshot for one shortcut combo.
+ * @param[in] snapshot Cheap hook-time foreground/focus handles.
+ * @return Safe only for a positively classified non-text application surface; Unknown on any
+ * failure or timeout (the caller then drops the combo).
+ * @note Runs on the JavaScript thread (TSFN dispatch). Never call this from the hook thread:
+ * the classifier creates and uses a UIA client, which must not run in a low-level hook.
+ */
+highlighter::KeyboardFocusDecision SelectionHook::ClassifyComboFocus(
+    const highlighter::KeyboardFocusSnapshot &snapshot)
+{
+    return keyboard_focus_classifier.ClassifyForeground(snapshot);
 }
 
 /**
@@ -1445,6 +1477,15 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
         // queued before the opt-out is discarded here instead of being delivered late.
         if (!currentInstance->keyboard_events_enabled.load(std::memory_order_acquire))
             return;
+        // DEV-04 privacy: a trusted focus classification is mandatory for EVERY combo. The hook
+        // only snapshotted the event-time foreground/focus handles; the bounded UIA probe runs
+        // here on the JavaScript thread. Anything but a positively classified non-text surface
+        // drops the event before a JavaScript object exists, so password/text-input/IME/unknown
+        // focus yields zero IPC events and can never reach events.json.
+        const highlighter::KeyboardFocusDecision focus =
+            currentInstance->ClassifyComboFocus(pKeyboardEvent->focusSnapshot);
+        if (!highlighter::IsKeyboardFocusSafe(focus.classification))
+            return;
         Napi::Object comboObj = Napi::Object::New(env);
         comboObj.Set(Napi::String::New(env, "type"), Napi::String::New(env, "keyboard-combo"));
         comboObj.Set(Napi::String::New(env, "tMs"),
@@ -1453,6 +1494,8 @@ void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function,
         comboObj.Set(Napi::String::New(env, "scanCode"), Napi::Number::New(env, pKeyboardEvent->scanCode));
         comboObj.Set(Napi::String::New(env, "modifiers"), Napi::Number::New(env, pKeyboardEvent->modifiers));
         comboObj.Set(Napi::String::New(env, "combo"), Napi::String::New(env, pKeyboardEvent->comboLabel));
+        comboObj.Set(Napi::String::New(env, "context"),
+                     Napi::String::New(env, highlighter::KeyboardFocusClassName(focus.classification)));
         function.Call({comboObj});
         return;
     }
@@ -2160,6 +2203,61 @@ long ReadSelfTestLong(const Napi::Object &object, const char *name, long fallbac
 }
 
 /**
+ * @brief Read an optional DEV-04 focus evidence object (or a class-name shorthand).
+ * @param[in] input Self-test evidence object.
+ * @param[out] evidence Receives the pure focus evidence.
+ * @return true when the input carried a focus description; false for the key-policy-only probe.
+ * @note A shorthand string is a convenience for tests: "safe"/"password"/"text"/"ime" describe
+ * an otherwise healthy surface with only the named property set; "unknown" hides the element.
+ */
+bool ReadSelfTestFocusEvidence(const Napi::Object &input, highlighter::KeyboardFocusEvidence &evidence)
+{
+    const Napi::Value focusValue = input.Get("focus");
+    if (focusValue.IsString())
+    {
+        const std::string focus = focusValue.As<Napi::String>().Utf8Value();
+        evidence.foregroundAlive = true;
+        evidence.foregroundIsCurrent = true;
+        evidence.classifierAvailable = true;
+        evidence.elementAvailable = true;
+        if (focus == "safe")
+            return true;
+        if (focus == "password")
+        {
+            evidence.isPassword = true;
+            return true;
+        }
+        if (focus == "text")
+        {
+            evidence.isTextEditControl = true;
+            return true;
+        }
+        if (focus == "ime")
+        {
+            evidence.imeComposing = true;
+            return true;
+        }
+        // Anything else, including "unknown", fails closed without an element.
+        evidence.elementAvailable = false;
+        return true;
+    }
+    if (!focusValue.IsObject() || focusValue.IsArray())
+        return false;
+    const Napi::Object focus = focusValue.As<Napi::Object>();
+    evidence.foregroundAlive = ReadSelfTestBoolean(focus, "foregroundAlive", true);
+    evidence.foregroundIsCurrent = ReadSelfTestBoolean(focus, "foregroundIsCurrent", true);
+    evidence.ownProcess = ReadSelfTestBoolean(focus, "ownProcess", false);
+    evidence.classifierAvailable = ReadSelfTestBoolean(focus, "classifierAvailable", true);
+    evidence.probeTimedOut = ReadSelfTestBoolean(focus, "probeTimedOut", false);
+    evidence.elementAvailable = ReadSelfTestBoolean(focus, "elementAvailable", true);
+    evidence.isPassword = ReadSelfTestBoolean(focus, "isPassword", false);
+    evidence.isTextEditControl = ReadSelfTestBoolean(focus, "isTextEditControl", false);
+    evidence.hasWritableValue = ReadSelfTestBoolean(focus, "hasWritableValue", false);
+    evidence.imeComposing = ReadSelfTestBoolean(focus, "imeComposing", false);
+    return true;
+}
+
+/**
  * @brief Self-test: run the production DEV-10 classifier on synthetic evidence.
  * @return { allow, reason, terminalLike }.
  */
@@ -2201,7 +2299,10 @@ Napi::Value SelfTestClassifyClipboardCopyTarget(const Napi::CallbackInfo &info)
 
 /**
  * @brief Self-test: run the production DEV-04 combo policy on synthetic evidence.
- * @return { accepted, combo, reason }.
+ * @return { accepted, combo, reason, context }. When the evidence carries a `focus` description
+ * (object or class-name shorthand) the trusted focus classification is applied too, so
+ * `accepted` is true only for a grammar-valid combo pressed on a positively safe surface.
+ * Omitting `focus` keeps the historical key-policy-only probe.
  */
 Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
 {
@@ -2226,6 +2327,137 @@ Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
     result.Set("accepted", Napi::Boolean::New(env, decision.verdict == highlighter::KeyboardComboVerdict::Accepted));
     result.Set("combo", Napi::String::New(env, decision.label));
     result.Set("reason", Napi::String::New(env, decision.reason));
+
+    highlighter::KeyboardFocusEvidence focusEvidence;
+    if (!ReadSelfTestFocusEvidence(input, focusEvidence))
+    {
+        result.Set("context", Napi::String::New(env, "unclassified"));
+        return result;
+    }
+    const highlighter::KeyboardFocusDecision focusDecision = highlighter::ClassifyKeyboardFocus(focusEvidence);
+    const bool accepted = decision.verdict == highlighter::KeyboardComboVerdict::Accepted &&
+                          highlighter::IsKeyboardFocusSafe(focusDecision.classification);
+    result.Set("accepted", Napi::Boolean::New(env, accepted));
+    result.Set("context",
+               Napi::String::New(env, highlighter::KeyboardFocusClassName(focusDecision.classification)));
+    if (decision.verdict == highlighter::KeyboardComboVerdict::Accepted && !accepted)
+        result.Set("reason", Napi::String::New(env, focusDecision.reason));
+    return result;
+}
+
+/**
+ * @brief Self-test: run the production DEV-04 focus policy on synthetic evidence.
+ * @return { classification, safe, reason }.
+ * @note Defaults fail closed: an evidence object without `foregroundAlive` is classified Unknown.
+ */
+Napi::Value SelfTestClassifyKeyboardFocus(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject() || info[0].IsArray())
+    {
+        Napi::TypeError::New(env, "Evidence object expected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const Napi::Object input = info[0].As<Napi::Object>();
+
+    highlighter::KeyboardFocusEvidence evidence;
+    evidence.foregroundAlive = ReadSelfTestBoolean(input, "foregroundAlive", false);
+    evidence.foregroundIsCurrent = ReadSelfTestBoolean(input, "foregroundIsCurrent", false);
+    evidence.ownProcess = ReadSelfTestBoolean(input, "ownProcess", false);
+    evidence.classifierAvailable = ReadSelfTestBoolean(input, "classifierAvailable", true);
+    evidence.probeTimedOut = ReadSelfTestBoolean(input, "probeTimedOut", false);
+    evidence.elementAvailable = ReadSelfTestBoolean(input, "elementAvailable", false);
+    evidence.isPassword = ReadSelfTestBoolean(input, "isPassword", false);
+    evidence.isTextEditControl = ReadSelfTestBoolean(input, "isTextEditControl", false);
+    evidence.hasWritableValue = ReadSelfTestBoolean(input, "hasWritableValue", false);
+    evidence.imeComposing = ReadSelfTestBoolean(input, "imeComposing", false);
+
+    const highlighter::KeyboardFocusDecision decision = highlighter::ClassifyKeyboardFocus(evidence);
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("classification",
+               Napi::String::New(env, highlighter::KeyboardFocusClassName(decision.classification)));
+    result.Set("safe", Napi::Boolean::New(env, highlighter::IsKeyboardFocusSafe(decision.classification)));
+    result.Set("reason", Napi::String::New(env, decision.reason));
+    return result;
+}
+
+/**
+ * @brief Self-test/probe: classify the current foreground focus (or one explicit window handle).
+ *
+ * Used by scripts/probe-keyboard-focus-context.js: an automation probe opens a test window with
+ * an ordinary text input and a password input and asserts the classification without pressing
+ * keys. The production path uses KeyboardFocusClassifier::ClassifyForeground on the event-time
+ * snapshot; the optional `hwnd` input exercises the same evidence/policy pipeline for an explicit
+ * window/control handle so the probe does not need to steal foreground focus.
+ *
+ * @return Diagnostics: { classification, safe, reason, classifierAvailable, hwnd, pid,
+ *          foregroundHwnd, focusHwnd }.
+ * @note Test-only. It initializes COM on the calling thread on first use because the raw Node
+ * bridge has no SelectionHook instance (the production constructor already initializes COM).
+ */
+Napi::Value SelfTestClassifyFocusedContext(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+
+    static std::unique_ptr<highlighter::KeyboardFocusClassifier> classifier;
+    static bool com_ready = false;
+    if (!com_ready)
+    {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        // RPC_E_CHANGED_MODE means the thread already has a different apartment: UIA is still
+        // usable there. Do not CoUninitialize for this test-only process-lifetime reference.
+        com_ready = hr == S_OK || hr == S_FALSE || hr == RPC_E_CHANGED_MODE;
+    }
+    if (!classifier)
+        classifier.reset(new highlighter::KeyboardFocusClassifier());
+
+    unsigned long long requestedHandle = 0;
+    if (info.Length() >= 1 && info[0].IsObject() && !info[0].IsArray())
+    {
+        const Napi::Value handleValue = info[0].As<Napi::Object>().Get("hwnd");
+        if (handleValue.IsNumber())
+        {
+            const double raw = handleValue.As<Napi::Number>().DoubleValue();
+            if (raw > 0 && raw < 18446744073709551616.0)
+                requestedHandle = static_cast<unsigned long long>(raw);
+        }
+    }
+
+    highlighter::KeyboardFocusDecision decision;
+    unsigned long long reportedHandle = 0;
+    unsigned long reportedProcessId = 0;
+    unsigned long long foregroundHandle = 0;
+    unsigned long long focusHandle = 0;
+    if (requestedHandle != 0)
+    {
+        const HWND window = reinterpret_cast<HWND>(static_cast<ULONG_PTR>(requestedHandle));
+        decision = classifier->ClassifyWindowHandle(window);
+        reportedHandle = requestedHandle;
+        DWORD windowProcessId = 0;
+        if (IsWindow(window))
+            GetWindowThreadProcessId(window, &windowProcessId);
+        reportedProcessId = static_cast<unsigned long>(windowProcessId);
+    }
+    else
+    {
+        const highlighter::KeyboardFocusSnapshot snapshot = highlighter::CaptureKeyboardFocusSnapshot();
+        decision = classifier->ClassifyForeground(snapshot);
+        foregroundHandle = reinterpret_cast<unsigned long long>(snapshot.foregroundWindow);
+        focusHandle = reinterpret_cast<unsigned long long>(snapshot.focusWindow);
+        reportedHandle = foregroundHandle;
+        reportedProcessId = static_cast<unsigned long>(snapshot.processId);
+    }
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("classification",
+               Napi::String::New(env, highlighter::KeyboardFocusClassName(decision.classification)));
+    result.Set("safe", Napi::Boolean::New(env, highlighter::IsKeyboardFocusSafe(decision.classification)));
+    result.Set("reason", Napi::String::New(env, decision.reason));
+    result.Set("classifierAvailable", Napi::Boolean::New(env, classifier->IsAvailable()));
+    result.Set("hwnd", Napi::Number::New(env, static_cast<double>(reportedHandle)));
+    result.Set("pid", Napi::Number::New(env, static_cast<double>(reportedProcessId)));
+    result.Set("foregroundHwnd", Napi::Number::New(env, static_cast<double>(foregroundHandle)));
+    result.Set("focusHwnd", Napi::Number::New(env, static_cast<double>(focusHandle)));
     return result;
 }
 }  // namespace
@@ -2257,8 +2489,12 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports)
     exports.Set("__testClassifyClipboardCopyTarget",
                 Napi::Function::New(env, SelfTestClassifyClipboardCopyTarget));
     exports.Set("__testClassifyKeyboardCombo", Napi::Function::New(env, SelfTestClassifyKeyboardCombo));
+    // DEV-04 trusted focus classification: pure policy evidence + runtime foreground probe.
+    exports.Set("__testClassifyKeyboardFocus", Napi::Function::New(env, SelfTestClassifyKeyboardFocus));
+    exports.Set("__testClassifyFocusedContext", Napi::Function::New(env, SelfTestClassifyFocusedContext));
     return SelectionHook::Init(env, exports);
 }
 
 // Register the module with Node.js
 NODE_API_MODULE(selection_hook, InitAll)
+
